@@ -1,0 +1,421 @@
+"""ValueData backend (FastAPI).
+
+Capa de prediccion anticipada que se monta encima de SimpliRoute. En este POC
+genera el plan localmente con la misma forma que devolveria SimpliRoute; en
+produccion `pipeline.gen_today_plan` se reemplaza por una llamada a la API real
+(ver `_load_today_from_simpliroute` stub).
+
+Endpoints (prefijo /api):
+  GET  /state
+  GET  /kpis
+  GET  /visits
+  GET  /alerts/anticipated
+  GET  /visits/{tracking_id}/explanation
+  GET  /vehicles
+  GET  /model/metrics
+  GET  /model/importance
+  POST /control/incident
+  POST /control/reset
+  POST /control/clock
+  GET  /health
+"""
+from __future__ import annotations
+
+import sys
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Any
+
+import numpy as np
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
+
+from pipeline import (
+    ANTICIPATION_HOURS,
+    PRICE_PER_RESCUE_CLP,
+    RESCUE_RATE,
+    humanize_feature,
+    top_shap_factors,
+)
+from events import EVENTS
+from schemas import (
+    AnticipatedAlert,
+    ClientMaster,
+    ClockRequest,
+    Driver,
+    FeatureImportance,
+    IncidentRequest,
+    KPIs,
+    ModelMetrics,
+    ShapFactor,
+    StateResponse,
+    StreamEvent,
+    VehicleExtended,
+    VehicleSummary,
+    Visit,
+    VisitExplanation,
+)
+from state import STATE
+
+logger.remove()
+logger.add(sys.stderr, level="INFO")
+
+SCHEDULER_TICK_SEC = 3  # cada 3s avanza sim_clock por sim_minutes_per_tick
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    logger.info("Bootstrapping ValueData backend (training model, may take 30-40s)...")
+    STATE.init()
+    logger.info(
+        f"Model ready. AUC={STATE.boot['metrics']['auc']:.3f}, "
+        f"Brier={STATE.boot['metrics']['brier']:.4f}. "
+        f"Today plan: {len(STATE.today_plan)} visits."
+    )
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        STATE.tick, "interval",
+        seconds=SCHEDULER_TICK_SEC, id="sim-tick",
+        max_instances=1, coalesce=True,
+    )
+    scheduler.start()
+    logger.info(f"Scheduler started: tick every {SCHEDULER_TICK_SEC}s")
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(
+    title="ValueData backend - Torre de Control",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+def _require_ready() -> None:
+    if STATE.boot is None or STATE.snapshot_df is None:
+        raise HTTPException(status_code=503, detail="Backend warming up, try again in a few seconds")
+
+
+def _df_to_visits(df) -> list[Visit]:
+    return [
+        Visit(
+            tracking_id=str(row["tracking_id"]),
+            vehicle_id=int(row["vehicle_id"]),
+            vehicle_name=str(row["vehicle_name"]),
+            order=int(row["order"]),
+            title=str(row["title"]),
+            address=str(row["address"]),
+            latitude=float(row["latitude"]),
+            longitude=float(row["longitude"]),
+            load=float(row["load"]),
+            window_start=str(row["window_start"]),
+            window_end=str(row["window_end"]),
+            planned_arrival_time=str(row["planned_arrival_time"]),
+            estimated_time_arrival=str(row["estimated_time_arrival"]),
+            slack_min=float(row["slack_min"]),
+            alert_slack=str(row["alert_slack"]),
+            p_fallo=float(row["p_fallo"]),
+            alert_valuedata=bool(row["alert_valuedata"]),
+            status=str(row["status"]),
+            horas_hasta_window_end=float(row["horas_hasta_we"]),
+        )
+        for _, row in df.iterrows()
+    ]
+
+
+# =============================================================================
+# Endpoints
+# =============================================================================
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "ready": STATE.boot is not None}
+
+
+@app.get("/api/state", response_model=StateResponse)
+def get_state():
+    _require_ready()
+    df = STATE.snapshot_df
+    return StateResponse(
+        sim_clock=STATE.sim_clock,
+        today=STATE.today.isoformat(),
+        day_seed=STATE.day_seed,
+        auto_advance=STATE.auto_advance,
+        sim_minutes_per_tick=STATE.sim_minutes_per_tick,
+        total_visits=int(len(df)),
+        vehicles=sorted(int(v) for v in df["vehicle_id"].unique()),
+        incidents={int(k): float(v) for k, v in STATE.manual_incidents.items()},
+        last_tick_at=STATE.last_tick_at,
+    )
+
+
+@app.get("/api/kpis", response_model=KPIs)
+def get_kpis(vehicle_id: list[int] | None = Query(default=None)):
+    _require_ready()
+    df = STATE.snapshot_df
+    if vehicle_id:
+        df = df[df["vehicle_id"].isin(vehicle_id)]
+    total = int(len(df))
+    completed = int((df["status"] == "completed").sum())
+    pending = total - completed
+    pending_df = df[df["status"] == "pending"]
+    red = int((pending_df["alert_slack"] == "RED").sum())
+    yellow = int((pending_df["alert_slack"] == "YELLOW").sum())
+    vd_alerts = int(df["alert_valuedata"].sum())
+    real_fails = int(df["failed"].sum()) if "failed" in df.columns else 0
+    vd_caught_real = int((df["alert_valuedata"] & (df["failed"] == 1)).sum()) if "failed" in df.columns else 0
+    expected_fail = float(df["p_fallo"].sum())
+    saved = vd_alerts * RESCUE_RATE
+    proj = 100.0 * (1.0 - max(0.0, expected_fail - saved) / max(1, total))
+    return KPIs(
+        total=total,
+        completed=completed,
+        in_route=0,
+        pending=pending,
+        red_simpliroute=red,
+        yellow_simpliroute=yellow,
+        vd_alerts=vd_alerts,
+        vd_alerts_caught_real=vd_caught_real,
+        real_failures_oracle=real_fails,
+        projected_compliance_pct=float(round(proj, 2)),
+        rescue_clp=int(round(saved * PRICE_PER_RESCUE_CLP)),
+    )
+
+
+@app.get("/api/visits", response_model=list[Visit])
+def get_visits(
+    vehicle_id: list[int] | None = Query(default=None),
+    status: str | None = Query(default=None),
+    only_alerts: bool = Query(default=False),
+):
+    _require_ready()
+    df = STATE.snapshot_df
+    if vehicle_id:
+        df = df[df["vehicle_id"].isin(vehicle_id)]
+    if status:
+        df = df[df["status"] == status]
+    if only_alerts:
+        df = df[df["alert_valuedata"] | (df["alert_slack"] != "GREEN")]
+    return _df_to_visits(df)
+
+
+@app.get("/api/alerts/anticipated", response_model=list[AnticipatedAlert])
+def get_anticipated_alerts(limit: int = Query(default=20, ge=1, le=200)):
+    _require_ready()
+    df = STATE.snapshot_df
+    shap_vals = STATE.shap_vals
+    feats = STATE.boot["feature_names"]
+    alerts = df[df["alert_valuedata"]].sort_values("p_fallo", ascending=False).head(limit)
+    out: list[AnticipatedAlert] = []
+    for _, row in alerts.iterrows():
+        idx = int(row["_shap_idx"])
+        tops = top_shap_factors(shap_vals, feats, idx, k=3, only_positive=True)
+        factors = [
+            ShapFactor(name=n, display=humanize_feature(n), contribution=float(v))
+            for n, v in tops
+        ]
+        out.append(AnticipatedAlert(
+            tracking_id=str(row["tracking_id"]),
+            title=str(row["title"]),
+            vehicle_id=int(row["vehicle_id"]),
+            vehicle_name=str(row["vehicle_name"]),
+            window_end=str(row["window_end"]),
+            estimated_time_arrival=str(row["estimated_time_arrival"]),
+            p_fallo=float(row["p_fallo"]),
+            horas_hasta_window_end=float(row["horas_hasta_we"]),
+            latitude=float(row["latitude"]),
+            longitude=float(row["longitude"]),
+            top_factors=factors,
+        ))
+    return out
+
+
+@app.get("/api/visits/{tracking_id}/explanation", response_model=VisitExplanation)
+def get_explanation(tracking_id: str):
+    _require_ready()
+    df = STATE.snapshot_df
+    matching = df[df["tracking_id"] == tracking_id]
+    if matching.empty:
+        raise HTTPException(status_code=404, detail=f"tracking_id {tracking_id} not found")
+    row = matching.iloc[0]
+    idx = int(row["_shap_idx"])
+    tops = top_shap_factors(STATE.shap_vals, STATE.boot["feature_names"], idx, k=5, only_positive=False)
+    factors = [
+        ShapFactor(name=n, display=humanize_feature(n), contribution=float(v))
+        for n, v in tops
+    ]
+    return VisitExplanation(
+        tracking_id=str(row["tracking_id"]),
+        title=str(row["title"]),
+        p_fallo=float(row["p_fallo"]),
+        alert_slack=str(row["alert_slack"]),
+        alert_valuedata=bool(row["alert_valuedata"]),
+        top_factors=factors,
+    )
+
+
+@app.get("/api/vehicles", response_model=list[VehicleSummary])
+def get_vehicles():
+    _require_ready()
+    df = STATE.snapshot_df
+    out: list[VehicleSummary] = []
+    for v_id, vdf in df.groupby("vehicle_id"):
+        last_obs = float(vdf["_obs_delay"].iloc[0]) if "_obs_delay" in vdf.columns else 0.0
+        out.append(VehicleSummary(
+            vehicle_id=int(v_id),
+            vehicle_name=str(vdf["vehicle_name"].iloc[0]),
+            n_visits=int(len(vdf)),
+            completed=int((vdf["status"] == "completed").sum()),
+            pending=int((vdf["status"] == "pending").sum()),
+            red_simpliroute=int(((vdf["status"] == "pending") & (vdf["alert_slack"] == "RED")).sum()),
+            vd_alerts=int(vdf["alert_valuedata"].sum()),
+            last_observed_delay_min=float(round(last_obs, 1)),
+            incident_extra_min=float(STATE.manual_incidents.get(int(v_id), 0.0)),
+        ))
+    out.sort(key=lambda x: x.vehicle_id)
+    return out
+
+
+@app.get("/api/model/metrics", response_model=ModelMetrics)
+def get_model_metrics():
+    _require_ready()
+    m = STATE.boot["metrics"]
+    return ModelMetrics(
+        auc=m["auc"],
+        brier=m["brier"],
+        confusion_matrix=m["confusion_matrix"],
+        calibration_curve=m["calibration_curve"],
+        n_train=m["n_train"],
+        n_val=m["n_val"],
+        base_rate_train=m["base_rate_train"],
+        base_rate_val=m["base_rate_val"],
+    )
+
+
+@app.get("/api/model/importance", response_model=list[FeatureImportance])
+def get_model_importance(top_k: int = Query(default=15, ge=1, le=50)):
+    _require_ready()
+    feats = STATE.boot["feature_names"]
+    importances = np.abs(STATE.shap_vals).mean(axis=0)
+    pairs = list(zip(feats, importances))
+    pairs.sort(key=lambda x: x[1], reverse=True)
+    pairs = pairs[:top_k]
+    return [
+        FeatureImportance(name=n, display=humanize_feature(n), importance=float(v))
+        for n, v in pairs
+    ]
+
+
+@app.post("/api/control/incident")
+def post_incident(req: IncidentRequest):
+    _require_ready()
+    STATE.add_incident(req.vehicle_id, req.extra_min)
+    return {"status": "ok", "incidents": STATE.manual_incidents}
+
+
+@app.post("/api/control/reset")
+def post_reset():
+    _require_ready()
+    STATE.reset_day()
+    return {"status": "ok", "day_seed": STATE.day_seed, "sim_clock": STATE.sim_clock.isoformat()}
+
+
+@app.post("/api/control/clock")
+def post_clock(req: ClockRequest):
+    _require_ready()
+    STATE.set_clock(sim_clock=req.sim_clock, offset_minutes=req.offset_minutes)
+    if req.auto_advance is not None:
+        STATE.set_auto_advance(req.auto_advance)
+    return {
+        "status": "ok",
+        "sim_clock": STATE.sim_clock.isoformat(),
+        "auto_advance": STATE.auto_advance,
+    }
+
+
+# =============================================================================
+# Maestros (estilo SimpliRoute)
+# =============================================================================
+@app.get("/api/drivers", response_model=list[Driver])
+def get_drivers():
+    _require_ready()
+    return STATE.drivers
+
+
+@app.get("/api/drivers/{driver_id}", response_model=Driver)
+def get_driver(driver_id: str):
+    _require_ready()
+    for d in STATE.drivers:
+        if d["driver_id"] == driver_id:
+            return d
+    raise HTTPException(status_code=404, detail=f"driver {driver_id} not found")
+
+
+@app.get("/api/fleet/vehicles", response_model=list[VehicleExtended])
+def get_fleet_vehicles():
+    _require_ready()
+    return STATE.vehicles_ext
+
+
+@app.get("/api/fleet/vehicles/{vehicle_id}", response_model=VehicleExtended)
+def get_fleet_vehicle(vehicle_id: int):
+    _require_ready()
+    for v in STATE.vehicles_ext:
+        if v["vehicle_id"] == vehicle_id:
+            return v
+    raise HTTPException(status_code=404, detail=f"vehicle {vehicle_id} not found")
+
+
+@app.get("/api/clients", response_model=list[ClientMaster])
+def get_clients(
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+    only_problem_zone: bool = Query(default=False),
+    min_fail_rate: float = Query(default=0.0, ge=0.0, le=1.0),
+    search: str | None = Query(default=None),
+):
+    _require_ready()
+    items = STATE.clients_master
+    if only_problem_zone:
+        items = [c for c in items if c["is_problem_zone"]]
+    if min_fail_rate > 0:
+        items = [c for c in items if c["fail_rate_60d"] >= min_fail_rate]
+    if search:
+        s = search.lower()
+        items = [c for c in items if s in c["title"].lower() or s in c["customer_id"].lower()]
+    return items[offset:offset + limit]
+
+
+@app.get("/api/clients/{customer_id}", response_model=ClientMaster)
+def get_client(customer_id: str):
+    _require_ready()
+    for c in STATE.clients_master:
+        if c["customer_id"] == customer_id:
+            return c
+    raise HTTPException(status_code=404, detail=f"client {customer_id} not found")
+
+
+# =============================================================================
+# Stream de eventos en vivo
+# =============================================================================
+@app.get("/api/events/stream", response_model=list[StreamEvent])
+def get_events(
+    limit: int = Query(default=50, ge=1, le=200),
+    types: list[str] | None = Query(default=None),
+):
+    return EVENTS.recent(limit=limit, types=types)
