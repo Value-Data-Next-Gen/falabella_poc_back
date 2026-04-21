@@ -69,6 +69,10 @@ class AppState:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _ticks: int = 0
 
+    # vehicle_id -> empresa_id (mapeo determinístico para multi-tenancy POC)
+    vehicle_empresa_map: dict[int, int] = field(default_factory=dict)
+    empresas: list[dict] = field(default_factory=list)
+
     # ----- Lifecycle -----
     def init(self) -> None:
         self.boot = train_model()
@@ -80,11 +84,53 @@ class AppState:
         self.drivers = gen_drivers()
         self.vehicles_ext = gen_vehicles_extended(self.drivers)
         self.clients_master = build_client_master(self.boot["customers"], self.historical_df)
+        self._load_empresas_and_assign()
 
         self.today = self.boot["today"]
         self.sim_clock = datetime.combine(self.today, DAY_START)
         self._regen_plan()
         self._refresh_snapshot(emit_events=False)
+
+    def _load_empresas_and_assign(self) -> None:
+        """Carga empresas desde fpoc y asigna cada vehicle_id a una empresa (round-robin).
+
+        Si SQL no está accesible (dev sin credenciales), asigna todo a empresa 0
+        para que la app siga funcional sin multi-tenancy.
+        """
+        try:
+            import os
+            import pyodbc
+            conn_str = (
+                f"DRIVER={{{os.environ.get('DB_DRIVER', 'ODBC Driver 17 for SQL Server')}}};"
+                f"SERVER={os.environ['DB_SERVER'].replace('tcp:', '')};"
+                f"DATABASE={os.environ['DB_NAME']};"
+                f"UID={os.environ['DB_USER']};"
+                f"PWD={os.environ['DB_PASSWORD']};"
+                "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=10;"
+            )
+            with pyodbc.connect(conn_str) as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT empresa_id, nombre FROM fpoc.empresas_transporte WHERE activo = 1 ORDER BY empresa_id"
+                )
+                rows = cur.fetchall()
+            self.empresas = [{"empresa_id": int(r[0]), "nombre": r[1]} for r in rows]
+        except Exception as e:  # noqa: BLE001
+            from loguru import logger
+            logger.warning(f"[state] no pude cargar empresas desde SQL: {e}. Multi-tenancy deshabilitado.")
+            self.empresas = [{"empresa_id": 0, "nombre": "Default"}]
+
+        vehicle_ids = sorted(int(v["vehicle_id"]) for v in self.vehicles_ext)
+        n_empresas = len(self.empresas)
+        self.vehicle_empresa_map = {
+            vid: self.empresas[i % n_empresas]["empresa_id"]
+            for i, vid in enumerate(vehicle_ids)
+        }
+
+    def vehicle_ids_for_empresa(self, empresa_id: int | None) -> list[int]:
+        if empresa_id is None:
+            return list(self.vehicle_empresa_map.keys())
+        return [vid for vid, eid in self.vehicle_empresa_map.items() if eid == empresa_id]
 
     def _regen_historical_for_masters(self) -> pd.DataFrame:
         """Regenera 60 dias para metricas de clientes. Costoso pero solo una vez."""
@@ -135,10 +181,27 @@ class AppState:
         self._prev_alert_slack = dict(zip(df["tracking_id"].astype(str), df["alert_slack"].astype(str)))
 
     def _emit_transitions(self, new_df: pd.DataFrame) -> None:
-        """Compara new_df vs estado previo y emite eventos."""
+        """Compara new_df vs estado previo y emite eventos + auto-notify."""
         assert self.sim_clock is not None
+        # Preparamos lote de notificaciones para esta iteración (dedupe en memoria)
+        pending_notifs: list[dict] = []
         for _, row in new_df.iterrows():
             tid = str(row["tracking_id"])
+
+            # Detectar alerta anticipada recién disparada → candidato a notificación
+            prev_vd_for_notif = self._prev_alert_vd.get(tid, False)
+            if (not prev_vd_for_notif) and bool(row["alert_valuedata"]):
+                pending_notifs.append({
+                    "tracking_id": tid,
+                    "vehicle_id": int(row["vehicle_id"]),
+                    "vehicle_name": str(row["vehicle_name"]),
+                    "title": str(row["title"]),
+                    "window_end": str(row["window_end"]),
+                    "eta": str(row["estimated_time_arrival"]),
+                    "p_fallo": float(row["p_fallo"]),
+                    "slack_min": float(row["slack_min"]),
+                    "reason": "alert_valuedata",
+                })
 
             # Status transition: pending -> completed
             prev_status = self._prev_status.get(tid)
@@ -201,6 +264,107 @@ class AppState:
                     "window_end": str(row["window_end"]),
                     "slack_min": float(round(row["slack_min"], 1)),
                 })
+
+        # Auto-notify (después de emitir eventos)
+        self._auto_notify_alerts(pending_notifs)
+
+    def _auto_notify_alerts(self, notifs: list[dict]) -> None:
+        """Para cada alerta recién disparada, busca usuarios con umbrales que
+        coincidan y les envía WhatsApp (via notifications.send_whatsapp).
+
+        Gated por env var ENABLE_AUTO_NOTIFY (default false hasta que Twilio esté OK).
+        Si está apagado, saltamos todo el work para no bloquear el tick del scheduler.
+        """
+        import os as _os
+        if _os.environ.get("ENABLE_AUTO_NOTIFY", "false").lower() != "true":
+            return
+        if not notifs:
+            return
+        try:
+            import pyodbc  # noqa: F401
+            from db import get_conn
+            from notifications import send_whatsapp
+            from vip import is_vip
+        except Exception as e:  # noqa: BLE001
+            from loguru import logger
+            logger.warning(f"[auto-notify] imports fallaron: {e}")
+            return
+
+        from loguru import logger
+
+        for n in notifs:
+            empresa_id = self.vehicle_empresa_map.get(int(n["vehicle_id"]))
+            vip = is_vip(title=n.get("title"), customer_id=None, reference=None, empresa_id=empresa_id)
+            try:
+                with get_conn() as cn:
+                    cur = cn.cursor()
+                    # Usuarios candidatos: su empresa o falabella_* + notify on
+                    cur.execute(
+                        """
+                        SELECT user_id, phone_e164, notify_pfallo_threshold,
+                               notify_slack_min_threshold, notify_only_vip
+                        FROM fpoc.users
+                        WHERE activo = 1
+                          AND notify_whatsapp = 1
+                          AND phone_e164 IS NOT NULL
+                          AND LEN(phone_e164) > 0
+                          AND (
+                              role IN ('falabella_admin', 'falabella_ops')
+                              OR empresa_id = ?
+                          )
+                        """,
+                        empresa_id,
+                    )
+                    users = cur.fetchall()
+
+                targets: list[tuple[int, str]] = []
+                for u in users:
+                    if bool(u.notify_only_vip) and not vip:
+                        continue
+                    umbral_p = float(u.notify_pfallo_threshold)
+                    umbral_s = int(u.notify_slack_min_threshold)
+                    # dispara si p_fallo >= umbral_p  O  slack <= umbral_s
+                    if n["p_fallo"] >= umbral_p or n["slack_min"] <= umbral_s or vip:
+                        targets.append((int(u.user_id), u.phone_e164))
+
+                if not targets:
+                    continue
+
+                import os as _os
+                content_sid = _os.environ.get("TWILIO_CONTENT_SID", "")
+                vip_tag = " VIP" if vip else ""
+                if content_sid:
+                    # Modo template: mapeo de variables {{1}}={fecha} {{2}}={hora}.
+                    # Ajustar este mapping al template real si cambia.
+                    send_whatsapp(
+                        content_sid=content_sid,
+                        content_variables={
+                            "1": n["window_end"][:10] if n["window_end"] else "hoy",
+                            "2": n["eta"][:5] if n["eta"] else "",
+                        },
+                        targets=targets,
+                        subject=f"Alerta{vip_tag} {n['title']}",
+                        tracking_id=n["tracking_id"],
+                        triggered_by="vip" if vip else "auto_threshold",
+                    )
+                else:
+                    body = (
+                        f"[Falabella ValueData]{vip_tag} Alerta anticipada\n"
+                        f"Cliente: {n['title']}\n"
+                        f"Vehiculo: {n['vehicle_name']}\n"
+                        f"Window end: {n['window_end']}  ETA: {n['eta']}\n"
+                        f"Riesgo: {n['p_fallo']*100:.0f}%  Slack: {n['slack_min']:.0f}min\n"
+                        f"Sugerencia: llamar al cliente."
+                    )
+                    send_whatsapp(
+                        body=body,
+                        targets=targets,
+                        subject=f"Alerta {n['title']}",
+                        tracking_id=n["tracking_id"],
+                        triggered_by="vip" if vip else "auto_threshold",
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[auto-notify] error en {n['tracking_id']}: {e}")
 
     # ----- Mutations -----
     def tick(self) -> None:

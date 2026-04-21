@@ -21,16 +21,26 @@ Endpoints (prefijo /api):
 """
 from __future__ import annotations
 
+import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException, Query
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
+
+# Cargar .env antes de importar state/auth (que leen DB_*)
+for _p in (Path(__file__).resolve().parent / ".env",
+           Path(__file__).resolve().parent.parent / ".env"):
+    if _p.exists():
+        load_dotenv(_p)
+        break
 
 from pipeline import (
     ANTICIPATION_HOURS,
@@ -58,6 +68,12 @@ from schemas import (
     VisitExplanation,
 )
 from state import STATE
+from auth import (
+    CurrentUser,
+    current_user,
+    empresas_router,
+    router as auth_router,
+)
 
 logger.remove()
 logger.add(sys.stderr, level="INFO")
@@ -95,13 +111,39 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from seguimiento import router as seguimiento_router
+from notifications import router as notifications_router
+from preferences import router as preferences_router
+from vip import router as vip_router
+from priorities import router as priorities_router
+from plan_diario import router as plan_diario_router
+
+app.include_router(auth_router)
+app.include_router(empresas_router)
+app.include_router(seguimiento_router)
+app.include_router(notifications_router)
+app.include_router(preferences_router)
+app.include_router(vip_router)
+app.include_router(priorities_router)
+app.include_router(plan_diario_router)
+
+
+def _scope_df(df, user: CurrentUser):
+    """Filtra el df a los vehicles de la empresa del user (transport_manager).
+    Los usuarios falabella_* ven todo."""
+    if user.is_falabella:
+        return df
+    allowed = set(STATE.vehicle_ids_for_empresa(user.empresa_id))
+    return df[df["vehicle_id"].isin(allowed)]
 
 
 # =============================================================================
@@ -148,9 +190,9 @@ def health():
 
 
 @app.get("/api/state", response_model=StateResponse)
-def get_state():
+def get_state(user: CurrentUser = Depends(current_user)):
     _require_ready()
-    df = STATE.snapshot_df
+    df = _scope_df(STATE.snapshot_df, user)
     return StateResponse(
         sim_clock=STATE.sim_clock,
         today=STATE.today.isoformat(),
@@ -165,9 +207,12 @@ def get_state():
 
 
 @app.get("/api/kpis", response_model=KPIs)
-def get_kpis(vehicle_id: list[int] | None = Query(default=None)):
+def get_kpis(
+    vehicle_id: list[int] | None = Query(default=None),
+    user: CurrentUser = Depends(current_user),
+):
     _require_ready()
-    df = STATE.snapshot_df
+    df = _scope_df(STATE.snapshot_df, user)
     if vehicle_id:
         df = df[df["vehicle_id"].isin(vehicle_id)]
     total = int(len(df))
@@ -202,9 +247,10 @@ def get_visits(
     vehicle_id: list[int] | None = Query(default=None),
     status: str | None = Query(default=None),
     only_alerts: bool = Query(default=False),
+    user: CurrentUser = Depends(current_user),
 ):
     _require_ready()
-    df = STATE.snapshot_df
+    df = _scope_df(STATE.snapshot_df, user)
     if vehicle_id:
         df = df[df["vehicle_id"].isin(vehicle_id)]
     if status:
@@ -215,9 +261,12 @@ def get_visits(
 
 
 @app.get("/api/alerts/anticipated", response_model=list[AnticipatedAlert])
-def get_anticipated_alerts(limit: int = Query(default=20, ge=1, le=200)):
+def get_anticipated_alerts(
+    limit: int = Query(default=20, ge=1, le=200),
+    user: CurrentUser = Depends(current_user),
+):
     _require_ready()
-    df = STATE.snapshot_df
+    df = _scope_df(STATE.snapshot_df, user)
     shap_vals = STATE.shap_vals
     feats = STATE.boot["feature_names"]
     alerts = df[df["alert_valuedata"]].sort_values("p_fallo", ascending=False).head(limit)
@@ -246,9 +295,9 @@ def get_anticipated_alerts(limit: int = Query(default=20, ge=1, le=200)):
 
 
 @app.get("/api/visits/{tracking_id}/explanation", response_model=VisitExplanation)
-def get_explanation(tracking_id: str):
+def get_explanation(tracking_id: str, user: CurrentUser = Depends(current_user)):
     _require_ready()
-    df = STATE.snapshot_df
+    df = _scope_df(STATE.snapshot_df, user)
     matching = df[df["tracking_id"] == tracking_id]
     if matching.empty:
         raise HTTPException(status_code=404, detail=f"tracking_id {tracking_id} not found")
@@ -270,9 +319,9 @@ def get_explanation(tracking_id: str):
 
 
 @app.get("/api/vehicles", response_model=list[VehicleSummary])
-def get_vehicles():
+def get_vehicles(user: CurrentUser = Depends(current_user)):
     _require_ready()
-    df = STATE.snapshot_df
+    df = _scope_df(STATE.snapshot_df, user)
     out: list[VehicleSummary] = []
     for v_id, vdf in df.groupby("vehicle_id"):
         last_obs = float(vdf["_obs_delay"].iloc[0]) if "_obs_delay" in vdf.columns else 0.0
@@ -322,21 +371,30 @@ def get_model_importance(top_k: int = Query(default=15, ge=1, le=50)):
 
 
 @app.post("/api/control/incident")
-def post_incident(req: IncidentRequest):
+def post_incident(req: IncidentRequest, user: CurrentUser = Depends(current_user)):
     _require_ready()
+    # transport_manager solo puede inyectar incidentes a sus propios vehículos
+    if not user.is_falabella:
+        allowed = set(STATE.vehicle_ids_for_empresa(user.empresa_id))
+        if req.vehicle_id not in allowed:
+            raise HTTPException(status_code=403, detail="vehicle fuera de tu empresa")
     STATE.add_incident(req.vehicle_id, req.extra_min)
     return {"status": "ok", "incidents": STATE.manual_incidents}
 
 
 @app.post("/api/control/reset")
-def post_reset():
+def post_reset(user: CurrentUser = Depends(current_user)):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="solo admin puede resetear")
     _require_ready()
     STATE.reset_day()
     return {"status": "ok", "day_seed": STATE.day_seed, "sim_clock": STATE.sim_clock.isoformat()}
 
 
 @app.post("/api/control/clock")
-def post_clock(req: ClockRequest):
+def post_clock(req: ClockRequest, user: CurrentUser = Depends(current_user)):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="solo admin puede cambiar el reloj")
     _require_ready()
     STATE.set_clock(sim_clock=req.sim_clock, offset_minutes=req.offset_minutes)
     if req.auto_advance is not None:
