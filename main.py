@@ -99,10 +99,15 @@ async def lifespan(_: FastAPI):
     )
     scheduler.start()
     logger.info(f"Scheduler started: tick every {SCHEDULER_TICK_SEC}s")
+
+    # Live SQL generator (inserta rows aleatorias en fpoc.simpli_visits)
+    live_gen_start()
+
     try:
         yield
     finally:
         scheduler.shutdown(wait=False)
+        live_gen_stop()
 
 
 app = FastAPI(
@@ -126,6 +131,12 @@ from preferences import router as preferences_router
 from vip import router as vip_router
 from priorities import router as priorities_router
 from plan_diario import router as plan_diario_router
+from watchlist import router as watchlist_router
+from live_generator import (
+    router as live_gen_router,
+    start_scheduler as live_gen_start,
+    stop_scheduler as live_gen_stop,
+)
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -135,6 +146,8 @@ app.include_router(preferences_router)
 app.include_router(vip_router)
 app.include_router(priorities_router)
 app.include_router(plan_diario_router)
+app.include_router(watchlist_router)
+app.include_router(live_gen_router)
 
 
 def _scope_df(df, user: CurrentUser):

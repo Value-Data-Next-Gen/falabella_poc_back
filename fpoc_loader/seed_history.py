@@ -143,17 +143,31 @@ def generate_day(cn: pyodbc.Connection, template_date: date, target_date: date, 
 
 def main(argv: list[str]) -> int:
     n_days = int(argv[1]) if len(argv) > 1 else 30
+    # Opcional: python seed_history.py 90 2026-04-19
+    template_arg = argv[2] if len(argv) > 2 else None
     rng = random.Random(42)
 
     with get_conn() as cn:
         cur = cn.cursor()
-        cur.execute("SELECT MAX(planned_date), COUNT(*) FROM fpoc.simpli_visits")
-        max_date, total = cur.fetchone()
-        if not max_date:
-            print("No hay datos en fpoc.simpli_visits. Carga el xlsx primero.")
-            return 1
-        template = max_date
+        if template_arg:
+            from datetime import date as _d
+            template = _d.fromisoformat(template_arg)
+            cur.execute("SELECT COUNT(*) FROM fpoc.simpli_visits WHERE planned_date = ?", template)
+            total = cur.fetchone()[0]
+        else:
+            # Auto: la fecha con MÁS filas (más representativa que MAX)
+            cur.execute(
+                "SELECT TOP 1 planned_date, COUNT(*) FROM fpoc.simpli_visits "
+                "GROUP BY planned_date ORDER BY COUNT(*) DESC"
+            )
+            row = cur.fetchone()
+            if not row:
+                print("No hay datos en fpoc.simpli_visits. Carga el xlsx primero.")
+                return 1
+            template, total = row
         print(f"[template] fecha={template} filas={total}")
+        if total < 100:
+            print(f"  (template muy chico, mejor pasá una fecha explícita)")
 
         total_inserted = 0
         for offset in range(1, n_days + 1):
@@ -164,7 +178,7 @@ def main(argv: list[str]) -> int:
 
         cur.execute("SELECT MIN(planned_date), MAX(planned_date), COUNT(*) FROM fpoc.simpli_visits")
         mn, mx, tot = cur.fetchone()
-        print(f"[done] rango {mn} → {mx} · total {tot} filas")
+        print(f"[done] rango {mn} -> {mx} | total {tot} filas")
     return 0
 
 

@@ -125,6 +125,20 @@ class WhatsAppResponse(BaseModel):
     results: list[NotificationResult]
 
 
+class TrackingNotifSummary(BaseModel):
+    tracking_id: str
+    count: int
+    sent_count: int
+    last_status: str
+    last_to: str
+    last_body: str
+    last_triggered_by: str
+    last_created_at: str
+    last_twilio_sid: Optional[str] = None
+    last_content_sid: Optional[str] = None
+    last_content_variables: Optional[dict] = None
+
+
 class NotificationLogRow(BaseModel):
     notification_id: int
     user_id: Optional[int] = None
@@ -400,6 +414,101 @@ def get_log(
         )
         for r in rows
     ]
+
+
+@router.get("/by-trackings", response_model=dict[str, TrackingNotifSummary])
+def by_trackings(
+    ids: str = Query(..., description="tracking_ids separados por coma"),
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """Para cada tracking_id, devuelve resumen + última notificación.
+    Solo incluye tracking_ids que tengan al menos un envío registrado."""
+    id_list = [s.strip() for s in ids.split(",") if s.strip()]
+    if not id_list:
+        return {}
+    # SQL Server: IN con 2100 params max. Batching.
+    out: dict[str, dict] = {}
+    with get_conn() as cn:
+        cur = cn.cursor()
+        for i in range(0, len(id_list), 500):
+            chunk = id_list[i:i + 500]
+            marks = ",".join(["?"] * len(chunk))
+            # Window function: ROW_NUMBER para la última notificación por tracking_id
+            if user.is_falabella:
+                cur.execute(
+                    f"""
+                    WITH ranked AS (
+                      SELECT l.*, ROW_NUMBER() OVER (
+                        PARTITION BY l.tracking_id ORDER BY l.created_at DESC
+                      ) AS rn
+                      FROM fpoc.notifications_log l
+                      WHERE l.tracking_id IN ({marks})
+                    ),
+                    counts AS (
+                      SELECT tracking_id, COUNT(*) AS total,
+                             SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent_count
+                      FROM fpoc.notifications_log
+                      WHERE tracking_id IN ({marks})
+                      GROUP BY tracking_id
+                    )
+                    SELECT r.tracking_id, c.total, c.sent_count,
+                           r.status, r.to_number, r.body, r.triggered_by, r.created_at,
+                           r.twilio_sid, r.content_sid, r.content_variables
+                    FROM ranked r
+                    INNER JOIN counts c ON c.tracking_id = r.tracking_id
+                    WHERE r.rn = 1
+                    """,
+                    *chunk, *chunk,
+                )
+            else:
+                cur.execute(
+                    f"""
+                    WITH ranked AS (
+                      SELECT l.*, ROW_NUMBER() OVER (
+                        PARTITION BY l.tracking_id ORDER BY l.created_at DESC
+                      ) AS rn
+                      FROM fpoc.notifications_log l
+                      INNER JOIN fpoc.users u ON u.user_id = l.user_id
+                      WHERE l.tracking_id IN ({marks}) AND u.empresa_id = ?
+                    ),
+                    counts AS (
+                      SELECT l.tracking_id, COUNT(*) AS total,
+                             SUM(CASE WHEN l.status='sent' THEN 1 ELSE 0 END) AS sent_count
+                      FROM fpoc.notifications_log l
+                      INNER JOIN fpoc.users u ON u.user_id = l.user_id
+                      WHERE l.tracking_id IN ({marks}) AND u.empresa_id = ?
+                      GROUP BY l.tracking_id
+                    )
+                    SELECT r.tracking_id, c.total, c.sent_count,
+                           r.status, r.to_number, r.body, r.triggered_by, r.created_at,
+                           r.twilio_sid, r.content_sid, r.content_variables
+                    FROM ranked r
+                    INNER JOIN counts c ON c.tracking_id = r.tracking_id
+                    WHERE r.rn = 1
+                    """,
+                    *chunk, user.empresa_id, *chunk, user.empresa_id,
+                )
+            for r in cur.fetchall():
+                cv = None
+                if r.content_variables:
+                    try:
+                        cv = json.loads(r.content_variables)
+                    except Exception:  # noqa: BLE001
+                        cv = None
+                out[r.tracking_id] = {
+                    "tracking_id": r.tracking_id,
+                    "count": int(r.total),
+                    "sent_count": int(r.sent_count or 0),
+                    "last_status": r.status,
+                    "last_to": r.to_number,
+                    "last_body": r.body,
+                    "last_triggered_by": r.triggered_by,
+                    "last_created_at": r.created_at.isoformat(),
+                    "last_twilio_sid": r.twilio_sid,
+                    "last_content_sid": r.content_sid,
+                    "last_content_variables": cv,
+                }
+    return out
 
 
 @router.get("/config")

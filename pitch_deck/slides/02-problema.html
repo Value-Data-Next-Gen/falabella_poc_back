@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+html { background: #ffffff; }
+body {
+  width: 720pt; height: 405pt; margin: 0; padding: 0;
+  font-family: Arial, sans-serif;
+  background: #F5F5F5;
+  display: flex;
+  color: #1D1D1B;
+}
+.page { margin: 36pt 48pt; width: 624pt; }
+.eyebrow {
+  font-size: 10pt; letter-spacing: 3pt; color: #159349;
+  text-transform: uppercase; font-weight: bold;
+  margin: 0 0 8pt 0;
+}
+h1 {
+  font-size: 32pt; font-weight: bold; color: #1D1D1B;
+  margin: 0 0 32pt 0;
+}
+.cards { display: flex; gap: 16pt; }
+.card {
+  flex: 1; background: #ffffff; border-radius: 8pt;
+  padding: 20pt; border-top: 6pt solid #CC2222;
+  box-shadow: 2pt 2pt 10pt rgba(0, 0, 0, 0.08);
+}
+.card.mid { border-top-color: #FFCB05; }
+.card.right { border-top-color: #159349; }
+.num {
+  font-size: 40pt; font-weight: bold; color: #CC2222;
+  margin: 0 0 6pt 0; line-height: 1;
+}
+.card.mid .num { color: #E69600; }
+.card.right .num { color: #159349; }
+.card h3 {
+  font-size: 15pt; font-weight: bold; margin: 0 0 10pt 0;
+  color: #1D1D1B;
+}
+.card p {
+  font-size: 11pt; color: #555555; line-height: 1.5; margin: 0;
+}
+.footer {
+  margin-top: 24pt; font-size: 11pt; color: #777777;
+  font-style: italic;
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <p class="eyebrow">El problema</p>
+  <h1>Las entregas tardías cuestan dinero y confianza</h1>
+  <div class="cards">
+    <div class="card">
+      <p class="num">~15%</p>
+      <h3>Rutas anómalas / día</h3>
+      <p>Reflejado en la data real de SimpliRoute: ETAs inconsistentes, primer punto lejano, fechas desalineadas. Se detectan tarde.</p>
+    </div>
+    <div class="card mid">
+      <p class="num">$8.000</p>
+      <h3>Costo por rescate</h3>
+      <p>Reagendar una visita fallida cuesta en promedio esta cifra en CLP, entre logística y compensación al cliente.</p>
+    </div>
+    <div class="card right">
+      <p class="num">2-4h</p>
+      <h3>Ventana de acción</h3>
+      <p>Antes del window_end hay tiempo para intervenir (llamar cliente, priorizar ruta). Hoy la alerta llega cuando ya falló.</p>
+    </div>
+  </div>
+  <p class="footer">No hay forma de saber en tiempo real cuáles visitas van a fallar, ni de escalar antes que pasen.</p>
+</div>
+</body>
+</html>

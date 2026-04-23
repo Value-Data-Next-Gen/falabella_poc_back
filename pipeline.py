@@ -27,8 +27,12 @@ N_VEHICLES = 12
 N_UNIQUE_CUSTOMERS = 800
 DEPOT = (-33.45, -70.66)
 COMUNA_GRID = 0.05
-PRICE_PER_RESCUE_CLP = 8000
-RESCUE_RATE = 0.60
+# PLACEHOLDER POC — sin fuente oficial.
+# Reemplazar por el costo real de reagendamiento que entregue el área de
+# operaciones de Falabella. Mientras tanto el KPI "Delta de rescate" queda
+# oculto en el frontend para no mostrar un número especulativo al cliente.
+PRICE_PER_RESCUE_CLP = 8000        # <-- placeholder, no usar en comunicación
+RESCUE_RATE = 0.60                 # <-- placeholder, supuesto de eficacia VD
 ALERT_THRESHOLD = 0.50
 ANTICIPATION_HOURS = 2.0
 DAY_START = dtime(9, 0)

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+html { background: #ffffff; }
+body {
+  width: 720pt; height: 405pt; margin: 0; padding: 0;
+  font-family: Arial, sans-serif;
+  background: #ffffff;
+  display: flex;
+  color: #1D1D1B;
+}
+.page { margin: 36pt 48pt; width: 624pt; }
+.eyebrow {
+  font-size: 10pt; letter-spacing: 3pt; color: #159349;
+  text-transform: uppercase; font-weight: bold;
+  margin: 0 0 8pt 0;
+}
+h1 { font-size: 32pt; font-weight: bold; margin: 0 0 24pt 0; color: #1D1D1B; }
+.blocks { display: flex; gap: 12pt; margin-bottom: 20pt; }
+.block {
+  flex: 1; background: #159349; color: #ffffff;
+  border-radius: 8pt; padding: 20pt;
+  border-left: 6pt solid #FFCB05;
+}
+.block .step {
+  font-size: 10pt; letter-spacing: 2pt; font-weight: bold;
+  opacity: 0.8; margin: 0 0 4pt 0;
+}
+.block h3 {
+  font-size: 18pt; font-weight: bold; margin: 0 0 8pt 0;
+}
+.block p {
+  font-size: 11pt; line-height: 1.5; margin: 0;
+  color: #F5F5F5;
+}
+.summary {
+  background: #F5F5F5; padding: 16pt; border-radius: 6pt;
+  border-left: 4pt solid #1D1D1B; margin-top: 6pt;
+}
+.summary p {
+  font-size: 12pt; color: #1D1D1B; margin: 0; line-height: 1.5;
+}
+.summary b { color: #159349; }
+</style>
+</head>
+<body>
+<div class="page">
+  <p class="eyebrow">Qué hace la plataforma</p>
+  <h1>Detectar, priorizar, notificar — antes que la entrega falle</h1>
+  <div class="blocks">
+    <div class="block">
+      <p class="step">01 · DETECTAR</p>
+      <h3>Predicción P(fallo)</h3>
+      <p>Modelo XGBoost calibrado con SHAP. Para cada visita pendiente calcula probabilidad de incumplir la ventana, con explicación de por qué.</p>
+    </div>
+    <div class="block">
+      <p class="step">02 · PRIORIZAR</p>
+      <h3>Urgency Score</h3>
+      <p>Combina p_fallo + slack + VIP + prioridad + alerta SimpliRoute. Triage visual en Crítico, Alto, Medio. El operador sabe en 3 segundos qué atender.</p>
+    </div>
+    <div class="block">
+      <p class="step">03 · NOTIFICAR</p>
+      <h3>WhatsApp Twilio</h3>
+      <p>Envío automático o manual al transportista o cliente. Umbrales configurables por usuario. Templates aprobados para producción.</p>
+    </div>
+  </div>
+  <div class="summary">
+    <p><b>Resultado:</b> cada alerta se convierte en acción (llamar cliente, reordenar ruta, escalar prioridad) antes que expire el slack. Trazabilidad completa en Azure SQL.</p>
+  </div>
+</div>
+</body>
+</html>
