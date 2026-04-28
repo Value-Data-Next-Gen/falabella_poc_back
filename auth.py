@@ -18,11 +18,13 @@ from typing import Optional
 
 import jwt
 import pandas as pd
-import pyodbc
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from loguru import logger
 from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr
+
+from db import get_conn
 
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me-for-prod")
@@ -34,20 +36,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 empresas_router = APIRouter(prefix="/api/empresas", tags=["empresas"])
 
 
-# ---------- Conexión SQL ----------
-def _db_conn_str() -> str:
-    return (
-        f"DRIVER={{{os.environ.get('DB_DRIVER', 'ODBC Driver 17 for SQL Server')}}};"
-        f"SERVER={os.environ['DB_SERVER'].replace('tcp:', '')};"
-        f"DATABASE={os.environ['DB_NAME']};"
-        f"UID={os.environ['DB_USER']};"
-        f"PWD={os.environ['DB_PASSWORD']};"
-        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
-    )
-
-
-def _db() -> pyodbc.Connection:
-    return pyodbc.connect(_db_conn_str(), autocommit=False)
+def _db():
+    return get_conn()
 
 
 # ---------- Modelos ----------
@@ -177,10 +167,43 @@ def _load_user_by_id(user_id: int) -> Optional[dict]:
         }
 
 
+def _extract_request_meta(request: Request | None) -> tuple[Optional[str], Optional[str]]:
+    """Obtiene IP y user-agent. Prioriza X-Forwarded-For (ngrok / reverse proxy)."""
+    if request is None:
+        return None, None
+    fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else None)
+    ua = (request.headers.get("user-agent") or "")[:500] or None
+    return ip, ua
+
+
+def _log_access(
+    event_type: str,
+    *,
+    user_id: Optional[int] = None,
+    email: Optional[str] = None,
+    ip: Optional[str] = None,
+    ua: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Registra un evento de acceso. Nunca rompe el flujo si falla."""
+    try:
+        with _db() as cn:
+            cn.cursor().execute(
+                """INSERT INTO fpoc.access_log
+                     (event_type, user_id, email_attempted, ip_address, user_agent, error_detail)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                event_type, user_id, email, ip, ua, error,
+            )
+            cn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[access-log] falló registrar {event_type}: {e}")
+
+
 def _touch_last_login(user_id: int) -> None:
     with _db() as cn:
         cur = cn.cursor()
-        cur.execute("UPDATE fpoc.users SET last_login = SYSUTCDATETIME() WHERE user_id = ?", user_id)
+        cur.execute("UPDATE fpoc.users SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?", user_id)
         cn.commit()
 
 
@@ -222,10 +245,20 @@ def apply_scope(df: pd.DataFrame, user: CurrentUser, empresa_col: str = "empresa
 
 # ---------- Endpoints ----------
 @router.post("/login", response_model=LoginResponse)
-def login(req: LoginRequest) -> LoginResponse:
-    u = _load_user_by_email(req.email.lower())
-    if not u or not u["activo"] or not bcrypt.verify(req.password, u["password_hash"]):
+def login(req: LoginRequest, request: Request) -> LoginResponse:
+    ip, ua = _extract_request_meta(request)
+    email = req.email.lower()
+    u = _load_user_by_email(email)
+    if not u or not u["activo"]:
+        _log_access("login_failed", email=email, ip=ip, ua=ua,
+                    error="user not found or inactive")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
+    if not bcrypt.verify(req.password, u["password_hash"]):
+        _log_access("login_failed", user_id=u["user_id"], email=email, ip=ip, ua=ua,
+                    error="wrong password")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
+
+    _log_access("login_success", user_id=u["user_id"], email=u["email"], ip=ip, ua=ua)
     _touch_last_login(u["user_id"])
     token = create_token(u["user_id"], u["email"], u["role"], u["empresa_id"])
     me = MeResponse(
@@ -240,6 +273,101 @@ def me(u: CurrentUser = Depends(current_user)) -> MeResponse:
     return MeResponse(
         user_id=u.user_id, email=u.email, display_name=u.display_name,
         role=u.role, empresa_id=u.empresa_id, empresa_nombre=u.empresa_nombre,
+    )
+
+
+class AccessLogRow(BaseModel):
+    log_id: int
+    event_type: str
+    user_id: Optional[int] = None
+    user_email: Optional[str] = None
+    user_display_name: Optional[str] = None
+    user_role: Optional[str] = None
+    email_attempted: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    error_detail: Optional[str] = None
+    created_at: str
+
+
+@router.get("/access-log", response_model=list[AccessLogRow])
+def get_access_log(
+    limit: int = Query(default=100, ge=1, le=500),
+    event_type: Optional[str] = Query(default=None),
+    user: CurrentUser = Depends(require_admin),
+) -> list[AccessLogRow]:
+    params: list = []
+    where = ""
+    if event_type:
+        where = " WHERE l.event_type = ?"
+        params.append(event_type)
+    params.append(limit)
+    with _db() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            f"""
+            SELECT l.log_id, l.event_type, l.user_id,
+                   u.email AS user_email, u.display_name AS user_display_name,
+                   u.role AS user_role, l.email_attempted, l.ip_address,
+                   l.user_agent, l.error_detail, l.created_at
+            FROM fpoc.access_log l
+            LEFT JOIN fpoc.users u ON u.user_id = l.user_id
+            {where}
+            ORDER BY l.created_at DESC
+            LIMIT ?
+            """,
+            *params,
+        )
+        rows = cur.fetchall()
+    return [
+        AccessLogRow(
+            log_id=int(r.log_id),
+            event_type=r.event_type,
+            user_id=int(r.user_id) if r.user_id is not None else None,
+            user_email=r.user_email,
+            user_display_name=r.user_display_name,
+            user_role=r.user_role,
+            email_attempted=r.email_attempted,
+            ip_address=r.ip_address,
+            user_agent=r.user_agent,
+            error_detail=r.error_detail,
+            created_at=r.created_at.isoformat(),
+        )
+        for r in rows
+    ]
+
+
+class AccessSummary(BaseModel):
+    total_24h: int
+    success_24h: int
+    failed_24h: int
+    unique_users_24h: int
+    unique_ips_24h: int
+
+
+@router.get("/access-summary", response_model=AccessSummary)
+def get_access_summary(user: CurrentUser = Depends(require_admin)) -> AccessSummary:
+    with _db() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN event_type='login_success' THEN 1 ELSE 0 END) AS ok,
+              SUM(CASE WHEN event_type='login_failed' THEN 1 ELSE 0 END) AS fail,
+              COUNT(DISTINCT user_id) AS users,
+              COUNT(DISTINCT ip_address) AS ips
+            FROM fpoc.access_log
+            WHERE created_at >= datetime('now', '-24 hours')
+            """
+        )
+        r = cur.fetchone()
+    return AccessSummary(
+        total_24h=int(r.total or 0),
+        success_24h=int(r.ok or 0),
+        failed_24h=int(r.fail or 0),
+        unique_users_24h=int(r.users or 0),
+        unique_ips_24h=int(r.ips or 0),
     )
 
 

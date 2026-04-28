@@ -26,7 +26,9 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
 
 import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -137,6 +139,7 @@ from live_generator import (
     start_scheduler as live_gen_start,
     stop_scheduler as live_gen_stop,
 )
+from mantenedores import router as mantenedores_router
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -148,6 +151,7 @@ app.include_router(priorities_router)
 app.include_router(plan_diario_router)
 app.include_router(watchlist_router)
 app.include_router(live_gen_router)
+app.include_router(mantenedores_router)
 
 
 def _scope_df(df, user: CurrentUser):
@@ -395,13 +399,78 @@ def post_incident(req: IncidentRequest, user: CurrentUser = Depends(current_user
     return {"status": "ok", "incidents": STATE.manual_incidents}
 
 
+class ResetRequest(BaseModel):
+    start_date: Optional[str] = None
+    day_seed: Optional[int] = None
+    sim_minutes_per_tick: Optional[int] = Field(default=None, ge=1, le=120)
+
+
 @app.post("/api/control/reset")
-def post_reset(user: CurrentUser = Depends(current_user)):
+def post_reset(req: ResetRequest | None = None, user: CurrentUser = Depends(current_user)):
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="solo admin puede resetear")
     _require_ready()
-    STATE.reset_day()
-    return {"status": "ok", "day_seed": STATE.day_seed, "sim_clock": STATE.sim_clock.isoformat()}
+    start_date = None
+    if req and req.start_date:
+        from datetime import date as _date
+        start_date = _date.fromisoformat(req.start_date)
+    STATE.reset_day(start_date=start_date, day_seed=req.day_seed if req else None)
+    if req and req.sim_minutes_per_tick is not None:
+        STATE.set_sim_minutes_per_tick(req.sim_minutes_per_tick)
+    return {
+        "status": "ok",
+        "today": STATE.today.isoformat() if STATE.today else None,
+        "day_seed": STATE.day_seed,
+        "sim_clock": STATE.sim_clock.isoformat(),
+        "sim_minutes_per_tick": STATE.sim_minutes_per_tick,
+    }
+
+
+class StartDayRequest(BaseModel):
+    regen_plan: bool = False
+    day_seed: Optional[int] = None
+
+
+@app.post("/api/control/freeze")
+def post_freeze(user: CurrentUser = Depends(current_user)):
+    """Congela el día: setea sim_clock al inicio (09:00) y pausa auto_advance.
+    Ideal para pre-configurar prioridades antes de arrancar."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="solo admin puede congelar el día")
+    _require_ready()
+    from datetime import time as _time, datetime as _dt
+    day_start_dt = _dt.combine(STATE.today, _time(9, 0))  # type: ignore[arg-type]
+    STATE.set_clock(sim_clock=day_start_dt)
+    STATE.set_auto_advance(False)
+    return {
+        "status": "frozen",
+        "sim_clock": STATE.sim_clock.isoformat(),
+        "auto_advance": STATE.auto_advance,
+    }
+
+
+@app.post("/api/control/start-day")
+def post_start_day(req: StartDayRequest | None = None,
+                    user: CurrentUser = Depends(current_user)):
+    """Arranca el día: opcionalmente regenera el plan y resetea sim_clock al
+    inicio, luego activa auto_advance."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="solo admin puede iniciar el día")
+    _require_ready()
+    if req and req.regen_plan:
+        STATE.reset_day(day_seed=req.day_seed)
+    from datetime import time as _time, datetime as _dt
+    day_start_dt = _dt.combine(STATE.today, _time(9, 0))  # type: ignore[arg-type]
+    if STATE.sim_clock and STATE.sim_clock < day_start_dt:
+        STATE.set_clock(sim_clock=day_start_dt)
+    STATE.set_auto_advance(True)
+    return {
+        "status": "running",
+        "today": STATE.today.isoformat() if STATE.today else None,
+        "day_seed": STATE.day_seed,
+        "sim_clock": STATE.sim_clock.isoformat(),
+        "auto_advance": STATE.auto_advance,
+    }
 
 
 @app.post("/api/control/clock")

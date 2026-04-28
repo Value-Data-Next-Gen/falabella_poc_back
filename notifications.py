@@ -26,7 +26,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import pyodbc
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
@@ -156,7 +155,7 @@ class NotificationLogRow(BaseModel):
 
 # ---------- Helpers ----------
 def _log_notification(
-    cn: pyodbc.Connection,
+    cn,
     *,
     user_id: Optional[int],
     to_number: str,
@@ -177,8 +176,8 @@ def _log_notification(
           (user_id, to_number, channel, subject, body, tracking_id,
            twilio_sid, status, error_msg, triggered_by,
            content_sid, content_variables)
-        OUTPUT INSERTED.notification_id
         VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING notification_id
         """,
         user_id, to_number, subject, body, tracking_id,
         twilio_sid, status, error, triggered_by,
@@ -190,7 +189,7 @@ def _log_notification(
     return new_id
 
 
-def _resolve_recipients(cn: pyodbc.Connection, user_ids: list[int]) -> list[tuple[int, str]]:
+def _resolve_recipients(cn, user_ids: list[int]) -> list[tuple[int, str]]:
     """Devuelve [(user_id, phone_e164)] filtrando los que no tienen phone o notify_whatsapp=0."""
     if not user_ids:
         return []
@@ -376,10 +375,11 @@ def get_log(
         if user.is_falabella:
             cur.execute(
                 """
-                SELECT TOP (?) notification_id, user_id, to_number, channel, subject,
+                SELECT notification_id, user_id, to_number, channel, subject,
                        body, tracking_id, twilio_sid, status, error_msg, triggered_by, created_at
                 FROM fpoc.notifications_log
                 ORDER BY created_at DESC
+                LIMIT ?
                 """,
                 limit,
             )
@@ -387,14 +387,15 @@ def get_log(
             # solo las dirigidas a users de su empresa
             cur.execute(
                 """
-                SELECT TOP (?) l.notification_id, l.user_id, l.to_number, l.channel, l.subject,
+                SELECT l.notification_id, l.user_id, l.to_number, l.channel, l.subject,
                        l.body, l.tracking_id, l.twilio_sid, l.status, l.error_msg, l.triggered_by, l.created_at
                 FROM fpoc.notifications_log l
                 INNER JOIN fpoc.users u ON u.user_id = l.user_id
                 WHERE u.empresa_id = ?
                 ORDER BY l.created_at DESC
+                LIMIT ?
                 """,
-                limit, user.empresa_id,
+                user.empresa_id, limit,
             )
         rows = cur.fetchall()
     return [

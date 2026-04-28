@@ -81,8 +81,7 @@ class AppState:
         # Para ahorrar memoria: solo lo usamos al cargar masters.
         self.historical_df = self._regen_historical_for_masters()
 
-        self.drivers = gen_drivers()
-        self.vehicles_ext = gen_vehicles_extended(self.drivers)
+        self._load_maestros()
         self.clients_master = build_client_master(self.boot["customers"], self.historical_df)
         self._load_empresas_and_assign()
 
@@ -91,33 +90,147 @@ class AppState:
         self._regen_plan()
         self._refresh_snapshot(emit_events=False)
 
-    def _load_empresas_and_assign(self) -> None:
-        """Carga empresas desde fpoc y asigna cada vehicle_id a una empresa (round-robin).
+    def _load_maestros(self) -> None:
+        """Carga drivers/vehicles desde SQLite. Si están vacíos, cae al generador
+        in-memory (escenario sin seed aplicado).
 
-        Si SQL no está accesible (dev sin credenciales), asigna todo a empresa 0
-        para que la app siga funcional sin multi-tenancy.
+        También sobrescribe boot['customers'] desde fpoc_clients para que
+        gen_today_plan use los clientes editables. Si la tabla está vacía,
+        mantiene los del generador.
+        """
+        from db import get_conn
+        from loguru import logger
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    """
+                    SELECT driver_id, name, phone, license, vehicle_id, vehicle_name,
+                           rating, deliveries_30d, fail_rate_30d, joined_at, active,
+                           is_problem_hidden
+                    FROM fpoc.drivers
+                    ORDER BY vehicle_id
+                    """
+                )
+                drivers = [
+                    {
+                        "driver_id": r.driver_id,
+                        "name": r.name,
+                        "phone": r.phone,
+                        "license": r.license,
+                        "vehicle_id": int(r.vehicle_id),
+                        "vehicle_name": r.vehicle_name,
+                        "rating": float(r.rating),
+                        "deliveries_30d": int(r.deliveries_30d),
+                        "fail_rate_30d": float(r.fail_rate_30d),
+                        "joined_at": r.joined_at if isinstance(r.joined_at, str) else (r.joined_at.isoformat() if r.joined_at else None),
+                        "active": bool(r.active),
+                        "is_problem_hidden": bool(r.is_problem_hidden),
+                    }
+                    for r in cur.fetchall()
+                ]
+                cur.execute(
+                    """
+                    SELECT vehicle_id, name, type, plate, capacity_m3, driver_id, driver_name,
+                           depot_lat, depot_lon, year, active, is_problem_hidden
+                    FROM fpoc.vehicles
+                    ORDER BY vehicle_id
+                    """
+                )
+                vehicles = [
+                    {
+                        "vehicle_id": int(r.vehicle_id),
+                        "name": r.name,
+                        "type": r.type,
+                        "plate": r.plate,
+                        "capacity_m3": int(r.capacity_m3),
+                        "driver_id": r.driver_id,
+                        "driver_name": r.driver_name,
+                        "depot_lat": float(r.depot_lat),
+                        "depot_lon": float(r.depot_lon),
+                        "year": int(r.year) if r.year is not None else None,
+                        "active": bool(r.active),
+                        "is_problem_hidden": bool(r.is_problem_hidden),
+                    }
+                    for r in cur.fetchall()
+                ]
+                cur.execute(
+                    """
+                    SELECT customer_id, title, address, latitude, longitude,
+                           is_recurrent, in_problem_comuna
+                    FROM fpoc.clients
+                    """
+                )
+                clients = [
+                    {
+                        "customer_id": r.customer_id,
+                        "title": r.title,
+                        "address": r.address,
+                        "latitude": float(r.latitude),
+                        "longitude": float(r.longitude),
+                        "_is_recurrent": bool(r.is_recurrent),
+                        "_in_problem_comuna": bool(r.in_problem_comuna),
+                    }
+                    for r in cur.fetchall()
+                ]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[state] no pude cargar maestros desde DB: {e}. Uso generadores in-memory.")
+            drivers, vehicles, clients = [], [], []
+
+        if drivers:
+            self.drivers = drivers
+        else:
+            self.drivers = gen_drivers()
+        if vehicles:
+            self.vehicles_ext = vehicles
+        else:
+            self.vehicles_ext = gen_vehicles_extended(self.drivers)
+        if clients:
+            # Sobrescribimos los customers de boot para que gen_today_plan use
+            # los editables. Mantienen el mismo schema que customer_pool.
+            self.boot["customers"] = clients
+
+    def reload_maestros(self) -> None:
+        """Re-lee drivers/vehicles/clients desde la DB tras un CRUD.
+        Re-genera el plan del día si los clientes cambiaron."""
+        with self._lock:
+            old_n_clients = len(self.boot["customers"]) if self.boot else 0
+            self._load_maestros()
+            self.clients_master = build_client_master(
+                self.boot["customers"], self.historical_df
+            )
+            # Si cambió el set de clientes, regenerar plan + snapshot.
+            if self.boot and len(self.boot["customers"]) != old_n_clients:
+                self._regen_plan()
+                self._refresh_snapshot(emit_events=False)
+
+        self.today = self.boot["today"]
+        self.sim_clock = datetime.combine(self.today, DAY_START)
+        self._regen_plan()
+        self._refresh_snapshot(emit_events=False)
+
+    def _load_empresas_and_assign(self) -> None:
+        """Carga empresas desde fpoc_empresas_transporte y asigna cada vehicle_id a
+        una empresa (round-robin).
+
+        Si la DB no está disponible o no hay empresas seeded, cae a empresa 0.
         """
         try:
-            import os
-            import pyodbc
-            conn_str = (
-                f"DRIVER={{{os.environ.get('DB_DRIVER', 'ODBC Driver 17 for SQL Server')}}};"
-                f"SERVER={os.environ['DB_SERVER'].replace('tcp:', '')};"
-                f"DATABASE={os.environ['DB_NAME']};"
-                f"UID={os.environ['DB_USER']};"
-                f"PWD={os.environ['DB_PASSWORD']};"
-                "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=10;"
-            )
-            with pyodbc.connect(conn_str) as cn:
+            from db import get_conn
+            with get_conn() as cn:
                 cur = cn.cursor()
                 cur.execute(
                     "SELECT empresa_id, nombre FROM fpoc.empresas_transporte WHERE activo = 1 ORDER BY empresa_id"
                 )
                 rows = cur.fetchall()
             self.empresas = [{"empresa_id": int(r[0]), "nombre": r[1]} for r in rows]
+            if not self.empresas:
+                from loguru import logger
+                logger.warning("[state] fpoc_empresas_transporte vacía. Multi-tenancy deshabilitado.")
+                self.empresas = [{"empresa_id": 0, "nombre": "Default"}]
         except Exception as e:  # noqa: BLE001
             from loguru import logger
-            logger.warning(f"[state] no pude cargar empresas desde SQL: {e}. Multi-tenancy deshabilitado.")
+            logger.warning(f"[state] no pude cargar empresas: {e}. Multi-tenancy deshabilitado.")
             self.empresas = [{"empresa_id": 0, "nombre": "Default"}]
 
         vehicle_ids = sorted(int(v["vehicle_id"]) for v in self.vehicles_ext)
@@ -281,7 +394,6 @@ class AppState:
         if not notifs:
             return
         try:
-            import pyodbc  # noqa: F401
             from db import get_conn
             from notifications import send_whatsapp
             from vip import is_vip
@@ -374,7 +486,16 @@ class AppState:
                 day_end_dt = datetime.combine(self.today, DAY_END)
                 next_clock = self.sim_clock + timedelta(minutes=self.sim_minutes_per_tick)
                 if next_clock > day_end_dt + timedelta(minutes=30):
-                    next_clock = datetime.combine(self.today, DAY_START)
+                    # Rollover: avanzar al día siguiente con plan nuevo
+                    self.today = self.today + timedelta(days=1)
+                    self.day_seed += 1
+                    self.manual_incidents = {}
+                    self.auto_incidents = {}
+                    self.sim_clock = datetime.combine(self.today, DAY_START)
+                    self._regen_plan()
+                    EVENTS.emit("day_reset", self.sim_clock, {"new_day_seed": self.day_seed})
+                    self._refresh_snapshot(emit_events=False)
+                    return
                 self.sim_clock = next_clock
 
             # Auto-incidente random ~5% prob por tick durante horario operativo
@@ -409,15 +530,26 @@ class AppState:
             })
             self._refresh_snapshot()
 
-    def reset_day(self) -> None:
+    def reset_day(self, start_date: date | None = None, day_seed: int | None = None) -> None:
+        """Reinicia la simulación.
+        start_date: fecha desde donde arrancar (default: mantiene self.today).
+        day_seed: seed explícito del día (default: incrementa el actual).
+        """
         with self._lock:
-            self.day_seed += 1
+            if start_date is not None:
+                self.today = start_date
+            self.day_seed = day_seed if day_seed is not None else (self.day_seed + 1)
             self.manual_incidents = {}
             self.auto_incidents = {}
             self.sim_clock = datetime.combine(self.today, DAY_START)  # type: ignore[arg-type]
             self._regen_plan()
             EVENTS.emit("day_reset", self.sim_clock, {"new_day_seed": self.day_seed})
             self._refresh_snapshot(emit_events=False)
+
+    def set_sim_minutes_per_tick(self, minutes: int) -> None:
+        """Cuántos minutos de tiempo simulado avanza cada tick del scheduler (3s real)."""
+        with self._lock:
+            self.sim_minutes_per_tick = max(1, min(120, int(minutes)))
 
     def set_clock(self, sim_clock: datetime | None = None,
                   offset_minutes: int | None = None) -> None:

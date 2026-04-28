@@ -92,10 +92,9 @@ def create_vip(req: VipClientCreate, user: CurrentUser = Depends(require_admin))
                 """
                 INSERT INTO fpoc.vip_clients
                   (match_type, match_value, empresa_id, tier, notes, created_by)
-                OUTPUT INSERTED.vip_id, INSERTED.match_type, INSERTED.match_value,
-                       INSERTED.empresa_id, INSERTED.tier, INSERTED.notes,
-                       INSERTED.active, INSERTED.created_by, INSERTED.created_at
                 VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING vip_id, match_type, match_value, empresa_id, tier, notes,
+                          active, created_by, created_at
                 """,
                 req.match_type, req.match_value, req.empresa_id,
                 req.tier, req.notes, user.user_id,
@@ -105,7 +104,7 @@ def create_vip(req: VipClientCreate, user: CurrentUser = Depends(require_admin))
         except Exception as e:  # noqa: BLE001
             cn.rollback()
             msg = str(e)
-            if "UQ_vip_match" in msg or "duplicate" in msg.lower():
+            if "UNIQUE" in msg or "UQ_vip_match" in msg or "duplicate" in msg.lower():
                 raise HTTPException(409, "Ya existe un VIP con ese match")
             raise
     return _row_to_vip(r)
@@ -144,8 +143,9 @@ def is_vip(title: str | None, customer_id: str | None, reference: str | None,
         cur = cn.cursor()
         cur.execute(
             f"""
-            SELECT TOP 1 1 FROM fpoc.vip_clients
+            SELECT 1 FROM fpoc.vip_clients
             WHERE active = 1 AND (empresa_id IS NULL OR empresa_id = ?) AND ({where})
+            LIMIT 1
             """,
             empresa_id, *params,
         )

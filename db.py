@@ -1,18 +1,232 @@
-"""Helper central para la conexión a Azure SQL.
+"""DB layer — soporta SQLite (default, POC) y SQL Server (Azure, opcional).
 
-Credenciales desde os.environ (cargadas por main.py desde .env).
+Selecciona backend con `DB_BACKEND` env var:
+  - DB_BACKEND=sqlite (default) → archivo local en SQLITE_PATH (default backend/valuedata.db)
+  - DB_BACKEND=sqlserver → pyodbc + Azure SQL (DB_SERVER, DB_NAME, DB_USER, DB_PASSWORD)
+
+El shim de SQLite expone la misma API que pyodbc:
+  - cur.execute(sql, *params)            # variadic OR tupla
+  - cur.executemany(sql, seq)
+  - row.column_name                       # acceso por atributo (case-insensitive)
+  - cur.rowcount, cn.commit(), cn.rollback()
+  - context manager (`with get_conn() as cn:`) cierra conexión al salir
+
+Y reescribe automáticamente:
+  - fpoc.<tabla>     → fpoc_<tabla>      (SQLite no tiene schemas)
+  - SYSUTCDATETIME() → CURRENT_TIMESTAMP
+  - GETUTCDATE()     → CURRENT_TIMESTAMP
+  - LEN(             → length(
+
+Otras divergencias T-SQL (TOP, OFFSET FETCH, MERGE, OUTPUT INSERTED, DATEADD,
+PERCENTILE_CONT) se traducen inline en cada módulo — son demasiado contextuales
+para un rewriter genérico.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import os
+import re
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterable, Iterator
 
-import pyodbc
+
+# Adapters: sqlite3 no maneja datetime.time por default — lo guardamos como string
+sqlite3.register_adapter(_dt.time, lambda t: t.isoformat())
+
+
+_BACKEND = os.environ.get("DB_BACKEND", "sqlite").lower()
+_SQLITE_PATH = os.environ.get(
+    "SQLITE_PATH",
+    str(Path(__file__).resolve().parent / "valuedata.db"),
+)
+
+
+# -------- SQL rewriter (sqlite-only) --------
+_SCHEMA_RE = re.compile(r"\bfpoc\.(\w+)", re.IGNORECASE)
+_SYSUTC_RE = re.compile(r"\bSYSUTCDATETIME\s*\(\s*\)", re.IGNORECASE)
+_GETUTC_RE = re.compile(r"\bGETUTCDATE\s*\(\s*\)", re.IGNORECASE)
+_LEN_RE = re.compile(r"\bLEN\s*\(", re.IGNORECASE)
+
+
+def _rewrite_sql(sql: str) -> str:
+    sql = _SCHEMA_RE.sub(r"fpoc_\1", sql)
+    sql = _SYSUTC_RE.sub("CURRENT_TIMESTAMP", sql)
+    sql = _GETUTC_RE.sub("CURRENT_TIMESTAMP", sql)
+    sql = _LEN_RE.sub("length(", sql)
+    return sql
+
+
+# -------- Row con acceso por atributo (case-insensitive) --------
+class AttrRow:
+    """Wrap sqlite3.Row para soportar `row.column_name` (como pyodbc)."""
+    __slots__ = ("_row", "_idx")
+
+    def __init__(self, row: sqlite3.Row, description: tuple) -> None:
+        self._row = row
+        # description = ((name, type, ...), ...) — sqlite3 deja todo lower
+        self._idx = {d[0].lower(): i for i, d in enumerate(description)}
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._row[self._idx[name.lower()]]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            return self._row[key]
+        return self._row[self._idx[key.lower()]]
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._row)
+
+    def __len__(self) -> int:
+        return len(self._row)
+
+    def __repr__(self) -> str:
+        return f"<AttrRow {tuple(self._row)}>"
+
+
+# -------- Cursor wrapper (variadic params + auto-rewrite) --------
+class SqliteCursor:
+    def __init__(self, cur: sqlite3.Cursor) -> None:
+        self._cur = cur
+
+    def execute(self, sql: str, *params: Any) -> "SqliteCursor":
+        sql = _rewrite_sql(sql)
+        if len(params) == 1 and isinstance(params[0], (tuple, list)):
+            self._cur.execute(sql, params[0])
+        elif params:
+            self._cur.execute(sql, params)
+        else:
+            self._cur.execute(sql)
+        return self
+
+    def executemany(self, sql: str, seq: Iterable[Any]) -> "SqliteCursor":
+        sql = _rewrite_sql(sql)
+        self._cur.executemany(sql, seq)
+        return self
+
+    def executescript(self, script: str) -> "SqliteCursor":
+        # No reescribimos scripts (DDL los manejamos en SQL ya portable).
+        self._cur.executescript(script)
+        return self
+
+    def fetchone(self) -> AttrRow | None:
+        r = self._cur.fetchone()
+        if r is None:
+            return None
+        return AttrRow(r, self._cur.description)
+
+    def fetchall(self) -> list[AttrRow]:
+        rows = self._cur.fetchall()
+        if not rows:
+            return []
+        desc = self._cur.description
+        return [AttrRow(r, desc) for r in rows]
+
+    @property
+    def rowcount(self) -> int:
+        return self._cur.rowcount
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    # pyodbc compat — ignorado en sqlite (no hay fast_executemany)
+    @property
+    def fast_executemany(self) -> bool:
+        return False
+
+    @fast_executemany.setter
+    def fast_executemany(self, value: bool) -> None:
+        pass
+
+    def close(self) -> None:
+        self._cur.close()
+
+
+class SqliteConn:
+    """Wrap sqlite3.Connection para mantener la API de pyodbc + cierre en context manager."""
+
+    def __init__(self, raw: sqlite3.Connection) -> None:
+        self._raw = raw
+
+    def cursor(self) -> SqliteCursor:
+        return SqliteCursor(self._raw.cursor())
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def rollback(self) -> None:
+        self._raw.rollback()
+
+    def close(self) -> None:
+        self._raw.close()
+
+    def execute(self, sql: str, *params: Any) -> SqliteCursor:
+        cur = self.cursor()
+        cur.execute(sql, *params)
+        return cur
+
+    # context manager: cerramos al salir (commit/rollback lo hace el caller)
+    def __enter__(self) -> "SqliteConn":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            if exc_type is not None:
+                self._raw.rollback()
+        finally:
+            self._raw.close()
+
+
+# -------- Factories --------
+def _open_sqlite() -> SqliteConn:
+    raw = sqlite3.connect(
+        _SQLITE_PATH,
+        detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+        timeout=30.0,
+    )
+    raw.execute("PRAGMA foreign_keys = ON")
+    raw.execute("PRAGMA journal_mode = WAL")
+    return SqliteConn(raw)
+
+
+def _open_sqlserver():
+    import pyodbc  # import perezoso
+
+    server = os.environ["DB_SERVER"].replace("tcp:", "")
+    cs = (
+        f"DRIVER={{{os.environ.get('DB_DRIVER', 'ODBC Driver 17 for SQL Server')}}};"
+        f"SERVER={server};"
+        f"DATABASE={os.environ['DB_NAME']};"
+        f"UID={os.environ['DB_USER']};"
+        f"PWD={os.environ['DB_PASSWORD']};"
+        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+    )
+    return pyodbc.connect(cs, autocommit=False)
+
+
+def get_conn():
+    """Devuelve una conexión usable con `with`. SQLite por default."""
+    if _BACKEND == "sqlite":
+        return _open_sqlite()
+    if _BACKEND == "sqlserver":
+        return _open_sqlserver()
+    raise RuntimeError(f"DB_BACKEND inválido: {_BACKEND!r} (usar 'sqlite' o 'sqlserver')")
 
 
 def conn_str() -> str:
+    """Compat: solo tiene sentido para sqlserver."""
+    if _BACKEND == "sqlite":
+        return f"sqlite:///{_SQLITE_PATH}"
+    server = os.environ["DB_SERVER"].replace("tcp:", "")
     return (
         f"DRIVER={{{os.environ.get('DB_DRIVER', 'ODBC Driver 17 for SQL Server')}}};"
-        f"SERVER={os.environ['DB_SERVER'].replace('tcp:', '')};"
+        f"SERVER={server};"
         f"DATABASE={os.environ['DB_NAME']};"
         f"UID={os.environ['DB_USER']};"
         f"PWD={os.environ['DB_PASSWORD']};"
@@ -20,5 +234,16 @@ def conn_str() -> str:
     )
 
 
-def get_conn() -> pyodbc.Connection:
-    return pyodbc.connect(conn_str(), autocommit=False)
+# IntegrityError compat (para `except db.IntegrityError`)
+IntegrityError = sqlite3.IntegrityError if _BACKEND == "sqlite" else None
+if _BACKEND == "sqlserver":
+    import pyodbc as _pyodbc  # type: ignore
+    IntegrityError = _pyodbc.IntegrityError
+
+
+def backend() -> str:
+    return _BACKEND
+
+
+def sqlite_path() -> str:
+    return _SQLITE_PATH

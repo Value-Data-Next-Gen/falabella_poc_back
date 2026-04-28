@@ -28,29 +28,29 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-import pyodbc
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from pydantic import BaseModel
 
 from auth import CurrentUser, current_user, require_admin
-from db import get_conn
+from db import IntegrityError, get_conn
 
 
-# ID base grande para no colisionar con el seed (que usa id + offset*10M)
+# ID base para no colisionar con el seed (ids < 900B)
 ID_BASE = 900_000_000_000
 _id_counter = itertools.count(start=1)
 _id_lock = threading.Lock()
 
 
 def _next_id(target_date: date) -> int:
-    """ID único monotónico. Formato: 900B + fecha*10M + counter.
-    El counter es thread-safe y garantiza unicidad entre filas del mismo batch."""
+    """ID único: ID_BASE + epoch_microsec × 1000 + counter%1000.
+    Seguro entre reinicios de proceso. Epoch microseg (~2e15) × 1000 (~2e18)
+    cabe en BIGINT (~9.2e18). El counter evita colisión si dos inserts caen
+    en el mismo microsegundo."""
     with _id_lock:
         n = next(_id_counter)
-    # target_date.toordinal() hasta 2100 ≈ 767k → caben 10M counters por día
-    return ID_BASE + target_date.toordinal() * 10_000_000 + n
+    return ID_BASE + int(time.time() * 1_000_000) * 1000 + (n % 1000)
 
 
 # Catálogos de datos random
@@ -205,7 +205,7 @@ SIMPLI_COLS = [
 _rng = random.Random()
 
 
-def _insert_batch(cn: pyodbc.Connection, target_date: date, n_rows: int) -> int:
+def _insert_batch(cn, target_date: date, n_rows: int) -> int:
     """Inserta n_rows en target_date. Devuelve la cantidad efectivamente insertada."""
     cur = cn.cursor()
     cur.execute("SELECT empresa_id, nombre FROM fpoc.empresas_transporte WHERE activo = 1")
@@ -234,7 +234,7 @@ def _insert_batch(cn: pyodbc.Connection, target_date: date, n_rows: int) -> int:
             )
             cn.commit()
             total += len(chunk)
-        except pyodbc.IntegrityError as e:
+        except IntegrityError as e:
             # Algunas rows pueden colisionar; reintentamos 1x con IDs shifteados
             cn.rollback()
             logger.warning(f"[live-gen] PK collision batch, shifting ids: {e}")
@@ -245,10 +245,15 @@ def _insert_batch(cn: pyodbc.Connection, target_date: date, n_rows: int) -> int:
 
 
 def _insert_tick() -> None:
-    """Llamado por APScheduler. Inserta LIVE_GEN_ROWS_PER_TICK rows."""
+    """Llamado por APScheduler. Inserta LIVE_GEN_ROWS_PER_TICK rows.
+    Usa la fecha simulada (STATE.today) si el tick del simulador está corriendo,
+    sino cae a date.today() del wall-clock."""
     if not STATE.enabled:
         return
     try:
+        # Importar acá para evitar ciclo en el import inicial
+        from state import STATE as APP_STATE
+        sim_today = getattr(APP_STATE, "today", None) or date.today()
         with get_conn() as cn:
             cur = cn.cursor()
             cur.execute("SELECT empresa_id, nombre FROM fpoc.empresas_transporte WHERE activo = 1")
@@ -257,7 +262,7 @@ def _insert_tick() -> None:
                 STATE.last_error = "Sin empresas en fpoc.empresas_transporte"
                 return
 
-            today = date.today()
+            today = sim_today
             rows = [_gen_row(_rng, empresas, today) for _ in range(STATE.rows_per_tick)]
             data = [tuple(r[c] for c in SIMPLI_COLS) for r in rows]
 
@@ -273,7 +278,7 @@ def _insert_tick() -> None:
             STATE.total_inserted_session += len(rows)
             STATE.last_insert_at = datetime.utcnow().isoformat()
             STATE.last_error = None
-    except pyodbc.IntegrityError as e:  # PK collision (raro con timestamp-based id)
+    except IntegrityError as e:  # PK collision (raro con timestamp-based id)
         STATE.last_error = f"PK collision: {e}"
         logger.warning(f"[live-gen] {STATE.last_error}")
     except Exception as e:  # noqa: BLE001
@@ -330,7 +335,7 @@ def stats(user: CurrentUser = Depends(current_user)) -> LiveGenStats:
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            "SELECT COUNT(*) FROM fpoc.simpli_visits WHERE planned_date = CAST(GETUTCDATE() AS DATE) AND id >= ?",
+            "SELECT COUNT(*) FROM fpoc.simpli_visits WHERE planned_date = date('now') AND id >= ?",
             ID_BASE,
         )
         rows_today = int(cur.fetchone()[0])
@@ -359,7 +364,7 @@ def reset(user: CurrentUser = Depends(require_admin)) -> dict:
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            "DELETE FROM fpoc.simpli_visits WHERE planned_date = CAST(GETUTCDATE() AS DATE) AND id >= ?",
+            "DELETE FROM fpoc.simpli_visits WHERE planned_date = date('now') AND id >= ?",
             ID_BASE,
         )
         n = cur.rowcount

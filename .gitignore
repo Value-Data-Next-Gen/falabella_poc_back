@@ -18,5 +18,19 @@ htmlcov/
 dist/
 build/
 *.sqlite
+*.db
 *.parquet
 data/
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.synctex.gz
+*.toc
+*.pdf
+MODELO.log
+PIPELINE.log

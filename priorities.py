@@ -82,16 +82,14 @@ def set_priority(
         cur = cn.cursor()
         cur.execute(
             """
-            MERGE fpoc.visit_priority_overrides AS t
-            USING (SELECT ? AS tracking_id) AS s
-              ON t.tracking_id = s.tracking_id
-            WHEN MATCHED THEN UPDATE SET
-                priority = ?, reason = ?, set_by = ?, set_at = SYSUTCDATETIME()
-            WHEN NOT MATCHED THEN INSERT (tracking_id, priority, reason, set_by)
-                VALUES (?, ?, ?, ?);
+            INSERT INTO fpoc.visit_priority_overrides (tracking_id, priority, reason, set_by)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(tracking_id) DO UPDATE SET
+                priority = excluded.priority,
+                reason   = excluded.reason,
+                set_by   = excluded.set_by,
+                set_at   = CURRENT_TIMESTAMP
             """,
-            tracking_id,
-            req.priority, req.reason, user.user_id,
             tracking_id, req.priority, req.reason, user.user_id,
         )
         cn.commit()

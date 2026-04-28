@@ -48,7 +48,11 @@ def _resolve_date(pd: Optional[str]) -> date_cls:
         cur.execute("SELECT MAX(planned_date) FROM fpoc.simpli_visits")
         r = cur.fetchone()
         if r and r[0]:
-            return r[0]
+            v = r[0]
+            # SQLite agregados pierden el type binding → puede venir como str.
+            if isinstance(v, str):
+                return date_cls.fromisoformat(v.split(" ")[0])
+            return v
     return date_cls.today()
 
 
@@ -198,17 +202,23 @@ def kpis(
         )
         r = cur.fetchone()
 
+        # SQLite no tiene PERCENTILE_CONT; lo calculamos en Python.
         cur.execute(
             f"""
-            SELECT DISTINCT
-              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY s.sla_hour_checkout_eta) OVER () AS p50,
-              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY s.sla_hour_checkout_eta) OVER () AS p90
+            SELECT s.sla_hour_checkout_eta
             FROM fpoc.simpli_visits s
             WHERE 1=1 {where}
             """,
             *params,
         )
-        p = cur.fetchone()
+        sla_vals = [float(row[0]) for row in cur.fetchall() if row[0] is not None]
+        if sla_vals:
+            import numpy as np
+            p50 = float(np.percentile(sla_vals, 50))
+            p90 = float(np.percentile(sla_vals, 90))
+        else:
+            p50, p90 = 0.0, 0.0
+        p = type("P", (), {"p50": p50, "p90": p90})()
 
     total = int(r.total or 0)
     anom = int(r.ruta_anomala or 0)
@@ -272,14 +282,15 @@ def motivos(
         cur = cn.cursor()
         cur.execute(
             f"""
-            SELECT TOP (?) g.motivonoentrega AS motivo, COUNT(*) AS c
+            SELECT g.motivonoentrega AS motivo, COUNT(*) AS c
             FROM fpoc.geo_suborders g
             {where}
             {'AND' if where else 'WHERE'} g.motivonoentrega IS NOT NULL
             GROUP BY g.motivonoentrega
             ORDER BY COUNT(*) DESC
+            LIMIT ?
             """,
-            limit, *params,
+            *params, limit,
         )
         return [MotivoItem(motivo=r.motivo, count=int(r.c)) for r in cur.fetchall()]
 
@@ -340,7 +351,7 @@ def by_localidad(
         cur = cn.cursor()
         cur.execute(
             f"""
-            SELECT TOP (?)
+            SELECT
               g.localidad,
               COUNT(*) AS total,
               SUM(CASE WHEN g.estado IN ('Pendiente','Planificado En Simpliroute') THEN 1 ELSE 0 END) AS failed
@@ -348,8 +359,9 @@ def by_localidad(
             {where}
             GROUP BY g.localidad
             ORDER BY total DESC
+            LIMIT ?
             """,
-            limit, *params,
+            *params, limit,
         )
         rows = cur.fetchall()
     out: list[LocalidadPerf] = []
@@ -377,7 +389,7 @@ def rutas_anomalas(
         "ruta_primer_punto_lejano",
         "ruta_fecha_inicio_distinta_fecha_eta",
     ]
-    select_parts = [f"SUM(CAST(s.{f} AS INT)) AS [{f}]" for f in flags]
+    select_parts = [f'SUM(CAST(s.{f} AS INTEGER)) AS "{f}"' for f in flags]
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
@@ -446,15 +458,15 @@ def list_visits(
         total = int(cur.fetchone()[0])
         cur.execute(
             f"""
-            SELECT s.id, s.planned_date, s.title, s.[order], s.address, s.status,
+            SELECT s.id, s.planned_date, s.title, s."order", s.address, s.status,
                    s.checkout_cl, s.current_eta_cl, s.sla_hour_checkout_eta,
                    s.ct, s.Drivername, s.Empresa_falsa, s.ruta_anomala, s.am_pm
             FROM fpoc.simpli_visits s
             WHERE {where_sql}
-            ORDER BY s.planned_date DESC, s.Empresa_falsa, s.[order]
-            OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+            ORDER BY s.planned_date DESC, s.Empresa_falsa, s."order"
+            LIMIT ? OFFSET ?
             """,
-            *params, offset, limit,
+            *params, limit, offset,
         )
         rows = cur.fetchall()
     out_rows = [

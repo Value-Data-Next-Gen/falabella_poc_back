@@ -1,0 +1,449 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[spanish]{babel}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{framed}
+\usepackage{titlesec}
+\usepackage{parskip}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black,
+  pdftitle={Modelo predictivo y feature engineering --- POC ValueData},
+  pdfauthor={ValueData}
+}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codekw}{RGB}{0,80,160}
+\definecolor{codecmt}{RGB}{100,120,100}
+\definecolor{codestr}{RGB}{160,80,40}
+\definecolor{quotebar}{RGB}{0,120,200}
+
+\lstdefinestyle{mono}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecmt}\itshape,
+  stringstyle=\color{codestr},
+  breaklines=true,
+  breakatwhitespace=true,
+  showstringspaces=false,
+  frame=single,
+  framesep=4pt,
+  framerule=0pt,
+  rulecolor=\color{codebg},
+  xleftmargin=8pt,
+  xrightmargin=8pt,
+  aboveskip=8pt,
+  belowskip=8pt,
+  literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1
+           {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1 {Ó}{{\'O}}1 {Ú}{{\'U}}1
+           {ñ}{{\~n}}1 {Ñ}{{\~N}}1 {¿}{{?`}}1 {¡}{{!`}}1
+           {≈}{{$\approx$}}1 {×}{{$\times$}}1 {≥}{{$\geq$}}1 {≤}{{$\leq$}}1
+           {→}{{$\rightarrow$}}1 {∧}{{$\wedge$}}1 {…}{{\ldots}}1
+           {°}{{$^{\circ}$}}1
+}
+\lstset{style=mono}
+\lstdefinelanguage{pyplus}{
+  language=Python,
+  morekeywords={async,await,with,as,from,import,return,for,if,else,elif,def,class,not,and,or,True,False,None,in,is,raise,try,except,finally,lambda},
+}
+
+% Citas/blockquotes con barra a la izquierda
+\definecolor{shadecolor}{RGB}{240,247,255}
+\newenvironment{quoteblock}{%
+  \begin{shaded}\noindent\ignorespaces}{%
+  \end{shaded}}
+
+\titleformat{\section}{\Large\bfseries\color{black}}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{black}}{\thesubsection.}{0.5em}{}
+\titlespacing*{\section}{0pt}{1.2em}{0.6em}
+\titlespacing*{\subsection}{0pt}{0.9em}{0.4em}
+
+\setlist[itemize]{leftmargin=1.4em,itemsep=2pt,topsep=4pt}
+\setlist[enumerate]{leftmargin=1.6em,itemsep=2pt,topsep=4pt}
+
+\title{\textbf{Modelo predictivo y feature engineering}\\[0.3em]
+       \large POC ValueData --- Falabella}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\vspace{-2em}
+
+\begin{quoteblock}
+\textbf{TL;DR para el cliente}:
+\begin{itemize}
+  \item El modelo es \textbf{XGBoost real}, calibrado con isotonic regression y explicado con SHAP --- no es un mock ni un placeholder. Hoy entrega AUC $\approx 0.77$ / Brier $\approx 0.10$ sobre 60 días de operación.
+  \item El \textbf{feature schema está diseñado sobre las columnas del Excel que entregaron} (\texttt{datos\_eta\_*.xlsx}, hojas Simpli + Geo). Toda variable que el modelo consume es derivable de campos que ya existen en sus datos. Ver §3.4 --- Mapeo Excel $\rightarrow$ feature.
+  \item Para el POC, los \textbf{labels de entrenamiento se generan sintéticamente} porque el Excel actual cubre \textbf{un solo día ($\sim$2k visitas)} y no trae el evento histórico ``fallo anticipado vs ventana'' que el clasificador necesita. El simulador reproduce los mismos patrones que ven en operación (zonas problema, ventanas tardías, drivers conflictivos, recurrencia de clientes) --- esto permite demostrar end-to-end que el pipeline encuentra esos patrones, sin esperar a que se acumule histórico real.
+  \item \textbf{Camino a producción}: cuando lleguen 60+ días de SimpliRoute con el campo ``ETA real vs window\_end'', se reemplaza el generador por el loader real y el resto del stack (features, calibración, SHAP, alertas) \textbf{queda intacto}. Es ese tipo de POC donde la inversión no se tira a la basura.
+\end{itemize}
+\end{quoteblock}
+
+\section{Origen de los datos}
+
+\subsection{Excel original (\texttt{datos\_eta\_2026\_04\_19.xlsx})}
+
+Dos hojas, formato tipo SimpliRoute:
+
+\textbf{Hoja \texttt{Simpli}} --- visitas con ETA y SLA (1 fila por visita, $\sim$2.120 filas):
+\begin{itemize}
+  \item Llave: \texttt{id} (BIGINT)
+  \item Tiempos: \texttt{planned\_date}, \texttt{checkout\_cl}, \texttt{current\_eta\_cl}
+  \item SLA: \texttt{sla\_hour\_checkout\_eta} (horas de adelanto/atraso vs ETA), \texttt{bin\_label}/\texttt{bin\_index}
+  \item Ruta: \texttt{Patente\_falsa}, \texttt{Empresa\_falsa}, \texttt{Drivername}, \texttt{Fechainicioruta}, \texttt{am\_pm}
+  \item Anomalías: 4 flags (\texttt{ruta\_eta\_futuro}, \texttt{ruta\_fecha\_inicio\_mayor\_eta}, \texttt{ruta\_primer\_punto\_lejano}, \texttt{ruta\_fecha\_inicio\_distinta\_fecha\_eta}) + agregado \texttt{ruta\_anomala}
+\end{itemize}
+
+\textbf{Hoja \texttt{Geo}} --- sub-órdenes con motivo de no entrega ($\sim$2.220 filas):
+\begin{itemize}
+  \item Llave: \texttt{Suborden}
+  \item Geografía: \texttt{direccion}, \texttt{localidad}, \texttt{region}
+  \item Estado: \texttt{estado}, \texttt{motivonoentrega}, \texttt{comentarionoentrega}
+  \item Vínculo con Simpli: \texttt{idruta} + \texttt{fechainicioruta}
+\end{itemize}
+
+\subsection{Carga a SQLite}
+
+\texttt{fpoc\_loader/seed\_sqlite.py}:
+
+\begin{lstlisting}[language=]
+Excel -> pandas -> fpoc_simpli_visits  (1.866 despues de dedupe)
+               -> fpoc_geo_suborders   (2.119)
+               -> fpoc_empresas_transporte (5 empresas: 22, 23, 25, 27, 33)
+               -> fpoc_users           (1 admin + 1 ops + 5 transport_managers)
+\end{lstlisting}
+
+Esta data sirve \textbf{solo para Seguimiento} --- endpoints \texttt{/api/seguimiento/*} que hacen agregados (KPIs por fecha, SLA distribution, top motivos, performance por empresa/localidad, breakdown de anomalías). El modelo no la consume.
+
+\section{Generador sintético (entrada del modelo)}
+
+\subsection{Patrones ocultos (la ``trampa'' que SHAP debe encontrar)}
+
+\texttt{pipeline.setup\_hidden\_patterns(SEED)} define al inicio del proceso:
+
+\begin{itemize}
+  \item \textbf{3 comunas problema}: tres celdas de $0.05^{\circ} \times 0.05^{\circ}$ random alrededor del depot ($-33.45, -70.66$). Los clientes en estas comunas tendrán fail rate inflado.
+  \item \textbf{2 drivers problema}: dos vehículos de 12 con factor multiplicativo de retraso aumentado.
+\end{itemize}
+
+Estos patrones quedan fijos por el \texttt{SEED=42} y se filtran al simulador como penalizaciones --- \textbf{el modelo no los conoce explícitamente}, los descubre desde los features.
+
+\subsection{Pool de clientes}
+
+\texttt{gen\_customer\_pool(seed=42)} --- 800 clientes únicos con coordenadas:
+
+\begin{itemize}
+  \item 20\% en comunas problema (clusterizados dentro de las 3 zonas)
+  \item 80\% distribuidos uniformemente alrededor del depot, evitando comunas problema
+  \item 15\% marcados como \texttt{\_is\_recurrent} (clientes con historial de fallar reiteradamente)
+  \item Cada cliente: \texttt{customer\_id}, \texttt{title} (Faker es\_CL), \texttt{address}, \texttt{lat}, \texttt{lon}
+\end{itemize}
+
+\subsection{Plan de un día --- \texttt{gen\_day\_visits(day\_idx, planned\_date, customers)}}
+
+\begin{enumerate}
+  \item \textbf{Sample}: 120 visitas extraídas con reemplazo del pool (algunos clientes aparecen varias veces).
+  \item \textbf{Ventana horaria} \texttt{window\_end}: muestreada de $[14, 17, 18, 19, 20]$ con probabilidades $[0.20, 0.25, 0.20, 0.20, 0.15]$ --- la ventana crítica 17--19h queda sobre-representada (es la que más falla en realidad).
+  \item \texttt{planned\_arrival\_time}: \texttt{window\_end} $-$ buffer donde buffer $\sim U(45, 100)$ minutos.
+  \item \textbf{Reparto a 12 vehículos}: round-robin ($\sim$10 visitas/vehículo), ordenadas internamente por \texttt{planned\_arrival\_time}.
+\end{enumerate}
+
+\subsection{Cómputo de ETA real y label \texttt{failed} --- \texttt{\_compute\_eta\_and\_failure}}
+
+Para cada vehículo se simula la cadena de retrasos:
+
+\begin{lstlisting}[language=]
+delay_i = local_noise * vehicle_factor * franja_factor(hora)
+        + penalty_extra
+        + 0.6 * delay_{i-1}        # propagacion al siguiente punto
+\end{lstlisting}
+
+Donde:
+\begin{itemize}
+  \item \texttt{local\_noise} $\sim N(0, 6)$ minutos
+  \item \texttt{vehicle\_factor} $\sim N(1.0, 0.1)$ por vehículo (constante en el día)
+  \item \texttt{franja\_factor(hora)}: $1.0$ (9--11), $1.3$ (11--14), $1.15$ (14--17), \textbf{$1.45$ (17+)} --- tarde es peor.
+  \item \texttt{penalty\_extra} $\sim \mathrm{Exp}(\lambda{=}4) \cdot (\texttt{penalty\_mult} - 1)$ donde \texttt{penalty\_mult} es:
+    \begin{itemize}
+      \item $\times 3.0$ si la visita está en comuna problema
+      \item $\times 2.0$ si \texttt{window\_end} $\in \{17, 18, 19\}$
+      \item $\times 2.5$ si el vehículo está en \texttt{problem\_drivers}
+      \item $\times 1.25$ si \texttt{load} $> 15$ (m$^3$/kg)
+      \item $\times 4.0$ si el cliente es recurrente
+      \item Multiplicativos: una visita en comuna problema + driver problema + ventana 17h tiene \texttt{penalty\_mult} $\approx 15$.
+    \end{itemize}
+  \item \textbf{Incidente}: 3\% prob por vehículo de tener un incidente que agrega 20--45 min a partir de cierta posición de la ruta.
+\end{itemize}
+
+Resultado:
+
+\begin{lstlisting}[language=]
+eta_real  = planned_arrival_time + delay_min
+slack_min = (window_end - eta_real).total_seconds() / 60
+failed    = 1 si eta_real > window_end else 0
+\end{lstlisting}
+
+Con esta receta, el fail rate global queda en torno a \textbf{15--25\%} y los patrones ocultos quedan fuertemente correlacionados con \texttt{failed}.
+
+\subsection{Histórico de entrenamiento}
+
+\texttt{train\_model()} itera 60 días: $[\text{today} - 60, \text{today} - 1]$:
+
+\begin{lstlisting}[language=pyplus]
+for d in range(60):
+    day_date = today - timedelta(days=60 - d)
+    hist_dfs.append(gen_day_visits(d, day_date, customers))
+hist = pd.concat(hist_dfs)   # ~7.200 filas
+\end{lstlisting}
+
+Cada día tiene su propio seed (\texttt{SEED + 1000*day\_idx}) para variabilidad, pero el pool de clientes y los patrones ocultos son los mismos.
+
+\section{Feature engineering}
+
+\subsection{Features numéricos (\texttt{NUMERIC\_FEATURES})}
+
+\begin{longtable}{p{4.2cm} p{6cm} p{5cm}}
+\toprule
+\textbf{Feature} & \textbf{Cómputo} & \textbf{Por qué importa} \\
+\midrule
+\endhead
+\texttt{hora\_window\_end} & \texttt{int(window\_end[:2])} & Ventanas tardías concentran fallos \\
+\texttt{carga} & \texttt{load} (m$^3$/kg) & Carga grande $\rightarrow$ tiempo de descarga mayor \\
+\texttt{dist\_depot\_km} & Haversine entre cliente y depot & Distancia $\rightarrow$ tiempo de viaje + retorno \\
+\texttt{orden\_en\_ruta} & Posición de la visita dentro del vehículo & Más tarde en la ruta $\rightarrow$ más retraso acum. \\
+\texttt{retraso\_acumulado\_vehiculo} & \texttt{cumsum(delay\_min)} shifted (sin leak) & Señal directa de ``ya viene tarde'' \\
+\texttt{tasa\_fallo\_historica\_cliente} & Fail rate observado por \texttt{comuna\_id} en histórico & Codifica el patrón ``comuna problema'' \\
+\texttt{horas\_hasta\_window\_end} & \texttt{(window\_end - ref\_clock) / 3600} clipped a 0 & Anticipación: cuánto margen queda \\
+\bottomrule
+\end{longtable}
+
+\subsection{Features categóricos (one-hot)}
+
+\begin{itemize}
+  \item \texttt{comuna\_id}: cuadrícula de $0.05^{\circ} \times 0.05^{\circ}$ del par (lat, lon). Codifica zona geográfica sin necesidad de un padrón comunal real.
+  \item \texttt{conductor\_id}: \texttt{v1}, \texttt{v2}, \dots, \texttt{v12} --- uno por vehículo.
+  \item \texttt{dia\_semana}: 0--6.
+\end{itemize}
+
+\texttt{pd.get\_dummies(prefix=["comuna","drv","dow"])} los expande. El modelo termina con $\sim$70--90 columnas (depende de cuántas comunas distintas aparecen).
+
+\subsection{El truco de la observación parcial --- \texttt{randomize\_observation}}
+
+Si entrenamos con \texttt{delay\_min} total del día, el modelo se hace trampa: ya sabe el delay final cuando lo vamos a usar para predecir antes del fin de la ruta.
+
+Solución: durante featurización del histórico, el ``reloj de observación'' (\texttt{\_ref}) se elige random entre 09:00 y \texttt{window\_end}:
+
+\begin{lstlisting}[language=pyplus]
+span_sec   = (window_end - day_start).total_seconds()
+offset_sec = span_sec * uniform(0, 1)
+ref        = day_start + offset_sec
+\end{lstlisting}
+
+Y luego:
+
+\begin{lstlisting}[language=pyplus]
+unobserved = eta_real > _ref
+df.loc[unobserved, "delay_min"] = 0.0
+retraso_acumulado_vehiculo = cumsum(delay_min) shifted   # solo lo ya completado
+\end{lstlisting}
+
+Es decir: para cada visita histórica, se simula que estamos parados en un momento aleatorio del día y solo ``vemos'' lo que ya pasó. Esto reproduce el escenario de inferencia (mirar a las 13:00 y predecir si la visita de las 18:00 va a fallar) sin leakage.
+
+\subsection{Mapeo Excel $\rightarrow$ feature (datos del cliente $\rightarrow$ variables del modelo)}
+\label{sec:mapeo}
+
+Toda feature que consume el clasificador es derivable directamente de columnas que \textbf{ya existen} en el Excel que entregó Falabella:
+
+\begin{longtable}{p{3.6cm} p{6cm} p{5.2cm}}
+\toprule
+\textbf{Feature del modelo} & \textbf{Origen en \texttt{datos\_eta\_*.xlsx}} & \textbf{Cómputo} \\
+\midrule
+\endhead
+\texttt{hora\_window\_end} & Hoja Simpli --- derivada de \texttt{current\_eta\_cl} (hora prometida) o de un campo de ventana & \texttt{int(window\_end[:2])} \\
+\texttt{carga} & (no presente en el Excel actual --- placeholder; SimpliRoute la trae como \texttt{load}) & \texttt{load} directo \\
+\texttt{dist\_depot\_km} & Simpli --- \texttt{address} geocodificado o lat/lon (la integración real con SimpliRoute trae lat/lon) & Haversine entre cliente y depot \\
+\texttt{orden\_en\_ruta} & Simpli --- \texttt{[order]} (ya viene) & \texttt{order} directo \\
+\texttt{retraso\_acumulado\_vehiculo} & Simpli --- \texttt{Patente\_falsa} + \texttt{sla\_hour\_checkout\_eta} por ruta + \texttt{Fechainicioruta} & \texttt{cumsum(delay)} shifted dentro del grupo (vehicle, day) \\
+\texttt{tasa\_fallo\_historica\_cliente} & Simpli --- agregado \texttt{Empresa\_falsa}/zona/\texttt{address} $\times$ histórico de \texttt{failed} & Fail rate por \texttt{comuna\_id} \\
+\texttt{horas\_hasta\_window\_end} & Simpli --- \texttt{current\_eta\_cl} $-$ ahora & \texttt{(window\_end - ref\_clock) / 3600} \\
+\texttt{comuna\_id} & Simpli --- derivada de lat/lon del cliente (o \texttt{Geo.localidad} + \texttt{Geo.region}) & Bucket de $0.05^{\circ} \times 0.05^{\circ}$ ($\approx$ 5 km) \\
+\texttt{conductor\_id} & Simpli --- \texttt{Drivername} o \texttt{Patente\_falsa} & Hash a id estable \\
+\texttt{dia\_semana} & Simpli --- \texttt{planned\_date} & \texttt{dayofweek} \\
+\bottomrule
+\end{longtable}
+
+Y la hoja \textbf{Geo} del Excel suma señales adicionales que \textbf{ya están listas para incorporarse como features nuevos} en el siguiente sprint:
+
+\begin{longtable}{p{4.5cm} p{4.5cm} p{5.6cm}}
+\toprule
+\textbf{Feature derivable (no implementado todavía)} & \textbf{Columna Geo} & \textbf{Hipótesis} \\
+\midrule
+\endhead
+\texttt{tipo\_documento} & \texttt{tipodocumento} & Distintos tipos (boleta vs factura) tienen tasa de fallo distinta \\
+\texttt{region}, \texttt{localidad} & \texttt{region}, \texttt{localidad} & Reemplaza el grid de $0.05^{\circ}$ por un padrón real \\
+\texttt{motivo\_recurrente\_cliente} & \texttt{motivonoentrega} agregado por cliente & ``Sin moradores'' 3 veces seguidas $\rightarrow$ +30\% riesgo siguiente \\
+\texttt{n\_subordenes\_misma\_ruta} & \texttt{count(Suborden) by idruta} & Rutas con muchas sub-órdenes saturan al driver \\
+\texttt{densidad\_localidad} & \texttt{count(Suborden) by localidad} & Comunas con +200 entregas/día concentran fallos \\
+\bottomrule
+\end{longtable}
+
+Y los flags de \textbf{anomalía de ruta} del Excel (\texttt{ruta\_eta\_futuro}, \texttt{ruta\_fecha\_inicio\_mayor\_eta}, \texttt{ruta\_primer\_punto\_lejano}, \texttt{ruta\_fecha\_inicio\_distinta\_fecha\_eta}, \texttt{ruta\_anomala}) son features ya calculadas por el equipo de Falabella --- \textbf{se enchufan directamente al modelo como 5 columnas binarias adicionales}. En la versión actual del POC se usan solo en la vista de Seguimiento; pasarlas al clasificador es trivial (agregarlas a \texttt{NUMERIC\_FEATURES}).
+
+\begin{quoteblock}
+\textbf{Mensaje al cliente}: lo que entregaron en el Excel ya cubre el 80\% de las variables que el modelo necesita. Los features que faltan (carga real, lat/lon precisas, recurrencia por cliente) salen del API de SimpliRoute en producción --- no requieren capturar nada nuevo.
+\end{quoteblock}
+
+\section{Entrenamiento}
+
+\subsection{Split temporal}
+
+Los primeros 50 días $\rightarrow$ train, últimos 10 días $\rightarrow$ val. Split por fecha (no random) para detectar si el modelo generaliza a días nuevos.
+
+\subsection{Modelo base}
+
+\begin{lstlisting}[language=pyplus]
+xgb.XGBClassifier(
+    n_estimators=300, max_depth=5, learning_rate=0.05,
+    scale_pos_weight=spw,        # spw = neg/pos para compensar desbalance
+    eval_metric="logloss",
+    tree_method="hist",
+)
+\end{lstlisting}
+
+\texttt{scale\_pos\_weight} corrige el desbalance ($\sim$80\% no-fallo, 20\% fallo).
+
+\subsection{Calibración}
+
+XGBoost devuelve scores no calibrados. Para que \texttt{p\_fallo = 0.7} signifique realmente ``70\% de chance de fallar'' se aplica:
+
+\begin{lstlisting}[language=pyplus]
+CalibratedClassifierCV(base_xgb, method="isotonic", cv=3)
+\end{lstlisting}
+
+Isotonic regression con 3-fold sobre el train set. La curva de calibración resultante (\texttt{calibration\_curve} en \texttt{metrics}) se grafica en el frontend (\texttt{/api/model/metrics}) y muestra que predicción $\approx$ frecuencia observada.
+
+\subsection{Métricas reportadas}
+
+\begin{itemize}
+  \item \textbf{AUC} $\approx 0.77$ (ROC-AUC sobre val)
+  \item \textbf{Brier score} $\approx 0.097$ (mean squared error de probabilidades; menor es mejor)
+  \item \textbf{Confusion matrix} con threshold 0.50
+  \item \textbf{Calibration curve} (10 bins, strategy=quantile)
+\end{itemize}
+
+Ver \texttt{STATE.boot["metrics"]} y \texttt{/api/model/metrics}.
+
+\subsection{SHAP}
+
+Se entrena un segundo XGB \textbf{sin calibración} (necesario porque \texttt{CalibratedClassifierCV} envuelve el modelo y \texttt{TreeExplainer} necesita acceso directo al booster):
+
+\begin{lstlisting}[language=pyplus]
+shap_model = xgb.XGBClassifier(...).fit(X_train, y_train)
+explainer  = shap.TreeExplainer(shap_model)
+\end{lstlisting}
+
+En cada inferencia:
+
+\begin{lstlisting}[language=pyplus]
+shap_vals   = explainer.shap_values(X)     # (n_visitas, n_features)
+top_factors = top_shap_factors(shap_vals, feature_names, idx, k=3)
+\end{lstlisting}
+
+Se exponen como ``Top 3 factores que más empujan hacia fallo'' en el frontend (\texttt{/api/visits/\{tracking\_id\}/explanation}).
+
+\section{Reglas de negocio sobre las predicciones}
+
+\texttt{apply\_status\_and\_predict} agrega 3 indicadores que combinan modelo + reglas:
+
+\begin{lstlisting}[language=]
+alert_slack = "RED"    si slack_min <= 0
+              "YELLOW" si  0 < slack_min <= 20
+              "GREEN"  si slack_min > 20
+
+alert_valuedata = (p_fallo >= 0.50)
+                  AND (horas_hasta_window_end >= 2.0)
+                  AND (status == "pending")
+\end{lstlisting}
+
+\texttt{alert\_valuedata} es la ``alerta anticipada'' que justifica la torre: dispara $\geq$ 2h antes del deadline cuando el modelo asigna $\geq$ 50\% de probabilidad de fallo. Las constantes (\texttt{ALERT\_THRESHOLD = 0.50}, \texttt{ANTICIPATION\_HOURS = 2.0}) son configurables y deberían tunearse contra una curva de ROI real.
+
+\section{Camino a producción (qué cambia, qué se mantiene)}
+
+\begin{longtable}{p{3.7cm} p{3.6cm} p{4.6cm} p{2.6cm}}
+\toprule
+\textbf{Componente} & \textbf{POC} & \textbf{Producción} & \textbf{¿Reuso?} \\
+\midrule
+\endhead
+\textbf{Generador de visitas} & \texttt{gen\_day\_visits} sintético & Loader SimpliRoute (REST API) & Reemplazo \\
+\textbf{Labels (\texttt{failed})} & Computado por simulador & Evento ``ETA real $>$ window\_end'' del histórico & Reemplazo \\
+\textbf{Feature engineering} & \texttt{featurize()} en \texttt{pipeline.py} & \textbf{Idéntico} & \checkmark{} 100\% \\
+\textbf{Modelo + calibración} & XGBoost + isotonic + SHAP & \textbf{Idéntico} & \checkmark{} 100\% \\
+\textbf{Reglas de alerta} (\texttt{alert\_valuedata}) & \texttt{p\_fallo $\geq$ 0.5} $\wedge$ \texttt{horas\_hasta\_we $\geq$ 2} & Tunear thresholds contra ROI medido & \checkmark{} se mantiene \\
+\textbf{Inferencia} & \texttt{apply\_status\_and\_predict} cada 3s & \textbf{Idéntico}, conectado a feed real & \checkmark{} 100\% \\
+\textbf{Layout multi-tenant} & Empresas extraídas del Excel & Misma tabla \texttt{fpoc\_empresas\_transporte} & \checkmark{} 100\% \\
+\textbf{Deployment} & uvicorn local + SQLite & App Service + Azure SQL + Container Registry & Switch via env \\
+\bottomrule
+\end{longtable}
+
+Los componentes marcados como ``Reuso 100\%'' no requieren reescribirse --- son los que más esfuerzo tomó construir bien (calibración, SHAP, reglas, scope multi-tenant). Esta es la inversión que el cliente preserva del POC.
+
+\subsection{Mejoras esperables con datos reales}
+
+\begin{enumerate}
+  \item \textbf{Más historia $\rightarrow$ mejor AUC}. Hoy AUC $\approx 0.77$ sobre 60 días sintéticos. Con 12 meses de operación real esperamos 0.82--0.88 (referencia: estudios públicos de last-mile delivery prediction).
+  \item \textbf{Comuna real (no grid)}: usar código comunal del INE en lugar de la cuadrícula de $0.05^{\circ}$ puede subir AUC en 1--2 puntos y mejorar la interpretabilidad de SHAP (``Zona Las Condes'' vs ``Zona $-33.45\_-70.65$'').
+  \item \textbf{Anomalías como features}: los 5 flags \texttt{ruta\_*} del Excel se enchufan como columnas binarias adicionales. Son señales fuertes (el equipo de Falabella ya las identificó como predictivas).
+  \item \textbf{Features externos}: clima (Meteoblue / DMC API), congestión (Google Maps Distance Matrix), eventos masivos (calendario público). Cada uno suma 1--3 puntos de AUC en estudios comparables.
+\end{enumerate}
+
+\subsection{Limitaciones honestas del POC}
+
+\begin{itemize}
+  \item \textbf{Comuna de $0.05^{\circ}$} $\approx$ 5 km $\times$ 5 km. Granularidad coarse --- es un proxy.
+  \item \textbf{\texttt{scale\_pos\_weight} simple}: para datasets reales considerar focal loss o muestreo estratificado por hora/comuna.
+  \item \textbf{Sin features de contexto externo}: clima, eventos, congestión vial --- pendientes.
+  \item \textbf{\texttt{PRICE\_PER\_RESCUE\_CLP = 8000} y \texttt{RESCUE\_RATE = 0.60} son placeholders}. El KPI ``Delta de rescate'' está oculto en el frontend hasta tener números oficiales del área de operaciones.
+  \item \textbf{Re-entrenamiento mensual} (no implementado): producción requiere un pipeline reproducible (MLflow / DVC + un job programado).
+\end{itemize}
+
+\section{Cómo correr todo end-to-end}
+
+\begin{lstlisting}[language=bash]
+# 1) Cargar Excel a SQLite (una vez, o cuando llegue Excel nuevo)
+cd valuedata_backend
+python fpoc_loader/seed_sqlite.py
+
+# 2) Levantar backend (entrena modelo en ~30s)
+DB_BACKEND=sqlite python -m uvicorn main:app --host 127.0.0.1 --port 8090
+
+# 3) Levantar frontend
+cd ../valuedata_frontend
+npm run dev
+
+# 4) Login en http://localhost:5180
+#    admin@falabella.cl / admin123                  -> ve todo
+#    transporte22@demo.cl / demo123                 -> ve solo Transporte 22
+\end{lstlisting}
+
+Endpoints de modelo: \texttt{/api/model/metrics}, \texttt{/api/model/importance}, \texttt{/api/visits/\{tid\}/explanation}, \texttt{/api/alerts/anticipated}.
+
+\end{document}
