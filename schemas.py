@@ -193,3 +193,7 @@ class StreamEvent(BaseModel):
     extra_min: Optional[float] = None
     reason: Optional[str] = None
     new_day_seed: Optional[int] = None
+    motivo: Optional[str] = None
+    comentario: Optional[str] = None
+    severity: Optional[str] = None
+    reported_by: Optional[str] = None

@@ -105,11 +105,15 @@ async def lifespan(_: FastAPI):
     # Live SQL generator (inserta rows aleatorias en fpoc.simpli_visits)
     live_gen_start()
 
+    # Simulador de comentarios alertables (off por default; se enciende por endpoint)
+    comment_sim_start()
+
     try:
         yield
     finally:
         scheduler.shutdown(wait=False)
         live_gen_stop()
+        comment_sim_stop()
 
 
 app = FastAPI(
@@ -140,6 +144,13 @@ from live_generator import (
     stop_scheduler as live_gen_stop,
 )
 from mantenedores import router as mantenedores_router
+from comments import router as comments_router
+from motivo_classifier import router as motivo_classifier_router
+from comment_simulator import (
+    router as comment_sim_router,
+    start_scheduler as comment_sim_start,
+    stop_scheduler as comment_sim_stop,
+)
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -152,6 +163,9 @@ app.include_router(plan_diario_router)
 app.include_router(watchlist_router)
 app.include_router(live_gen_router)
 app.include_router(mantenedores_router)
+app.include_router(comments_router)
+app.include_router(comment_sim_router)
+app.include_router(motivo_classifier_router)
 
 
 def _scope_df(df, user: CurrentUser):

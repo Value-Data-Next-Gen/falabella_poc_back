@@ -221,3 +221,37 @@ CREATE TABLE IF NOT EXISTS fpoc_clients (
 );
 CREATE INDEX IF NOT EXISTS IX_clients_title ON fpoc_clients(title);
 CREATE INDEX IF NOT EXISTS IX_clients_recurrent ON fpoc_clients(is_recurrent);
+
+-- ============================================================================
+-- Comentarios del transportista + config de motivos alertables
+-- (catálogo de motivos extraído del notebook auditoria_llm_directo.ipynb)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS fpoc_visit_comments (
+    comment_id   INTEGER  PRIMARY KEY AUTOINCREMENT,
+    tracking_id  TEXT     NOT NULL,
+    vehicle_id   INTEGER,
+    empresa_id   INTEGER,
+    motivo       TEXT     NOT NULL,
+    comentario   TEXT     NOT NULL,
+    created_by   INTEGER,
+    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES fpoc_users(user_id),
+    FOREIGN KEY (empresa_id) REFERENCES fpoc_empresas_transporte(empresa_id)
+);
+CREATE INDEX IF NOT EXISTS IX_comments_tracking ON fpoc_visit_comments(tracking_id);
+CREATE INDEX IF NOT EXISTS IX_comments_empresa ON fpoc_visit_comments(empresa_id);
+CREATE INDEX IF NOT EXISTS IX_comments_created ON fpoc_visit_comments(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS fpoc_motivo_alert_config (
+    motivo       TEXT     NOT NULL,
+    empresa_id   INTEGER,                    -- NULL = configuración global
+    alertable    INTEGER  NOT NULL DEFAULT 0,
+    severity     TEXT     NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high','critical')),
+    description  TEXT,                       -- override de la descripción usada en el prompt LLM
+    updated_by   INTEGER,
+    updated_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (motivo, empresa_id),
+    FOREIGN KEY (updated_by) REFERENCES fpoc_users(user_id),
+    FOREIGN KEY (empresa_id) REFERENCES fpoc_empresas_transporte(empresa_id)
+);
