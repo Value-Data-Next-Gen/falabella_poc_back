@@ -331,6 +331,47 @@ body.presenting .slide.active {
   font-size: 11px; color: #AAAAAA; letter-spacing: 2px;
   font-family: Courier New, monospace;
 }
+
+/* === Slide auditoría previa (Falabella-Comentarios) === */
+.audit-grid { display: flex; gap: 18px; margin-top: 8px; }
+.audit-stats { flex: 1.1; display: flex; flex-direction: column; gap: 10px; }
+.audit-stat { background: #F5F5F5; padding: 10px 14px; border-radius: 6px; border-left: 4px solid #159349; }
+.audit-stat .v { font-size: 26px; font-weight: 900; color: #159349; line-height: 1; margin: 0; }
+.audit-stat .k { font-size: 11px; color: #1D1D1B; margin: 4px 0 0 0; line-height: 1.35; }
+.audit-stat.alt { border-left-color: #FFCB05; }
+.audit-stat.alt .v { color: #1D1D1B; }
+.audit-stat.dark { background: #1D1D1B; border-left-color: #FFCB05; }
+.audit-stat.dark .v { color: #FFCB05; }
+.audit-stat.dark .k { color: #EEE; }
+.audit-flow { flex: 1.4; background: #1D1D1B; color: white; padding: 18px 22px; border-radius: 8px; border-left: 6px solid #CC2222; }
+.audit-flow h4 { margin: 0 0 12px 0; font-size: 13px; color: #FFCB05; letter-spacing: 2px; text-transform: uppercase; }
+.audit-flow .a-step { display: flex; gap: 12px; padding: 8px 0; border-bottom: 1px solid #333; }
+.audit-flow .a-step:last-child { border-bottom: 0; }
+.audit-flow .a-step .num { background: #CC2222; color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; flex-shrink: 0; }
+.audit-flow .a-step .lbl { font-size: 12px; line-height: 1.4; color: #F5F5F5; }
+.audit-flow .a-step .lbl b { color: #FFCB05; }
+.audit-bridge { margin-top: 18px; background: #FFF8DC; border: 1px solid #FFCB05; padding: 12px 16px; border-radius: 6px; }
+.audit-bridge .h { font-size: 11px; letter-spacing: 2px; color: #1D1D1B; font-weight: bold; text-transform: uppercase; margin: 0 0 4px 0; }
+.audit-bridge .b { font-size: 12px; line-height: 1.45; color: #1D1D1B; margin: 0; }
+
+/* === Slide alertas por motivos / IA === */
+.alert-grid { display: flex; gap: 12px; margin-bottom: 18px; }
+.alert-col { flex: 1; background: #F5F5F5; padding: 12px 14px; border-radius: 7px; border-left: 4px solid #159349; }
+.alert-col.highlight { background: #1D1D1B; color: white; border-left-color: #FFCB05; }
+.alert-col.highlight .alert-p { color: #EEE; }
+.alert-h { margin: 0 0 8px 0; font-size: 11px; color: #159349; letter-spacing: 2px; text-transform: uppercase; }
+.alert-p { font-size: 11px; line-height: 1.45; margin: 0 0 8px 0; color: #1D1D1B; }
+.alert-p code { font-family: Courier New, monospace; font-size: 11px; background: rgba(255,203,5,0.25); padding: 1px 4px; border-radius: 3px; color: inherit; }
+.alert-code { display: block; font-family: Courier New, monospace; font-size: 10px; line-height: 1.55; color: #1D1D1B; margin: 0; }
+.alert-code.small { font-size: 9.5px; line-height: 1.5; color: #EEE; }
+.alert-foot { font-size: 9.5px; color: #888; margin: 6px 0 0 0; font-style: italic; }
+.alert-flow { display: flex; align-items: center; gap: 6px; }
+.alert-flow .flow-step { flex: 1; background: white; border: 1px solid #E0E0E0; padding: 9px 11px; border-radius: 6px; display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 1.35; }
+.alert-flow .flow-step.done { border-left: 4px solid #159349; }
+.alert-flow .flow-step .n { background: #159349; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; flex-shrink: 0; }
+.alert-flow .flow-step code { font-family: Courier New, monospace; font-size: 10px; background: #F5F5F5; padding: 1px 4px; border-radius: 3px; }
+.alert-flow .flow-step em { font-style: italic; color: #555; }
+.alert-flow .flow-arrow { color: #FFCB05; font-size: 16px; font-weight: bold; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -345,7 +386,7 @@ body.presenting .slide.active {
   <h1>ValueData<br>× Falabella</h1>
   <p class="subtitle">Predicción anticipada de incumplimiento de entregas</p>
   <p class="meta">POC · Abril 2026 · Azure SQL · FastAPI · React · Twilio · XGBoost</p>
-  <div class="slide-num">01 / 12</div>
+  <div class="slide-num">01 / 14</div>
 </section>
 
 <!-- ===== 02 PROBLEMA (datos reales del Excel del cliente) ===== -->
@@ -375,7 +416,67 @@ body.presenting .slide.active {
     ventana de anticipación para alertar <b>2h antes del window_end</b> · umbral de P(fallo) default <b>50%</b>.
     El cálculo de ROI requiere los <b>costos reales de reagendamiento</b> que maneja el área de operaciones — no son parte del POC.
   </p>
-  <div class="slide-num">02 / 12</div>
+  <div class="slide-num">02 / 14</div>
+</section>
+
+<!-- ===== 02b ANÁLISIS PREVIO · AUDITORÍA DE COMENTARIOS ===== -->
+<section class="slide page" id="s2b">
+  <p class="eyebrow">Análisis previo · auditoría de comentarios</p>
+  <h1>Antes del modelo: auditamos cómo se rotulan los motivos hoy</h1>
+  <h2>Excel histórico <b>"Motivo de no-entrega"</b> · pipeline reproducible en repo
+    <code style="font-family:Courier New,monospace; font-size:13px; background:#F5F5F5; padding:2px 6px; border-radius:3px;">Falabella-Comentarios</code> (2 notebooks)
+  </h2>
+
+  <div class="audit-grid">
+    <div class="audit-stats">
+      <div class="audit-stat">
+        <p class="v">39.297</p>
+        <p class="k">filas auditadas (motivo + comentario libre del operador)</p>
+      </div>
+      <div class="audit-stat">
+        <p class="v">21.673</p>
+        <p class="k">comentarios <b>únicos</b> informativos — base del LLM directo</p>
+      </div>
+      <div class="audit-stat alt">
+        <p class="v">11</p>
+        <p class="k">motivos del catálogo operacional canónico (<i>SIN MORADORES, PROBLEMA DE DIRECCION, SINIESTRO EN CALLE, …</i>)</p>
+      </div>
+      <div class="audit-stat dark">
+        <p class="v">~$2,4 USD</p>
+        <p class="k">costo total GPT-4o-mini · 30-45&nbsp;min con 10 workers concurrentes</p>
+      </div>
+    </div>
+
+    <div class="audit-flow">
+      <h4>Pipeline reproducible (2 notebooks)</h4>
+      <div class="a-step">
+        <span class="num">1</span>
+        <span class="lbl"><b>Carga + normalización</b> del Excel: lowercase, sin tildes, espacios colapsados.</span>
+      </div>
+      <div class="a-step">
+        <span class="num">2</span>
+        <span class="lbl"><b>Bottom-up</b>: pureza por texto repetido y filas no-informativas (<i>"sin info", "ok", "."</i>).</span>
+      </div>
+      <div class="a-step">
+        <span class="num">3</span>
+        <span class="lbl"><b>k-NN semántico</b> (TF-IDF char n-grams) — vecinos textuales en desacuerdo = sospechoso.</span>
+      </div>
+      <div class="a-step">
+        <span class="num">4</span>
+        <span class="lbl"><b>LLM directo</b> sobre los 21.673 únicos con reglas operacionales → JSON <code style="font-family:Courier New,monospace; font-size:11px; background:#333; padding:1px 4px; border-radius:3px; color:#FFCB05;">{motivo, confianza, razonamiento}</code>.</span>
+      </div>
+      <div class="a-step">
+        <span class="num">5</span>
+        <span class="lbl"><b>Excel consolidado</b> con sospechosos para revisión humana: errores aislados <b>y sistemáticos</b>.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="audit-bridge">
+    <p class="h">Por qué importa para este POC</p>
+    <p class="b">Las <b>REGLAS_OPERACIONALES</b> validadas en el notebook se llevaron tal cual al backend: hoy son el <code style="font-family:Courier New,monospace;">MOTIVOS_CATALOGO</code> en <code style="font-family:Courier New,monospace;">comments.py</code> y el <i>system prompt</i> de <code style="font-family:Courier New,monospace;">/api/motivos/classify</code>. Lo que en la auditoría fue un proceso batch one-shot, ahora corre en vivo por cada comentario que reporta el conductor.</p>
+  </div>
+  <div class="slide-num">03 / 14</div>
 </section>
 
 <!-- ===== 03 VARIABILIDAD (charts) ===== -->
@@ -406,7 +507,7 @@ body.presenting .slide.active {
       <li>Distribución bimodal: pico en [−0.5, 0] con 190 visitas, cola larga hacia la derecha (hasta +11h tarde) → variabilidad operativa real.</li>
     </ul>
   </div>
-  <div class="slide-num">03 / 12</div>
+  <div class="slide-num">04 / 14</div>
 </section>
 
 <!-- ===== 04 QUÉ HACE ===== -->
@@ -434,7 +535,7 @@ body.presenting .slide.active {
   <div class="summary-box">
     <p><b>Resultado:</b> cada alerta se convierte en acción antes que expire el slack. Todos los envíos y cambios quedan auditables en Azure SQL para BI y compliance.</p>
   </div>
-  <div class="slide-num">04 / 12</div>
+  <div class="slide-num">05 / 14</div>
 </section>
 
 <!-- ===== 04 ARQUITECTURA ===== -->
@@ -494,7 +595,7 @@ body.presenting .slide.active {
     <h3>Flujo de request</h3>
     <p>Browser → Vite proxy /api → FastAPI → JWT middleware → scope por empresa → Azure SQL / Twilio → response</p>
   </div>
-  <div class="slide-num">05 / 12</div>
+  <div class="slide-num">06 / 14</div>
 </section>
 
 <!-- ===== 05 STACK ===== -->
@@ -540,7 +641,7 @@ body.presenting .slide.active {
       <div class="stack-item"><p class="name">Express server.cjs</p><p class="desc">SPA producción</p></div>
     </div>
   </div>
-  <div class="slide-num">06 / 12</div>
+  <div class="slide-num">07 / 14</div>
 </section>
 
 <!-- ===== 06 MÓDULOS ===== -->
@@ -587,14 +688,14 @@ body.presenting .slide.active {
       <p class="tech">Deck.gl + MapLibre</p>
     </div>
   </div>
-  <div class="slide-num">07 / 12</div>
+  <div class="slide-num">08 / 14</div>
 </section>
 
 <!-- ===== 07 MODELO ML ===== -->
 <section class="slide page" id="s7">
   <p class="eyebrow">Modelo predictivo</p>
   <h1>XGBoost calibrado con explicabilidad SHAP</h1>
-  <h2>P(fallo) = probabilidad real de que la visita incumpla su window_end</h2>
+  <h2><strong>DS:</strong> XGBoost + isotonic + SHAP &nbsp;·&nbsp; <strong>Operaciones:</strong> nota de riesgo por visita + 3 razones en lenguaje claro</h2>
 
   <div class="model-grid">
     <div class="model-main">
@@ -663,9 +764,14 @@ horas_hasta_window_end</code>
 conductor_id
 dia_semana</code>
       </div>
+      <br>
+      <div class="feature-list" style="border-left-color: #FFCB05; background: #FFF8DC;">
+        <h4 style="color:#1D1D1B;">Lectura para operaciones</h4>
+        <p style="font-size: 11px; line-height: 1.45; color:#1D1D1B; margin: 0;">El modelo le pone una <b>nota de riesgo</b> a cada visita del día (0&nbsp;a&nbsp;100&nbsp;%). Si supera el umbral, entra a la Watchlist con <b>3 razones legibles</b> ("retraso acumulado de 25&nbsp;min", "comuna histórica problemática", "quedan 1,2&nbsp;h hasta el cierre"). El operador no necesita ver el modelo: ve la lista priorizada y la acción.</p>
+      </div>
     </div>
   </div>
-  <div class="slide-num">08 / 12</div>
+  <div class="slide-num">09 / 14</div>
 </section>
 
 <!-- ===== 08 URGENCY SCORE ===== -->
@@ -707,7 +813,7 @@ dia_semana</code>
       <p class="act">No aparece en watchlist</p>
     </div>
   </div>
-  <div class="slide-num">09 / 12</div>
+  <div class="slide-num">10 / 14</div>
 </section>
 
 <!-- ===== 09 WHATSAPP ===== -->
@@ -758,7 +864,7 @@ dia_semana</code>
       <p>En alerta y plan diario: chip verde "✓ N enviadas" clickeable muestra el último mensaje y a quién fue.</p>
     </div>
   </div>
-  <div class="slide-num">10 / 12</div>
+  <div class="slide-num">11 / 14</div>
 </section>
 
 <!-- ===== 10 DATA EN VIVO ===== -->
@@ -795,7 +901,69 @@ dia_semana</code>
       </ul>
     </div>
   </div>
-  <div class="slide-num">11 / 12</div>
+  <div class="slide-num">12 / 14</div>
+</section>
+
+<!-- ===== 10b MODELO DE ALERTAS POR MOTIVOS · IA ===== -->
+<section class="slide page" id="s9b">
+  <p class="eyebrow">Modelo de alertas por motivos</p>
+  <h1>Auditoría en vivo: catálogo + IA + auto-notify</h1>
+  <h2>El conductor reporta motivo + texto. Una IA valida la causa raíz. Si el motivo es alertable, dispara WhatsApp automático al operador.</h2>
+
+  <div class="alert-grid">
+    <div class="alert-col">
+      <h4 class="alert-h">Catálogo operacional (11)</h4>
+      <code class="alert-code">SIN MORADORES
+PROBLEMA DE DIRECCION
+NO DESPACHA A LOCALIDAD
+FUERA DE COBERTURA
+PROD N ENTREGADO X TIEMPO
+PRODUCTO NO CARGADO
+CLIENTE RECHAZA ENVIO
+SINIESTRO EN CALLE *
+PRODUCTO CON PROBLEMAS
+NO CUMPLE COND. RETIRO
+PRODUCTO ROBADO *</code>
+      <p class="alert-foot">* alertable por default · severity configurable</p>
+    </div>
+
+    <div class="alert-col">
+      <h4 class="alert-h">Config por empresa</h4>
+      <p class="alert-p"><b>Override por motivo</b> en <code>fpoc.motivo_alert_config</code>: alertable on/off, severity (low/medium/high/critical) y descripción operacional. Fallback a config global.</p>
+      <p class="alert-p"><b>Endpoints clave</b></p>
+      <code class="alert-code" style="font-size:9.5px; color:#1D1D1B;">GET  /api/motivos
+GET  /api/motivos/alert-config
+PUT  /api/motivos/alert-config/{motivo}
+POST /api/visits/{tid}/comment
+GET  /api/comments/recent</code>
+    </div>
+
+    <div class="alert-col highlight">
+      <h4 class="alert-h" style="color:#FFCB05;">Classifier IA</h4>
+      <p class="alert-p"><b style="color:#FFCB05;">Azure OpenAI gpt-4o-mini</b> con system prompt construido desde el manual operacional (mismo del notebook <i>auditoria_llm_directo</i>). Devuelve JSON estricto: <code>{motivo_correcto, confianza, razonamiento}</code>.</p>
+      <p class="alert-p"><b style="color:#FFCB05;">Fallback determinístico</b> por keywords cuando faltan creds Azure → siempre responde, nunca tira el flujo abajo.</p>
+      <p class="alert-foot" style="color:#AAA;">POST /api/motivos/classify</p>
+    </div>
+  </div>
+
+  <div class="alert-flow">
+    <div class="flow-step">
+      <span class="n">1</span><span>Conductor reporta <em>motivo + texto</em> desde la app</span>
+    </div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step">
+      <span class="n">2</span><span>LLM valida causa raíz (o keywords si no hay Azure)</span>
+    </div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step">
+      <span class="n">3</span><span>Evento <code>comment_alert</code> + WhatsApp si <code>ENABLE_AUTO_NOTIFY=true</code></span>
+    </div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step done">
+      <span class="n">4</span><span>Asistente IA + simulador de comentarios para auditoría y demo</span>
+    </div>
+  </div>
+  <div class="slide-num">13 / 14</div>
 </section>
 
 <!-- ===== 11 ROADMAP ===== -->
@@ -836,7 +1004,7 @@ dia_semana</code>
       <p>Pipelines CI/CD desde los 2 repos GitHub, App Insights para métricas, alertas ante scheduler stall o SLA degradado.</p>
     </div>
   </div>
-  <div class="slide-num">12 / 12</div>
+  <div class="slide-num">14 / 14</div>
 </section>
 
 </div>
@@ -844,7 +1012,7 @@ dia_semana</code>
 <!-- Navegación fija -->
 <div class="nav">
   <button id="prev">‹</button>
-  <span class="counter" id="counter">01 / 12</span>
+  <span class="counter" id="counter">01 / 14</span>
   <button id="next">›</button>
   <button class="fs-btn" id="fs">Presentar</button>
 </div>
@@ -861,7 +1029,7 @@ function render() {
     slides[idx].scrollIntoView({ behavior: 'smooth' });
     // Calcular escala para fit viewport
     const sw = window.innerWidth, sh = window.innerHeight;
-    const scale = Math.min(sw / 1280, sh / 720);
+    const scale = Math.min(sw / 1480, sh / 720);
     const marginL = (sw - 1280 * scale) / 2 + 'px';
     const marginT = (sh - 720 * scale) / 2 + 'px';
     slides[idx].style.setProperty('--scale', scale);

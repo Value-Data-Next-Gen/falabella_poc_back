@@ -368,34 +368,51 @@ def test_self(user: CurrentUser = Depends(current_user)) -> WhatsAppResponse:
 @router.get("/log", response_model=list[NotificationLogRow])
 def get_log(
     limit: int = Query(default=50, ge=1, le=500),
+    triggered_by: Optional[str] = Query(default=None, description="Filtra por origen: manual / auto_threshold / comment_alert / vip_deadline_warning"),
+    status: Optional[str] = Query(default=None, description="Filtra por status: sent / dry_run / error"),
     user: CurrentUser = Depends(current_user),
 ) -> list[NotificationLogRow]:
+    extra_where: list[str] = []
+    extra_params: list = []
+    if triggered_by:
+        extra_where.append("triggered_by = ?")
+        extra_params.append(triggered_by)
+    if status:
+        extra_where.append("status = ?")
+        extra_params.append(status)
+
     with get_conn() as cn:
         cur = cn.cursor()
         if user.is_falabella:
+            where_sql = ""
+            if extra_where:
+                where_sql = " WHERE " + " AND ".join(extra_where)
             cur.execute(
-                """
+                f"""
                 SELECT notification_id, user_id, to_number, channel, subject,
                        body, tracking_id, twilio_sid, status, error_msg, triggered_by, created_at
                 FROM fpoc.notifications_log
+                {where_sql}
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                limit,
+                *extra_params, limit,
             )
         else:
             # solo las dirigidas a users de su empresa
+            extra_where_aliased = [f"l.{c.split(' = ')[0]} = ?" for c in extra_where]
+            where_sql = " AND " + " AND ".join(extra_where_aliased) if extra_where_aliased else ""
             cur.execute(
-                """
+                f"""
                 SELECT l.notification_id, l.user_id, l.to_number, l.channel, l.subject,
                        l.body, l.tracking_id, l.twilio_sid, l.status, l.error_msg, l.triggered_by, l.created_at
                 FROM fpoc.notifications_log l
                 INNER JOIN fpoc.users u ON u.user_id = l.user_id
-                WHERE u.empresa_id = ?
+                WHERE u.empresa_id = ?{where_sql}
                 ORDER BY l.created_at DESC
                 LIMIT ?
                 """,
-                user.empresa_id, limit,
+                user.empresa_id, *extra_params, limit,
             )
         rows = cur.fetchall()
     return [

@@ -99,6 +99,10 @@ async def lifespan(_: FastAPI):
         seconds=SCHEDULER_TICK_SEC, id="sim-tick",
         max_instances=1, coalesce=True,
     )
+    # VIP deadline checker (interval 60s)
+    from vip_deadline_cron import register_cron as register_vip_cron
+    register_vip_cron(scheduler)
+
     scheduler.start()
     logger.info(f"Scheduler started: tick every {SCHEDULER_TICK_SEC}s")
 
@@ -145,12 +149,15 @@ from live_generator import (
 )
 from mantenedores import router as mantenedores_router
 from comments import router as comments_router
+from empresa_contactos import router as empresa_contactos_router
 from motivo_classifier import router as motivo_classifier_router
 from comment_simulator import (
     router as comment_sim_router,
     start_scheduler as comment_sim_start,
     stop_scheduler as comment_sim_stop,
 )
+from motivo_corrections import router as motivo_corrections_router
+from drivers_whatsapp import router as drivers_whatsapp_router
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -164,8 +171,11 @@ app.include_router(watchlist_router)
 app.include_router(live_gen_router)
 app.include_router(mantenedores_router)
 app.include_router(comments_router)
+app.include_router(empresa_contactos_router)
 app.include_router(comment_sim_router)
 app.include_router(motivo_classifier_router)
+app.include_router(motivo_corrections_router)
+app.include_router(drivers_whatsapp_router)
 
 
 def _scope_df(df, user: CurrentUser):
@@ -278,6 +288,8 @@ def get_visits(
     vehicle_id: list[int] | None = Query(default=None),
     status: str | None = Query(default=None),
     only_alerts: bool = Query(default=False),
+    region: str = Query(default="all", pattern="^(all|RM|regiones)$"),
+    only_vip: bool = Query(default=False),
     user: CurrentUser = Depends(current_user),
 ):
     _require_ready()
@@ -288,6 +300,31 @@ def get_visits(
         df = df[df["status"] == status]
     if only_alerts:
         df = df[df["alert_valuedata"] | (df["alert_slack"] != "GREEN")]
+    if region != "all":
+        from comments import _visit_region
+        df = df.copy()
+        df["_region"] = df.apply(lambda r: _visit_region(r.get("latitude"), r.get("longitude")), axis=1)
+        df = df[df["_region"] == region]
+    if only_vip:
+        # cruce por title con fpoc.vip_clients (active=1)
+        titles = df["title"].astype(str).unique().tolist()
+        if titles:
+            from db import get_conn as _gc
+            vip_set: set[str] = set()
+            with _gc() as cn:
+                cur = cn.cursor()
+                for i in range(0, len(titles), 500):
+                    batch = titles[i:i + 500]
+                    marks = ",".join(["?"] * len(batch))
+                    cur.execute(
+                        f"SELECT DISTINCT match_value FROM fpoc.vip_clients "
+                        f"WHERE active = 1 AND match_type = 'title' AND match_value IN ({marks})",
+                        *batch,
+                    )
+                    vip_set.update(r.match_value for r in cur.fetchall())
+            df = df[df["title"].astype(str).isin(vip_set)]
+        else:
+            df = df.iloc[0:0]
     return _df_to_visits(df)
 
 

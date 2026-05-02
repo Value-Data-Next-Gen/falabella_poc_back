@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from auth import CurrentUser, current_user
+from comments import _visit_region
 from db import get_conn
 from state import STATE
 
@@ -60,10 +61,13 @@ class WatchlistVisit(BaseModel):
     p_fallo: float
     alert_valuedata: bool
     is_vip: bool
+    vip_tier: Optional[str] = None
+    vip_deadline_time: Optional[str] = None
     priority: str
     urgency_score: float
     severity: str  # 'CRITICO' | 'ALTO' | 'MEDIO'
     reasons: list[str]
+    region: str
     notif: Optional[NotifInline] = None
 
 
@@ -131,6 +135,8 @@ def _score_and_reasons(row, is_vip: bool, priority: str) -> tuple[float, str, li
 @router.get("", response_model=WatchlistResponse)
 def get_watchlist(
     empresa_id: Optional[int] = Query(default=None),
+    region: str = Query(default="all", pattern="^(all|RM|regiones)$"),
+    only_vip: bool = Query(default=False),
     user: CurrentUser = Depends(current_user),
 ) -> WatchlistResponse:
     if STATE.snapshot_df is None:
@@ -150,10 +156,15 @@ def get_watchlist(
     # Solo pending
     df = df[df["status"] == "pending"]
 
+    # Region filter
+    df["region"] = df.apply(lambda r: _visit_region(r.get("latitude"), r.get("longitude")), axis=1)
+    if region != "all":
+        df = df[df["region"] == region]
+
     # Lookup de VIP titles + priority overrides
     tids = df["tracking_id"].astype(str).unique().tolist()
     titles = df["title"].astype(str).unique().tolist()
-    vip_titles: set[str] = set()
+    vip_meta: dict[str, dict] = {}  # title -> {tier, deadline_time}
     priority_map: dict[str, str] = {}
     notif_map: dict[str, dict] = {}
     empresas_cat = {int(e["empresa_id"]): e["nombre"] for e in STATE.empresas}
@@ -162,16 +173,23 @@ def get_watchlist(
     if tids:
         with get_conn() as cn:
             cur = cn.cursor()
-            # VIP by title (batched)
+            # VIP by title (batched, with metadata)
             for i in range(0, len(titles), 500):
                 batch = titles[i:i + 500]
                 marks = ",".join(["?"] * len(batch))
                 cur.execute(
-                    f"SELECT DISTINCT match_value FROM fpoc.vip_clients "
-                    f"WHERE active = 1 AND match_type = 'title' AND match_value IN ({marks})",
+                    f"""
+                    SELECT match_value, tier, deadline_time
+                    FROM fpoc.vip_clients
+                    WHERE active = 1 AND match_type = 'title' AND match_value IN ({marks})
+                    """,
                     *batch,
                 )
-                vip_titles.update(r.match_value for r in cur.fetchall())
+                for r in cur.fetchall():
+                    vip_meta[r.match_value] = {
+                        "tier": r.tier,
+                        "deadline_time": str(r.deadline_time) if r.deadline_time else None,
+                    }
             # Priority overrides
             for i in range(0, len(tids), 500):
                 batch = tids[i:i + 500]
@@ -214,7 +232,13 @@ def get_watchlist(
     for _, row in df.iterrows():
         tid = str(row["tracking_id"])
         title = str(row["title"])
-        is_vip = title in vip_titles
+        vip_info = vip_meta.get(title)
+        is_vip = vip_info is not None
+
+        # Filtro only_vip
+        if only_vip and not is_vip:
+            continue
+
         prio = priority_map.get(tid, "vip" if is_vip else "normal")
         score, sev, reasons = _score_and_reasons(row, is_vip, prio)
         if score < 25:
@@ -248,10 +272,13 @@ def get_watchlist(
             p_fallo=float(row["p_fallo"]),
             alert_valuedata=bool(row["alert_valuedata"]),
             is_vip=is_vip,
+            vip_tier=(vip_info or {}).get("tier"),
+            vip_deadline_time=(vip_info or {}).get("deadline_time"),
             priority=prio,
             urgency_score=round(score, 1),
             severity=sev,
             reasons=reasons,
+            region=str(row.get("region", "regiones")),
             notif=NotifInline(**nm) if nm else None,
         ))
 

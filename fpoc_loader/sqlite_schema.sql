@@ -124,6 +124,7 @@ CREATE INDEX IF NOT EXISTS IX_access_ip ON fpoc_access_log(ip_address);
 CREATE TABLE IF NOT EXISTS fpoc_notifications_log (
     notification_id   INTEGER  PRIMARY KEY AUTOINCREMENT,
     user_id           INTEGER,
+    contact_id        INTEGER,
     to_number         TEXT     NOT NULL,
     channel           TEXT     NOT NULL DEFAULT 'whatsapp',
     subject           TEXT,
@@ -136,26 +137,58 @@ CREATE TABLE IF NOT EXISTS fpoc_notifications_log (
     content_sid       TEXT,
     content_variables TEXT,
     created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES fpoc_users(user_id)
+    FOREIGN KEY (user_id) REFERENCES fpoc_users(user_id),
+    FOREIGN KEY (contact_id) REFERENCES fpoc_empresa_contactos(contact_id)
 );
 CREATE INDEX IF NOT EXISTS IX_notif_user ON fpoc_notifications_log(user_id);
 CREATE INDEX IF NOT EXISTS IX_notif_tracking ON fpoc_notifications_log(tracking_id);
 CREATE INDEX IF NOT EXISTS IX_notif_created ON fpoc_notifications_log(created_at DESC);
 
 -- ============================================================================
+-- Contactos por empresa transportista (destinatarios de notificaciones).
+-- Separa el concepto "destinatario WhatsApp" del "user que hace login".
+-- Un mismo phone puede tener N contactos (diferentes empresas/roles), y un
+-- mismo user puede no estar acá (admin login no recibe alertas, p.e.).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS fpoc_empresa_contactos (
+    contact_id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+    empresa_id          INTEGER  NOT NULL,
+    nombre              TEXT     NOT NULL,
+    rol                 TEXT     NOT NULL CHECK (rol IN ('jefe','coordinador','dispatcher','driver','otro')),
+    phone_e164          TEXT     NOT NULL,
+    email               TEXT,
+    severities_in       TEXT,    -- JSON array. NULL = todas las severidades
+    motivos_in          TEXT,    -- JSON array. NULL = todos los motivos
+    region_filter       TEXT     NOT NULL DEFAULT 'all' CHECK (region_filter IN ('RM','regiones','all')),
+    opted_in_at         TIMESTAMP,  -- compliance ToS WhatsApp; NULL = no consintió aún
+    active              INTEGER  NOT NULL DEFAULT 1,
+    notes               TEXT,
+    created_by_user_id  INTEGER,
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (empresa_id) REFERENCES fpoc_empresas_transporte(empresa_id),
+    FOREIGN KEY (created_by_user_id) REFERENCES fpoc_users(user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fpoc_empresa_contactos_empresa ON fpoc_empresa_contactos(empresa_id, active);
+CREATE INDEX IF NOT EXISTS idx_fpoc_empresa_contactos_phone   ON fpoc_empresa_contactos(phone_e164);
+
+-- ============================================================================
 -- VIP clients + priority overrides
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS fpoc_vip_clients (
-    vip_id         INTEGER  PRIMARY KEY AUTOINCREMENT,
-    match_type     TEXT     NOT NULL CHECK (match_type IN ('customer_id', 'title', 'reference')),
-    match_value    TEXT     NOT NULL,
-    empresa_id     INTEGER,
-    tier           TEXT     NOT NULL DEFAULT 'VIP',
-    notes          TEXT,
-    active         INTEGER    NOT NULL DEFAULT 1,
-    created_by     INTEGER,
-    created_at     TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    vip_id               INTEGER  PRIMARY KEY AUTOINCREMENT,
+    match_type           TEXT     NOT NULL CHECK (match_type IN ('customer_id', 'title', 'reference')),
+    match_value          TEXT     NOT NULL,
+    empresa_id           INTEGER,
+    tier                 TEXT     NOT NULL DEFAULT 'VIP',
+    notes                TEXT,
+    deadline_time        TEXT,                         -- HH:MM, NULL si no aplica
+    alert_minutes_before INTEGER  NOT NULL DEFAULT 60, -- min antes del deadline
+    last_alert_sent_at   TIMESTAMP,                    -- tracking del cron
+    active               INTEGER  NOT NULL DEFAULT 1,
+    created_by           INTEGER,
+    created_at           TIMESTAMP  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (match_type, match_value, empresa_id),
     FOREIGN KEY (created_by) REFERENCES fpoc_users(user_id),
     FOREIGN KEY (empresa_id) REFERENCES fpoc_empresas_transporte(empresa_id)
@@ -189,8 +222,34 @@ CREATE TABLE IF NOT EXISTS fpoc_drivers (
     joined_at        DATE,
     active           INTEGER  NOT NULL DEFAULT 1,
     is_problem_hidden INTEGER NOT NULL DEFAULT 0,
+    -- Sprint 4.A1: WhatsApp opt-in
+    phone_e164       TEXT,
+    notify_whatsapp  INTEGER  NOT NULL DEFAULT 0,
+    opted_in_at      TIMESTAMP,
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Sprint 4.A2: Tabla de correcciones de motivo (LLM auto-validation)
+CREATE TABLE IF NOT EXISTS fpoc_motivo_corrections (
+    correction_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    comment_id         INTEGER NOT NULL,
+    tracking_id        TEXT NOT NULL,
+    motivo_reportado   TEXT NOT NULL,
+    motivo_sugerido    TEXT NOT NULL,
+    confianza          TEXT NOT NULL,
+    razonamiento       TEXT NOT NULL,
+    driver_id          TEXT,
+    status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','accepted','rejected','no_action')),
+    decided_by_user_id INTEGER,
+    decided_at         TIMESTAMP,
+    notified_driver_at TIMESTAMP,
+    created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (comment_id) REFERENCES fpoc_visit_comments(comment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_corrections_status ON fpoc_motivo_corrections(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_corrections_driver ON fpoc_motivo_corrections(driver_id);
+CREATE INDEX IF NOT EXISTS idx_corrections_tracking ON fpoc_motivo_corrections(tracking_id);
 
 CREATE TABLE IF NOT EXISTS fpoc_vehicles (
     vehicle_id     INTEGER  PRIMARY KEY,
