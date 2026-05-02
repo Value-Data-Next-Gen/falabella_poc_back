@@ -85,6 +85,15 @@ SCHEDULER_TICK_SEC = 3  # cada 3s avanza sim_clock por sim_minutes_per_tick
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Sprint 7: bootstrap automático de SQLite si la DB no existe / está vacía.
+    # No-op para DB_BACKEND=sqlserver. Se corre antes de STATE.init() porque
+    # train_model lee fpoc_simpli_visits.
+    try:
+        from fpoc_loader.bootstrap import bootstrap_if_needed
+        bootstrap_if_needed()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[bootstrap] falló (se intenta seguir): {e}")
+
     logger.info("Bootstrapping ValueData backend (training model, may take 30-40s)...")
     STATE.init()
     logger.info(
@@ -158,6 +167,7 @@ from comment_simulator import (
 )
 from motivo_corrections import router as motivo_corrections_router
 from drivers_whatsapp import router as drivers_whatsapp_router
+from search import router as search_router
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -176,6 +186,7 @@ app.include_router(comment_sim_router)
 app.include_router(motivo_classifier_router)
 app.include_router(motivo_corrections_router)
 app.include_router(drivers_whatsapp_router)
+app.include_router(search_router)
 
 
 def _scope_df(df, user: CurrentUser):

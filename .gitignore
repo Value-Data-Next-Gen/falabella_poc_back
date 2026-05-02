@@ -19,7 +19,6 @@ dist/
 build/
 *.sqlite
 *.db
-!valuedata.db
 *.parquet
 data/
 
