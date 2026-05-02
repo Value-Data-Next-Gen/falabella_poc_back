@@ -19,6 +19,9 @@ dist/
 build/
 *.sqlite
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.parquet
 data/
 
