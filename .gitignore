@@ -35,5 +35,6 @@ data/
 *.synctex.gz
 *.toc
 *.pdf
+!MANUAL_USUARIO.pdf
 MODELO.log
 PIPELINE.log
