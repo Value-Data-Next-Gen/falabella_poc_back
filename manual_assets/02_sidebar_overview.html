@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head>
+<body>
+<script src="_layout.js"></script>
+<script>
+renderShell({
+  active: 'operacion',
+  breadcrumb: '<b>Operación</b> › Plan en ejecución',
+  content: `
+    <div class="h1">Plan en ejecución</div>
+    <div class="subtitle-page">Vista en vivo de las rutas en curso · Últ. actualización hace 12 s</div>
+    <div class="kpi-strip">
+      <div class="kpi"><div class="kpi-label">Visitas hoy</div><div class="kpi-value">1.925</div></div>
+      <div class="kpi"><div class="kpi-label">OK</div><div class="kpi-value green">1.240</div></div>
+      <div class="kpi"><div class="kpi-label">Fallidas</div><div class="kpi-value red">38</div></div>
+      <div class="kpi"><div class="kpi-label">En riesgo</div><div class="kpi-value amber">87</div></div>
+      <div class="kpi"><div class="kpi-label">% Cumplimiento</div><div class="kpi-value green">85%</div></div>
+    </div>
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <div class="h2">Rutas activas por empresa</div>
+        <div class="flex gap-2">
+          <button class="btn btn-outline">Filtros</button>
+          <button class="btn btn-primary">Refrescar</button>
+        </div>
+      </div>
+      <div style="height: 380px; background: linear-gradient(180deg, #242422, #1f1f1d); border-radius: 8px; border: 1px dashed var(--border); display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px;">
+        Área de contenido principal · empresas → rutas → visitas
+      </div>
+    </div>
+  `
+});
+</script>
+</body></html>

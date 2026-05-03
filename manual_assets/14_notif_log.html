@@ -1,0 +1,63 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head>
+<body>
+<script src="_layout.js"></script>
+<script>
+const rows = [
+  ['NTF-87421', '28/04 14:52', '+56 9 5544 1122', 'CRITICAL',  'PRODUCTO ROBADO',     'sent',   'auto_threshold',         'SMa12bcd…'],
+  ['NTF-87420', '28/04 14:51', '+56 9 4422 9011', 'CRITICAL',  'PRODUCTO ROBADO',     'sent',   'auto_threshold',         'SMb45efgh…'],
+  ['NTF-87419', '28/04 14:48', '+56 9 7012 4488', 'HIGH',      'ZONA INSEGURA',       'sent',   'comment_alert',          'SMc78ijkl…'],
+  ['NTF-87418', '28/04 14:30', '+56 9 8821 7330', 'MEDIUM',    'PRODUCTO NO CARGADO', 'failed', 'auto_threshold',         '—'],
+  ['NTF-87417', '28/04 14:12', '+56 9 6611 0024', 'MEDIUM',    'CLIENTE AUSENTE',     'sent',   'manual',                 'SMd11mnop…'],
+  ['NTF-87416', '28/04 13:55', '+56 9 5544 1122', 'HIGH',      'PRODUCTO DAÑADO',     'sent',   'motivo_correction_redispatch', 'SMe33qrst…'],
+];
+const sevChip = s => s === 'CRITICAL' ? '<span class="chip chip-red">CRITICAL</span>' : s === 'HIGH' ? '<span class="chip chip-orange">HIGH</span>' : '<span class="chip chip-amber">MEDIUM</span>';
+const stChip = s => s === 'sent' ? '<span class="chip chip-green">sent ✓</span>' : '<span class="chip chip-red">failed</span>';
+renderShell({
+  active: 'control',
+  breadcrumb: '<b>Control / Analítica</b> › Notificaciones · log',
+  content: `
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <div class="h1">Notificaciones · log</div>
+        <div class="subtitle-page">324 notificaciones hoy · 311 entregadas (96%) · 13 fallidas</div>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-outline">Reintentar fallidas</button>
+        <button class="btn btn-outline">Exportar CSV</button>
+      </div>
+    </div>
+    <div class="card mb-3" style="padding: 12px 16px;">
+      <div class="flex gap-2">
+        <select class="input" style="max-width:180px;"><option>Origen: Todos</option><option>auto_threshold</option><option>comment_alert</option><option>manual</option><option>motivo_correction_redispatch</option></select>
+        <select class="input" style="max-width:160px;"><option>Status: Todos</option><option>sent</option><option>failed</option></select>
+        <select class="input" style="max-width:160px;"><option>Severity: Todas</option></select>
+        <input class="input" placeholder="Buscar destino o tracking..." />
+      </div>
+    </div>
+    <div class="card" style="padding: 0;">
+      <table>
+        <thead>
+          <tr>
+            <th>Notif ID</th><th>Fecha / hora</th><th>Destino</th><th>Severity</th><th>Motivo</th><th>Status</th><th>Origen</th><th>Twilio SID</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td class="font-mono">${r[0]}</td>
+              <td class="text-muted">${r[1]}</td>
+              <td class="font-mono">${r[2]}</td>
+              <td>${sevChip(r[3])}</td>
+              <td>${r[4]}</td>
+              <td>${stChip(r[5])}</td>
+              <td><span class="chip chip-gray">${r[6]}</span></td>
+              <td class="font-mono text-muted">${r[7]}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `
+});
+</script>
+</body></html>

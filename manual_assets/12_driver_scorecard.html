@@ -1,0 +1,71 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css"></head>
+<body>
+<script src="_layout.js"></script>
+<script>
+const drivers = [
+  ['Manuel Rojas',     'GVFW-70', 'Jorge Cordero',    412, 9.2, 38, 4, 71, 4.6, 3],
+  ['Pablo Aravena',    'JKLM-22', 'Logística Andina', 388, 11.4, 42, 6, 64, 4.2, 5],
+  ['Carla Suárez',     'RTYU-04', 'Transporte 23',    356, 4.8, 22, 1, 88, 4.8, 1],
+  ['Felipe Quiroga',   'PLOK-91', 'Servicios Sur',    299, 7.1, 31, 2, 79, 4.5, 2],
+  ['Andrea Núñez',     'MNBV-55', 'Jorge Cordero',    287, 12.8, 47, 8, 58, 4.0, 6],
+  ['Diego Pinto',      'XCVB-33', 'Despachos Norte',  244, 6.2, 18, 1, 82, 4.5, 1],
+  ['Sandra Beltrán',   'QWER-10', 'Logística Andina', 230, 5.0, 14, 0, 90, 4.7, 0],
+  ['Roberto Vidal',    'TYUI-77', 'Transporte 23',    218, 8.5, 26, 3, 73, 4.3, 2],
+];
+const failChip = (v) => v > 8
+  ? `<span class="chip chip-red">${v.toFixed(1)}%</span>`
+  : v > 6
+    ? `<span class="chip chip-amber">${v.toFixed(1)}%</span>`
+    : `<span class="chip chip-green">${v.toFixed(1)}%</span>`;
+renderShell({
+  active: 'control',
+  breadcrumb: '<b>Control / Analítica</b> › Driver scorecard',
+  content: `
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <div class="h1">Driver scorecard</div>
+        <div class="subtitle-page">Performance por chofer · ventana: últimos 90 días</div>
+      </div>
+      <div class="tabs" style="margin: 0; border: none;">
+        <div class="tab">Hoy</div>
+        <div class="tab">7 días</div>
+        <div class="tab">30 días</div>
+        <div class="tab active">90 días</div>
+      </div>
+    </div>
+    <div class="card" style="padding: 0;">
+      <table>
+        <thead>
+          <tr>
+            <th>Driver</th><th>Vehículo</th><th>Empresa</th>
+            <th>Deliveries</th>
+            <th>Fail rate ▼</th>
+            <th>Comments</th>
+            <th>Correc. pend.</th>
+            <th>% aceptación</th>
+            <th>Rating</th>
+            <th>Alertas crit.</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${drivers.map(([n,v,e,d,f,c,p,a,r,al]) => `
+            <tr>
+              <td style="font-weight:600;">${n}</td>
+              <td class="font-mono">${v}</td>
+              <td class="text-muted">${e}</td>
+              <td>${d}</td>
+              <td>${failChip(f)}</td>
+              <td>${c}</td>
+              <td>${p > 3 ? `<span class="chip chip-amber">${p}</span>` : p}</td>
+              <td>${a}%</td>
+              <td>${r.toFixed(1)} ★</td>
+              <td>${al > 2 ? `<span class="chip chip-red">${al}</span>` : al}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `
+});
+</script>
+</body></html>

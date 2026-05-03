@@ -1,0 +1,92 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css">
+<style>
+  .modal-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .modal {
+    width: 560px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .ai-aviso {
+    background: linear-gradient(180deg, rgba(220,38,38,0.10), rgba(220,38,38,0.04));
+    border: 1px solid rgba(220,38,38,0.45); border-radius: 10px; padding: 12px 14px;
+    margin-top: 16px; font-size: 12px;
+  }
+</style></head>
+<body>
+<script src="_layout.js"></script>
+<script>
+renderShell({
+  active: 'operacion',
+  breadcrumb: '<b>Operación</b> › Plan en ejecución › Reportar motivo',
+  content: `
+    <div class="h1">Plan en ejecución</div>
+    <div class="card" style="padding: 0; opacity: 0.5;">
+      <table>
+        <thead><tr><th>#</th><th>ETA</th><th>Cliente</th><th>Status</th><th>P(fallo)</th></tr></thead>
+        <tbody>
+          <tr><td>03</td><td>14:50</td><td>Tienda Costanera Center</td><td><span class="chip chip-amber">En ruta</span></td><td>0.22</td></tr>
+          <tr style="background: rgba(220,38,38,0.08);"><td>04</td><td>15:30</td><td>F. Castro · Providencia</td><td><span class="chip chip-red">Reportando…</span></td><td>0.62</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `
+});
+const overlay = document.createElement('div');
+overlay.className = 'modal-overlay';
+overlay.innerHTML = `
+  <div class="modal">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <div style="font-size: 18px; font-weight: 700;">Reportar motivo de no-entrega</div>
+        <div class="text-xs text-muted">Tracking <span class="font-mono">#73259840</span> · F. Castro · Providencia</div>
+      </div>
+      <button class="btn btn-outline">✕</button>
+    </div>
+
+    <div class="field">
+      <label class="label">Motivo</label>
+      <select class="input">
+        <option>— elegí un motivo —</option>
+        <option>PRODUCTO ROBADO</option>
+        <option>RIESGO FRAUDE</option>
+        <option>DETENCION URGENTE</option>
+        <option>ACCIDENTE VEHICULAR</option>
+        <option>CLIENTE AUSENTE</option>
+        <option>DIRECCION INCORRECTA</option>
+        <option selected>CLIENTE RECHAZA ENVIO</option>
+        <option>PRODUCTO DAÑADO</option>
+        <option>PRODUCTO NO CARGADO</option>
+        <option>ZONA INSEGURA</option>
+        <option>VENTANA INCORRECTA</option>
+        <option>SIN STOCK BODEGA</option>
+        <option>OTRO</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label class="label">Detalle (describí lo que pasó)</label>
+      <textarea class="input" rows="4">asaltaron al chofer en el pasaje, se llevaron toda la carga. ya llamamos a carabineros.</textarea>
+    </div>
+
+    <div class="flex gap-2" style="justify-content: flex-end;">
+      <button class="btn btn-outline">Cancelar</button>
+      <button class="btn btn-primary">Enviar</button>
+    </div>
+
+    <div class="ai-aviso">
+      <div class="flex items-center gap-2 mb-2">
+        <span style="font-size:16px;">🤖</span>
+        <b>La IA detectó posible discrepancia</b>
+      </div>
+      Tu reporte fue <span class="chip chip-gray">CLIENTE RECHAZA ENVIO</span>, pero el detalle
+      describe un asalto. La IA sugiere
+      <span class="chip chip-red">PRODUCTO ROBADO</span> con confianza <b>0.94</b>.
+      <div class="mt-3 flex gap-2">
+        <button class="btn btn-yellow">Aceptar sugerencia IA</button>
+        <button class="btn btn-outline">Mantener mi motivo</button>
+      </div>
+    </div>
+  </div>
+`;
+document.body.appendChild(overlay);
+</script>
+</body></html>

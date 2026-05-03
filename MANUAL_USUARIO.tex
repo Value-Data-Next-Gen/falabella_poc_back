@@ -17,6 +17,9 @@
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{parskip}
+\usepackage{graphicx}
+\usepackage{float}
+\graphicspath{{manual_assets/}}
 
 % =============================================================================
 % Colors
@@ -243,6 +246,12 @@ Chofer (driver)
 
 \subsection{Ingresar a la app (URL publica)}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{01_login.png}
+\caption{Pantalla de login: logo ValueData $\times$ Falabella, campos de email y contrasena, boton verde Ingresar.}
+\end{figure}
+
 La aplicacion corre en el navegador. No hay nada que instalar. Pasos:
 
 \begin{enumerate}
@@ -384,6 +393,12 @@ por \texttt{empresa\_id}.
 
 \subsection{Sidebar (6 modulos)}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{02_sidebar_overview.png}
+\caption{Vista general de la app: sidebar con los 6 modulos, topbar con breadcrumb, buscador, campana de notificaciones y avatar. El area central muestra el contenido del modulo activo (en este caso Plan en ejecucion).}
+\end{figure}
+
 A la izquierda, el sidebar agrupa los seis modulos en cuatro
 secciones tematicas. Estan separadas por una linea sutil:
 
@@ -468,6 +483,18 @@ ve la sub-tab \emph{Empresas y contactos} (filtrada a su propia
 empresa).
 
 \subsection{Empresas y contactos}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{03_maestros_empresas.png}
+\caption{Listado de empresas transportistas: tabla con RUT, contactos, opt-in WhatsApp, severity de la ultima alerta. Boton CSV template arriba a la derecha.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{04_empresa_drawer.png}
+\caption{Drawer lateral de una empresa: tabs Contactos, Importar CSV y Test broadcast. La tab Contactos lista cada persona con telefono, severidades habilitadas y estado de opt-in.}
+\end{figure}
 
 Esta sub-tab es la mas importante del modulo. Aqui se decide quien
 recibe los WhatsApp de alerta. Un \textbf{contacto} no necesita tener
@@ -639,6 +666,12 @@ flujo conversacional via Twilio.
 
 \subsection{Clientes VIP}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{05_vip_form.png}
+\caption{Formulario de alta VIP: campos title, tier, deadline\_time, alert\_minutes\_before y notas en lenguaje natural. El boton amarillo Sugerir desde notas dispara al LLM, que devuelve el razonamiento y los campos sugeridos en el panel de la derecha.}
+\end{figure}
+
 Esta es una de las funcionalidades clave para Falabella: marcar
 clientes que no pueden fallar y que requieren alerta anticipada cuando
 estan en riesgo de no entregar antes de su hora limite.
@@ -731,6 +764,12 @@ ingresa la nueva password. El backend la hashea con bcrypt antes de
 guardar.
 
 \subsection{Catalogo de motivos}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{06_motivos_catalogo.png}
+\caption{Catalogo de los 13 motivos: toggle alertable, severity por defecto y la descripcion que consume la IA al clasificar. El boton Ver system prompt expone el prompt exacto que se envia al modelo.}
+\end{figure}
 
 Los 13 motivos del catalogo estan fijos (vienen de un notebook de
 auditoria operacional de Falabella). No se pueden agregar ni borrar
@@ -880,6 +919,12 @@ Fallidas, En riesgo, \% cumplimiento. Refresca cada 10 segundos.
 
 \subsection{Plan en ejecucion}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{07_plan_diario.png}
+\caption{Plan en ejecucion: filtros globales arriba (region, empresa, toggle solo VIP), KPI strip con visitas / OK / fallidas / en riesgo / \% cumplimiento, y la jerarquia Empresa $\rightarrow$ Ruta $\rightarrow$ Visitas. La fila VIP destacada lleva chip dorado con el folio.}
+\end{figure}
+
 Es la \textbf{pantalla mas usada del dia}. Muestra todo el plan en
 tiempo real con jerarquia de tres niveles.
 
@@ -959,6 +1004,12 @@ el admin acepta o rechaza la sugerencia.}
 
 \subsection{Watchlist}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{08_watchlist.png}
+\caption{Watchlist: cards con chip de severity (CRITICAL, HIGH, MEDIUM) en la esquina superior derecha, ETA en la izquierda, motivo IA, dos razones principales y boton Ver detalle. Las cards VIP llevan borde y chip dorado.}
+\end{figure}
+
 Lista priorizada de las visitas en riesgo. Refresca cada 5 segundos.
 
 Encabezado con tarjetas-resumen clickeables: Total, Critico, Alto,
@@ -975,6 +1026,12 @@ last\_known\_alert (si la visita ya disparo alerta WhatsApp). Boton
 contacto de la empresa.
 
 \subsection{Mapa}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{09_mapa.png}
+\caption{Mapa operacional: tabs por region y filtros multi-select de empresa y patente. Los puntos representan visitas (verde = on-time, ambar = desvio, rojo = alerta critica). El badge superior derecho indica los filtros activos.}
+\end{figure}
 
 Muestra todas las visitas como puntos en el mapa de Chile. Color
 del punto = p(fallo) (verde a rojo segun magnitud). Borde violeta =
@@ -1019,6 +1076,12 @@ se muestra ``\texttt{motivo\_reportado} $\rightarrow$
 
 \subsection{Asistente IA (validar comentarios manualmente)}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{10_asistente_ia.png}
+\caption{Asistente IA: textarea con el comentario del chofer y boton Clasificar con IA. El resultado muestra el motivo en grande, la severity, el razonamiento del modelo y la badge Azure OpenAI gpt-4o-mini. A la derecha, ejemplos rapidos clickeables.}
+\end{figure}
+
 Pantalla donde un operador puede pedirle al LLM que clasifique un
 comentario \emph{ad hoc} sin esperar a que ocurra el flujo automatico.
 
@@ -1035,6 +1098,12 @@ comentario \emph{ad hoc} sin esperar a que ocurra el flujo automatico.
 Util para entrenar a despachadores nuevos sobre como usar la IA.
 
 \subsection{Correcciones de motivo}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{11_correcciones_motivo.png}
+\caption{Correcciones pendientes: tabla con tracking, motivo reportado, motivo sugerido por la IA, confianza, razonamiento, driver y acciones (Aceptar / Rechazar / Sin accion). Aceptar dispara re-clasificacion y reenvio de WhatsApp si la severity cambia.}
+\end{figure}
 
 Tabla de correcciones generadas automaticamente cuando la IA detecta
 discrepancia entre el motivo reportado y lo que indica el comentario.
@@ -1108,6 +1177,12 @@ Modelo XGB.
 
 \subsection{KPIs historicos}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{13_kpis_historico.png}
+\caption{KPIs historicos: 4 cards superiores (total / completadas / failed / \% cumplimiento) y grafico de barras de visitas por dia. En noviembre se ven los picos de Black Friday (27/11) y Cyber Monday (30/11) destacados en amarillo y naranja.}
+\end{figure}
+
 Pantalla con los KPIs del dia, semana, mes. Refresca cada 30 segundos.
 Muestra:
 
@@ -1125,6 +1200,12 @@ Muestra:
 \end{itemize}
 
 \subsection{Driver scorecard}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{12_driver_scorecard.png}
+\caption{Driver scorecard: tabs de periodo (hoy / 7d / 30d / 90d) y tabla con deliveries, fail rate, comments, correcciones pendientes, \% aceptacion, rating y alertas criticas. Los fail rate $>$ 8\% se destacan en chip rojo.}
+\end{figure}
 
 Sidebar $\rightarrow$ Control / Analitica $\rightarrow$ Driver
 scorecard. Tabla con un row por driver. Refresca cada 60 segundos.
@@ -1161,6 +1242,12 @@ Click en una fila abre un drawer con detalle: lista de comentarios
 recientes, correcciones pendientes, evolucion temporal del fail rate.
 
 \subsection{Notificaciones log}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{14_notif_log.png}
+\caption{Notificaciones log: filtros por origen (auto\_threshold, comment\_alert, manual, motivo\_correction\_redispatch) y por status. Cada fila muestra notification\_id, hora, destino, severity, motivo, status y el SID de Twilio para auditoria.}
+\end{figure}
 
 Tabla con todos los WhatsApp enviados por la plataforma. Columnas:
 fecha/hora, tracking, motivo, severidad, destinatario (numero), tipo
@@ -1344,6 +1431,12 @@ antes de las 16:00, con alerta 90 minutos antes si esta en riesgo.
 
 \subsection{Chofer reporta motivo de no-entrega}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{15_reportar_motivo.png}
+\caption{Modal Reportar motivo: dropdown con los 13 motivos del catalogo, textarea de detalle y botones Cancelar / Enviar. Al detectar discrepancia (texto describe robo pero el motivo elegido es CLIENTE RECHAZA ENVIO), aparece el aviso de la IA proponiendo PRODUCTO ROBADO con confianza 0.94.}
+\end{figure}
+
 \textbf{Objetivo:} el chofer Juan llega a una direccion mal
 geolocalizada y no puede entregar.
 
@@ -1454,6 +1547,12 @@ decisiones de capacidad.}
 % =============================================================================
 \section{Sistema de alertas WhatsApp}
 % =============================================================================
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{16_whatsapp_chat.png}
+\caption{Vista de las alertas tal como llegan al WhatsApp del jefe de trafico: encabezado verde Falabella Ops via Twilio, tres burbujas tipicas (CRITICAL por siniestro, MEDIUM por producto no cargado y VIP DEADLINE) con timestamp y check de entrega.}
+\end{figure}
 
 \subsection{Cuando se dispara una alerta}
 

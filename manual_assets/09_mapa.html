@@ -1,0 +1,96 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css">
+<style>
+  .map-area {
+    position: relative; background: radial-gradient(circle at 30% 40%, #1a2a22, #0f1614 70%);
+    border: 1px solid var(--border); border-radius: 10px; height: 500px; overflow: hidden;
+  }
+  .map-grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  .road {
+    position: absolute; background: rgba(255,255,255,0.06); height: 3px; border-radius: 999px;
+  }
+  .pin {
+    position: absolute; width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 0 14px currentColor;
+    transform: translate(-50%, -50%);
+  }
+  .pin.green { background: #22c55e; color: #22c55e; }
+  .pin.amber { background: #f59e0b; color: #f59e0b; }
+  .pin.red { background: #ef4444; color: #ef4444; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.4; } }
+  .legend {
+    position: absolute; bottom: 14px; left: 14px;
+    background: rgba(0,0,0,0.55); padding: 10px 14px; border-radius: 8px; font-size: 11px;
+    border: 1px solid var(--border);
+  }
+  .legend div { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+  .legend .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .filter-badge {
+    position: absolute; top: 14px; right: 14px;
+    background: rgba(21,147,73,0.18); color: #4ade80; border: 1px solid rgba(21,147,73,0.5);
+    padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600;
+  }
+</style></head>
+<body>
+<script src="_layout.js"></script>
+<script>
+renderShell({
+  active: 'operacion',
+  breadcrumb: '<b>Operación</b> › Mapa',
+  content: `
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <div class="h1">Mapa operacional</div>
+        <div class="subtitle-page">Posición en vivo de patentes con GPS · refresca cada 30 s</div>
+      </div>
+    </div>
+    <div class="card mb-3" style="padding: 12px 16px;">
+      <div class="flex items-center gap-2">
+        <div class="tabs" style="margin: 0; border: none;">
+          <div class="tab active">RM</div>
+          <div class="tab">Valparaíso</div>
+          <div class="tab">Bío Bío</div>
+          <div class="tab">Norte</div>
+        </div>
+        <div style="flex:1;"></div>
+        <select class="input" style="width:200px;"><option>Empresa: 3 seleccionadas ▾</option></select>
+        <select class="input" style="width:200px;"><option>Patente: 5 seleccionadas ▾</option></select>
+      </div>
+    </div>
+    <div class="map-area">
+      <div class="map-grid"></div>
+      <!-- Roads -->
+      <div class="road" style="top: 30%; left: 10%; width: 80%;"></div>
+      <div class="road" style="top: 60%; left: 5%; width: 70%; transform: rotate(-3deg);"></div>
+      <div class="road" style="top: 20%; left: 30%; width: 4px; height: 60%;"></div>
+      <div class="road" style="top: 10%; left: 70%; width: 4px; height: 70%;"></div>
+      <!-- Pins -->
+      <div class="pin green" style="top: 28%; left: 18%;"></div>
+      <div class="pin green" style="top: 32%; left: 35%;"></div>
+      <div class="pin green" style="top: 45%; left: 28%;"></div>
+      <div class="pin green" style="top: 58%; left: 22%;"></div>
+      <div class="pin amber" style="top: 41%; left: 52%;"></div>
+      <div class="pin amber" style="top: 60%; left: 60%;"></div>
+      <div class="pin amber" style="top: 25%; left: 70%;"></div>
+      <div class="pin red" style="top: 50%; left: 70%;"></div>
+      <div class="pin red" style="top: 70%; left: 45%;"></div>
+      <div class="pin green" style="top: 65%; left: 80%;"></div>
+      <div class="pin green" style="top: 35%; left: 82%;"></div>
+      <div class="pin amber" style="top: 75%; left: 30%;"></div>
+      <div class="filter-badge">Filtrando · 5 patentes</div>
+      <div class="legend">
+        <div><span class="dot" style="background:#22c55e;"></span> On-time (8)</div>
+        <div><span class="dot" style="background:#f59e0b;"></span> Desvío / atrasada (3)</div>
+        <div><span class="dot" style="background:#ef4444;"></span> Alerta crítica (2)</div>
+      </div>
+    </div>
+  `
+});
+</script>
+</body></html>

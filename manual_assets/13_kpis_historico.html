@@ -1,0 +1,76 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css">
+<style>
+  .bars { display: flex; align-items: end; gap: 4px; height: 280px; padding: 0 8px; border-bottom: 1px solid var(--border); position: relative; }
+  .bar { flex: 1; background: linear-gradient(180deg, #4ade80, #159349); border-radius: 4px 4px 0 0; position: relative; }
+  .bar.peak { background: linear-gradient(180deg, #fbbf24, #f59e0b); box-shadow: 0 0 12px rgba(245,158,11,0.5); }
+  .bar.peak2 { background: linear-gradient(180deg, #fb923c, #ea580c); box-shadow: 0 0 12px rgba(234,88,12,0.5); }
+  .bar-label { position: absolute; bottom: -20px; font-size: 9px; color: var(--muted); width: 100%; text-align: center; }
+  .axis-y { position: absolute; left: -32px; top: 0; bottom: 0; width: 28px; display: flex; flex-direction: column; justify-content: space-between; font-size: 10px; color: var(--muted); text-align: right; }
+  .annotation {
+    position: absolute; background: rgba(245,158,11,0.18); border: 1px solid var(--amber); color: #fbbf24;
+    padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
+  }
+</style></head>
+<body>
+<script src="_layout.js"></script>
+<script>
+// 30 days, with peaks at indexes 26 and 29 (Black Friday + Cyber Monday)
+const days = Array.from({length: 30}, (_, i) => {
+  const d = new Date(2026, 10, 1 + i); // Nov 2026
+  let v = 1500 + Math.sin(i*0.7)*300 + Math.random()*200;
+  if (i === 26) v = 5400; // Black Friday Nov 27
+  if (i === 27) v = 3900;
+  if (i === 29) v = 4900; // Cyber Monday Nov 30
+  return { d, v };
+});
+const max = Math.max(...days.map(x => x.v));
+const labelDay = i => {
+  const d = days[i].d;
+  return (i % 5 === 0 || i === 26 || i === 29) ? `${d.getDate()}/${d.getMonth()+1}` : '';
+};
+const bars = days.map((x, i) => {
+  const cls = i === 26 ? 'peak' : (i === 29 ? 'peak2' : '');
+  const h = Math.round((x.v / max) * 270);
+  return `<div class="bar ${cls}" style="height: ${h}px;"><div class="bar-label">${labelDay(i)}</div></div>`;
+}).join('');
+
+renderShell({
+  active: 'control',
+  breadcrumb: '<b>Control / Analítica</b> › KPIs históricos',
+  content: `
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <div class="h1">KPIs históricos</div>
+        <div class="subtitle-page">Noviembre 2026 · 30 días · todas las regiones</div>
+      </div>
+      <div class="flex gap-2">
+        <select class="input" style="width:160px;"><option>Mes: Nov 2026</option></select>
+        <select class="input" style="width:160px;"><option>Región: Todas</option></select>
+        <button class="btn btn-outline">Exportar PDF</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-4 gap-3 mb-4">
+      <div class="kpi"><div class="kpi-label">Total visitas</div><div class="kpi-value">68.430</div><div class="text-xs text-muted mt-2">+22% vs. oct</div></div>
+      <div class="kpi"><div class="kpi-label">Completadas</div><div class="kpi-value green">58.214</div><div class="text-xs text-muted mt-2">+19%</div></div>
+      <div class="kpi"><div class="kpi-label">Failed</div><div class="kpi-value red">3.108</div><div class="text-xs text-muted mt-2">-3% vs. oct</div></div>
+      <div class="kpi"><div class="kpi-label">% Cumplimiento</div><div class="kpi-value green">85.1%</div><div class="text-xs text-muted mt-2">+1.8 pp</div></div>
+    </div>
+    <div class="card">
+      <div class="flex items-center justify-between mb-3">
+        <div class="h2">Visitas por día · Noviembre</div>
+        <div class="flex gap-3 text-xs text-muted">
+          <span><span style="display:inline-block;width:10px;height:10px;background:#159349;border-radius:2px;vertical-align:middle;"></span> Día normal</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;vertical-align:middle;"></span> Black Friday</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:#ea580c;border-radius:2px;vertical-align:middle;"></span> Cyber Monday</span>
+        </div>
+      </div>
+      <div style="position: relative; padding: 4px 12px 28px 40px;">
+        <div class="bars">${bars}</div>
+        <div class="annotation" style="top: 10px; left: 50%;">↓ 27/11 · Black Friday · 5.400</div>
+        <div class="annotation" style="top: 50px; right: 30px;">↓ 30/11 · Cyber Monday · 4.900</div>
+      </div>
+    </div>
+  `
+});
+</script>
+</body></html>

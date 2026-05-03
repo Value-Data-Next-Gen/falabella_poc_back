@@ -1,0 +1,56 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="_base.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; }
+  .login-bg {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 20% 30%, rgba(21,147,73,0.18), transparent 40%),
+      radial-gradient(circle at 80% 70%, rgba(255,203,5,0.10), transparent 40%),
+      #1D1D1B;
+  }
+  .login-card {
+    position: relative; z-index: 1;
+    width: 420px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 36px; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  }
+  .login-logo {
+    width: 64px; height: 64px; border-radius: 16px;
+    background: linear-gradient(135deg, var(--green), var(--yellow));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; color: #111; font-size: 24px;
+    margin: 0 auto 18px;
+  }
+  .login-title { text-align: center; font-size: 20px; font-weight: 700; }
+  .login-cross { color: var(--yellow); margin: 0 6px; }
+  .login-tagline { text-align: center; color: var(--muted); font-size: 12px; margin-top: 6px; margin-bottom: 28px; }
+  .field-login { margin-bottom: 14px; }
+  .field-login .label { font-size: 11px; color: var(--muted); margin-bottom: 6px; display: block; }
+  .field-login .input { background: #161614; padding: 11px 14px; }
+  .login-btn {
+    width: 100%; padding: 12px; background: var(--green); color: #fff; font-weight: 700;
+    border: none; border-radius: 8px; font-size: 13px; margin-top: 8px;
+  }
+  .login-foot { text-align: center; color: var(--muted); font-size: 11px; margin-top: 18px; }
+</style></head>
+<body>
+<div class="login-bg"></div>
+<div class="login-card">
+  <div class="login-logo">VD</div>
+  <div class="login-title">ValueData <span class="login-cross">×</span> Falabella</div>
+  <div class="login-tagline">Plataforma operacional de logistica con IA</div>
+  <div class="field-login">
+    <label class="label">Email corporativo</label>
+    <input class="input" value="ops@falabella.cl" />
+  </div>
+  <div class="field-login">
+    <label class="label">Contraseña</label>
+    <input class="input" type="password" value="••••••••••" />
+  </div>
+  <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 11px; color: var(--muted);">
+    <label><input type="checkbox" checked style="vertical-align: middle;"> Recordarme</label>
+    <a style="color: #4ade80; text-decoration: none;">Olvidé mi contraseña</a>
+  </div>
+  <button class="login-btn">Ingresar</button>
+  <div class="login-foot">v2.4.1 · build 2026.04.21 · ambiente: prod</div>
+</div>
+</body></html>
