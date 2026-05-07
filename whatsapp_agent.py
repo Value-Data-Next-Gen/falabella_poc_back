@@ -706,10 +706,148 @@ def _on_awaiting_tracking(sess: Session, text: str, text_lower: str, identity: d
     visit = _visit_by_tracking(text.upper().strip())
     if visit is None:
         return f"No encuentro {text}. Pegá el tracking_id completo (ej TRK0600009) o '0' para cancelar."
-    sess.state = "choosing_motivo"
+    sess.state = "describing_incident"
     sess.context["tracking_id"] = visit["tracking_id"]
     sess.save()
-    return _render_motivo_menu(visit)
+    risk_pct = int(visit["p_fallo"] * 100)
+    risk = "🟢" if risk_pct < 30 else ("🟡" if risk_pct < 50 else "🔴")
+    return (
+        f"Visita: {visit['title']}\n"
+        f"  {visit['comuna']} — Window {visit['window_end'][:5]}\n"
+        f"  Riesgo: {risk} {risk_pct}%\n\n"
+        "🤖 Contame qué pasó (con tus palabras) y la IA detecta el motivo.\n"
+        "Mandá '0' si preferís elegir de una lista, o 'menu' para cancelar."
+    )
+
+
+def _on_describing_incident(sess: Session, text: str, text_lower: str, identity: dict) -> str:
+    """Driver describe el incidente en lenguaje natural; IA clasifica."""
+    if text == "0":
+        # Fallback a menú numerado clásico
+        tid = sess.context.get("tracking_id")
+        visit = _visit_by_tracking(tid) if tid else None
+        sess.state = "choosing_motivo"
+        sess.save()
+        return _render_motivo_menu(visit) if visit else "Algo salió mal, mandá 'menu'."
+    if len(text) < 5:
+        return "Necesito un poco más de detalle. Contame qué pasó (mín. 5 caracteres) o '0' para lista."
+
+    tid = sess.context.get("tracking_id")
+    if not tid:
+        sess.reset()
+        sess.save()
+        return "Algo salió mal con el flujo, mandá 'menu'."
+
+    # Empresa para resolver descripciones override por empresa
+    empresa_id = None
+    persona = sess.context.get("persona")
+    if persona and persona.get("empresa_id"):
+        empresa_id = int(persona["empresa_id"])
+    elif sess.context.get("driver"):
+        from state import STATE
+        vid = sess.context["driver"].get("vehicle_id")
+        if vid is not None:
+            empresa_id = STATE.vehicle_empresa_map.get(int(vid))
+
+    # Clasificar con LLM (cae a keywords si no hay creds)
+    try:
+        from motivo_classifier import _classify_llm, _classify_keywords
+        result = _classify_llm(text, empresa_id) or _classify_keywords(text)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[wa-agent] classifier falló: {e}")
+        result = {"motivo": "SIN MORADORES", "confianza": "baja",
+                  "razonamiento": "Sin clasificador disponible", "fallback": True}
+
+    sess.context["ia_motivo"] = result["motivo"]
+    sess.context["ia_confianza"] = result["confianza"]
+    sess.context["ia_razonamiento"] = result["razonamiento"]
+    sess.context["ia_fallback"] = bool(result.get("fallback", False))
+    sess.context["comentario_libre"] = text
+    sess.state = "confirming_ia_motivo"
+    sess.save()
+
+    badge = "🤖" if not result.get("fallback") else "📚"
+    return (
+        f"{badge} Analizando…\n"
+        f"Detecté: *{result['motivo']}* (confianza {result['confianza']})\n"
+        f"Razón: {result['razonamiento']}\n\n"
+        "¿Confirmás?\n"
+        " 1️⃣  Sí, registrar\n"
+        " 2️⃣  No, elegir otro motivo\n"
+        " 0️⃣  Cancelar"
+    )
+
+
+def _on_confirming_ia_motivo(sess: Session, text: str, text_lower: str, identity: dict) -> str:
+    tid = sess.context.get("tracking_id")
+    motivo = sess.context.get("ia_motivo")
+    comentario = sess.context.get("comentario_libre", "")
+    if not tid or not motivo:
+        sess.reset()
+        sess.save()
+        return "Algo salió mal, mandá 'menu'."
+
+    if text == "1" or text_lower in ("si", "sí", "confirmo", "ok"):
+        try:
+            from comments import _persist_and_dispatch_comment
+            actor = sess.identified_id or sess.phone
+            _persist_and_dispatch_comment(
+                tracking_id=tid,
+                motivo=motivo,
+                comentario=comentario + f" [IA: {sess.context.get('ia_confianza','?')}]",
+                user_id=identity.get("user_id"),
+                user_display_name=str(actor),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[wa-agent] persist IA falló: {e}")
+            sess.state = "menu_driver"
+            sess.save()
+            return f"❌ No pude registrar: {e}\nMandá 'menu'."
+        sess.state = "done_motivo"
+        for k in ("ia_motivo", "ia_confianza", "ia_razonamiento", "ia_fallback", "comentario_libre"):
+            sess.context.pop(k, None)
+        sess.save()
+        return _render_done_motivo(tid, motivo)
+
+    if text == "2" or "no" in text_lower or "otro" in text_lower:
+        # IA equivocada → registramos correction sugerida y mostramos menú clásico
+        try:
+            # Persistimos el rejection como hint para mejorar el modelo
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO fpoc_motivo_corrections
+                      (comment_id, tracking_id, motivo_reportado, motivo_sugerido,
+                       confianza, razonamiento, driver_id, status, region)
+                    VALUES (NULL, ?, ?, ?, ?, ?, ?, 'rejected', NULL)
+                    """,
+                    (tid, motivo, "PENDING_USER_CHOICE",
+                     sess.context.get("ia_confianza", "?"),
+                     f"Driver rechazó IA: {sess.context.get('ia_razonamiento','')}",
+                     sess.identified_id or sess.phone),
+                )
+                cn.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[wa-agent] correction-rejected log falló: {e}")
+        # Conservamos comentario_libre para usar en el flujo manual
+        sess.state = "choosing_motivo"
+        sess.save()
+        visit = _visit_by_tracking(tid)
+        return (
+            "OK, elegí el motivo correcto entonces. La IA aprende de esto 👇\n\n"
+            + (_render_motivo_menu(visit) if visit else _render_role_menu(None))
+        )
+
+    if text == "0":
+        sess.state = "menu_driver"
+        for k in ("tracking_id", "ia_motivo", "ia_confianza", "ia_razonamiento", "comentario_libre"):
+            sess.context.pop(k, None)
+        sess.save()
+        driver = sess.context.get("driver")
+        return _render_driver_menu(driver) if driver else _render_role_menu(None)
+
+    return "Elegí 1 (confirmar), 2 (cambiar motivo) o 0 (cancelar)."
 
 
 def _on_choosing_motivo(sess: Session, text: str, text_lower: str, identity: dict) -> str:
@@ -725,8 +863,48 @@ def _on_choosing_motivo(sess: Session, text: str, text_lower: str, identity: dic
     if idx < 1 or idx > len(MENU_MOTIVOS):
         return f"Número fuera de rango. Elegí del 1 al {len(MENU_MOTIVOS)}."
     motivo = MENU_MOTIVOS[idx - 1]
-    sess.state = "awaiting_comentario"
     sess.context["motivo"] = motivo
+    # Si veníamos del flujo IA con un comentario libre ya capturado, lo
+    # registramos junto al motivo elegido manualmente (la IA aprende de esto
+    # via fpoc_motivo_corrections).
+    if sess.context.get("comentario_libre"):
+        prev = sess.context.get("comentario_libre", "")
+        ia_motivo = sess.context.get("ia_motivo")
+        try:
+            from comments import _persist_and_dispatch_comment
+            from db import get_conn as _gc
+            actor = sess.identified_id or sess.phone
+            _persist_and_dispatch_comment(
+                tracking_id=sess.context["tracking_id"],
+                motivo=motivo,
+                comentario=prev + " [IA sugería " + str(ia_motivo) + ", driver corrigió]",
+                user_id=identity.get("user_id"),
+                user_display_name=str(actor),
+            )
+            # Update correction status: rechazado pero motivo final conocido
+            with _gc() as cn:
+                cn.execute(
+                    """
+                    UPDATE fpoc_motivo_corrections SET motivo_sugerido = ?, status = 'corrected'
+                    WHERE tracking_id = ? AND status = 'rejected'
+                      AND motivo_sugerido = 'PENDING_USER_CHOICE'
+                    """,
+                    (motivo, sess.context["tracking_id"]),
+                )
+                cn.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[wa-agent] persist via IA-correction falló: {e}")
+            sess.state = "menu_driver"
+            sess.save()
+            return f"❌ Error al registrar: {e}\nMandá 'menu'."
+        # limpiar contexto IA y cerrar
+        for k in ("ia_motivo", "ia_confianza", "ia_razonamiento", "ia_fallback",
+                  "comentario_libre", "motivo"):
+            sess.context.pop(k, None)
+        sess.state = "done_motivo"
+        sess.save()
+        return _render_done_motivo(sess.context.get("tracking_id", "?"), motivo)
+    sess.state = "awaiting_comentario"
     sess.save()
     return f"Elegiste: {motivo}\nAgregá un comentario corto (o escribí 'skip'):"
 
@@ -930,6 +1108,8 @@ _STATE_HANDLERS = {
     "menu_manager": _on_menu_manager,
     "manager_search_tracking": _on_manager_search_tracking,
     "awaiting_tracking": _on_awaiting_tracking,
+    "describing_incident": _on_describing_incident,
+    "confirming_ia_motivo": _on_confirming_ia_motivo,
     "choosing_motivo": _on_choosing_motivo,
     "awaiting_comentario": _on_awaiting_comentario,
     "done_motivo": _on_done_motivo,
