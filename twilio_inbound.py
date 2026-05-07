@@ -402,13 +402,25 @@ def _cmd_kpis() -> str:
     )
 
 
-def _dispatch(body: str, identity: dict, phone: str) -> Optional[str]:
-    """Devuelve respuesta TwiML o None si no hay match."""
+def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str] = None) -> Optional[str]:
+    """Devuelve respuesta TwiML o None si no hay match.
+
+    Prioridades:
+      1) Compliance: opt-out (stop) — siempre gana.
+      2) Comandos sueltos (power users): status/motivo/kpis/help/etc.
+      3) Agente conversacional FSM (whatsapp_agent.handle).
+    """
     if not body:
         return None
-    # Compliance primero: opt-out manda
+    # 1) Compliance primero: opt-out manda y termina cualquier sesión activa.
     if _RE_STOP.match(body):
+        try:
+            from whatsapp_agent import Session as _WaSession
+            _WaSession.delete(phone)
+        except Exception:  # noqa: BLE001
+            pass
         return _cmd_unsubscribe(phone, identity)
+    # 2) Comandos sueltos — power users que ya saben qué quieren.
     if _RE_HELP.match(body):
         return _cmd_help()
     if _RE_INFO.match(body):
@@ -428,7 +440,13 @@ def _dispatch(body: str, identity: dict, phone: str) -> Optional[str]:
     m = _RE_MOTIVO.match(body)
     if m:
         return _cmd_motivo(m.group(1), m.group(2), m.group(3), identity)
-    return None
+    # 3) Agente conversacional (toma control si nada matcheó).
+    try:
+        from whatsapp_agent import handle as _agent_handle
+        return _agent_handle(phone, body, profile_name, identity)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[twilio-inbound] agent falló: {e}")
+        return None
 
 
 # =============================================================================
@@ -489,13 +507,13 @@ async def webhook_inbound(
         driver_id=identity.get("driver_id"),
     )
 
-    # Dispatch a comando si aplica
-    reply = _dispatch(body, identity, from_number)
+    # Dispatch a comando si aplica (cae al agente FSM si no matchea ninguno)
+    reply = _dispatch(body, identity, from_number, profile_name)
     if reply is None and welcome is not None:
         reply = welcome
     # Si nada matcheó y el número ya estaba registrado, ack genérico
     if reply is None and identity.get("is_known"):
-        reply = "Recibí tu mensaje. Escribí 'help' para ver comandos."
+        reply = "Recibí tu mensaje. Escribí 'menu' para empezar o 'help' para comandos."
     return _twiml(reply)
 
 
