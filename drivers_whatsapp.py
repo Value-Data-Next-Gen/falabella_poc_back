@@ -290,6 +290,34 @@ class ImportMockResponse(BaseModel):
     message: str = ""
 
 
+class ImportLogRow(BaseModel):
+    fecha: str
+    count: int
+    imported_at: str
+    imported_by_user_id: Optional[int] = None
+
+
+@router.get("/api/planificacion/imports", response_model=list[ImportLogRow])
+def list_imports(_: CurrentUser = Depends(current_user)) -> list[ImportLogRow]:
+    """Histórico de cargas de SimpliRoute (lo que muestra el panel "Última carga").
+    Persistente entre sesiones, sobrevive a refresh y navegación."""
+    out: list[ImportLogRow] = []
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT fecha, count, imported_at, imported_by_user_id "
+            "FROM fpoc_planificacion_imports ORDER BY fecha DESC LIMIT 50"
+        )
+        for r in cur.fetchall():
+            out.append(ImportLogRow(
+                fecha=str(r[0]),
+                count=int(r[1]),
+                imported_at=str(r[2]) if r[2] else "",
+                imported_by_user_id=int(r[3]) if r[3] is not None else None,
+            ))
+    return out
+
+
 @router.post("/api/planificacion/import-mock", response_model=ImportMockResponse)
 def import_mock(
     fecha: Optional[str] = None,

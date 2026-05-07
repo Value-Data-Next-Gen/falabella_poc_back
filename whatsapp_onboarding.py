@@ -251,6 +251,14 @@ def onboard(body: OnboardRequest, user: CurrentUser = Depends(require_admin)) ->
     except Exception:  # noqa: BLE001
         pass
 
+    # Refrescar maestros en memoria (STATE.drivers, vehicles, clientes) para que
+    # el snapshot del modelo "vea" al recién onboardeado al instante.
+    try:
+        from state import STATE
+        STATE.reload_maestros()
+    except Exception:  # noqa: BLE001
+        pass
+
     sandbox_number = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886").replace("whatsapp:", "")
     join_code = body.sandbox_join_code or os.environ.get("TWILIO_SANDBOX_JOIN_CODE", "")
     sandbox_join = (

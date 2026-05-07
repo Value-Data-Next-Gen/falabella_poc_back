@@ -259,25 +259,63 @@ def _visits_for_vehicle(vehicle_id: int) -> list[dict]:
 
 
 def _visit_by_tracking(tracking_id: str) -> Optional[dict]:
+    """Busca primero en el snapshot sintético (con p_fallo y ETA simulados);
+    si no encuentra, cae a fpoc_simpli_visits (BD real, ids numéricos del Excel).
+    Esto le permite al driver consultar tracking_ids que vienen de la importación
+    real (no solo TRK*)."""
     from state import STATE
-    if STATE.snapshot_df is None:
+    if STATE.snapshot_df is not None:
+        df = STATE.snapshot_df[STATE.snapshot_df["tracking_id"] == tracking_id]
+        if not df.empty:
+            r = df.iloc[0]
+            return {
+                "tracking_id": str(r["tracking_id"]),
+                "title": str(r["title"]),
+                "address": str(r.get("address", "")),
+                "comuna": str(r.get("comuna", "")),
+                "vehicle_id": int(r["vehicle_id"]),
+                "vehicle_name": str(r["vehicle_name"]),
+                "status": str(r["status"]),
+                "window_end": str(r["window_end"]),
+                "eta": str(r["estimated_time_arrival"]),
+                "p_fallo": float(r["p_fallo"]),
+            }
+    # Fallback BD real (ids numéricos)
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """
+                SELECT id, title, address, comuna, region,
+                       Patente_falsa, Empresa_falsa, Drivername, status,
+                       current_eta_cl, ruta_id
+                FROM fpoc_simpli_visits
+                WHERE CAST(id AS TEXT) = ? OR ruta_id = ?
+                LIMIT 1
+                """,
+                (tracking_id, tracking_id),
+            )
+            r = cur.fetchone()
+        if r is None:
+            return None
+        eta_str = str(r[9]) if r[9] else ""
+        # Extraer HH:MM del timestamp si tiene formato datetime
+        eta_short = eta_str.split(" ")[1][:5] if " " in eta_str else eta_str[:5]
+        return {
+            "tracking_id": str(r[0]),
+            "title": str(r[1] or ""),
+            "address": str(r[2] or ""),
+            "comuna": str(r[3] or ""),
+            "vehicle_id": int(r[5]) if r[5] is not None else 0,
+            "vehicle_name": f"PAT-{r[5]}" if r[5] is not None else "",
+            "status": str(r[8] or "pending"),
+            "window_end": "23:59",  # BD real no tiene window_end discreto; placeholder
+            "eta": eta_short or "—",
+            "p_fallo": 0.0,  # no hay predicción ML para BD real (modelo entrena sobre sintéticos)
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[wa-agent] _visit_by_tracking BD fallback falló: {e}")
         return None
-    df = STATE.snapshot_df[STATE.snapshot_df["tracking_id"] == tracking_id]
-    if df.empty:
-        return None
-    r = df.iloc[0]
-    return {
-        "tracking_id": str(r["tracking_id"]),
-        "title": str(r["title"]),
-        "address": str(r.get("address", "")),
-        "comuna": str(r.get("comuna", "")),
-        "vehicle_id": int(r["vehicle_id"]),
-        "vehicle_name": str(r["vehicle_name"]),
-        "status": str(r["status"]),
-        "window_end": str(r["window_end"]),
-        "eta": str(r["estimated_time_arrival"]),
-        "p_fallo": float(r["p_fallo"]),
-    }
 
 
 # =============================================================================
