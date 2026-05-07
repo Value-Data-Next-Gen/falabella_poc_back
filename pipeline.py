@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime, time as dtime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -450,7 +450,133 @@ def train_model() -> dict:
 # =============================================================================
 # DIA DE HOY + INFERENCIA
 # =============================================================================
+def _load_real_plan(today_date: date) -> Optional[pd.DataFrame]:
+    """Carga visitas REALES de fpoc_simpli_visits para today_date.
+
+    Mapea el schema de BD al schema que espera apply_status_and_predict. Si
+    no hay filas para esa fecha, devuelve None (caller cae al sintético).
+
+    Diseño:
+      - lat/lon se generan deterministically desde region+id (no hay geocoding
+        del Excel real). Suficiente para mapa visual + ML features.
+      - vehicle_id capeado a 1..12 via (Patente_falsa-1)%12+1 (data vieja del
+        seed tenia patentes 1..40; nuevos imports ya usan 1..12).
+      - Los campos sintéticos (load, n_subordenes, _is_recurrent) se rellenan
+        con valores randomizados pero deterministas por id.
+    """
+    import os
+    if os.environ.get("DISABLE_REAL_PLAN", "false").lower() == "true":
+        return None
+    try:
+        from db import get_conn
+        from synthetic_calibration import REGION_BBOXES, REGION_DEPOTS
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """
+                SELECT id, title, "order", address, current_eta_cl, status,
+                       sla_hour_checkout_eta, Patente_falsa, Empresa_falsa,
+                       Drivername, region, comuna
+                FROM fpoc_simpli_visits
+                WHERE planned_date = ?
+                ORDER BY Patente_falsa, "order"
+                """,
+                (today_date.isoformat(),),
+            )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        from loguru import logger
+        logger.warning(f"[pipeline] _load_real_plan fallo lectura DB: {e}")
+        return None
+
+    if not rows:
+        return None
+
+    visits = []
+    for r in rows:
+        vid_db = int(r[7]) if r[7] is not None else 1
+        vid = ((vid_db - 1) % N_VEHICLES) + 1  # cap a 1..12 para que el modelo lo conozca
+        region = str(r[10]) if r[10] else "RM"
+        if region not in REGION_BBOXES:
+            region = "RM"
+        bbox = REGION_BBOXES[region]
+        depot_lat, depot_lon = REGION_DEPOTS.get(region, REGION_DEPOTS["RM"])
+        # Determinista: misma visita siempre en misma lat/lon
+        rng = np.random.default_rng(int(r[0]) & 0xFFFFFFFF)
+        lat = float(rng.uniform(bbox[0], bbox[1]))
+        lon = float(rng.uniform(bbox[2], bbox[3]))
+
+        # Window end derivado del ETA reportado en BD (le sumamos ~1h de buffer)
+        eta_str = str(r[4]) if r[4] else ""
+        we_h = 18
+        try:
+            time_part = ""
+            if "T" in eta_str:
+                time_part = eta_str.split("T", 1)[1]
+            elif " " in eta_str:
+                time_part = eta_str.split(" ", 1)[1]
+            if time_part:
+                we_h = int(time_part[:2]) + 1
+        except Exception:  # noqa: BLE001
+            pass
+        we_h = max(14, min(20, we_h))
+        window_end_str = f"{we_h:02d}:00:00"
+        # planned_arrival_time = window_end - buffer
+        buffer_min = int(rng.uniform(45, 100))
+        pa_dt = datetime.combine(today_date, dtime(we_h, 0)) - timedelta(minutes=buffer_min)
+
+        # Status real de BD; si está completed se respeta, si pending lo dejamos
+        status_db = (str(r[5]) or "pending").lower()
+        if status_db not in ("pending", "completed", "failed"):
+            status_db = "pending"
+
+        visits.append({
+            "id": f"V{r[0]}",
+            "tracking_id": str(r[0]),
+            "customer_id": f"C{int(r[0]) % 10000:04d}",
+            "title": str(r[1] or "Cliente"),
+            "address": str(r[3] or ""),
+            "latitude": lat,
+            "longitude": lon,
+            "region": region,
+            "comuna": str(r[11]) if r[11] else "Santiago",
+            "_depot_lat": float(depot_lat),
+            "_depot_lon": float(depot_lon),
+            "load": float(round(rng.uniform(0.5, 25.0), 2)),
+            "n_subordenes": 1,
+            "window_start": "09:00:00",
+            "window_end": window_end_str,
+            "planned_arrival_time": pa_dt.strftime("%H:%M:%S"),
+            "planned_date": today_date.isoformat(),
+            "reference": str(r[0]),
+            "_is_recurrent": False,
+            "_in_problem_comuna": False,
+            "vehicle_id": vid,
+            "vehicle_name": f"FAL-{1000 + vid - 1}",
+            "order": int(r[2]) if r[2] is not None else 1,
+        })
+
+    df = pd.DataFrame(visits)
+    rng = np.random.default_rng(SEED)
+    return _compute_eta_and_failure(df, rng)
+
+
 def gen_today_plan(today_date: date, day_seed: int, customers: list[dict]) -> pd.DataFrame:
+    """Genera el plan de hoy. Prioridad: BD real → sintético fallback.
+
+    Si fpoc_simpli_visits tiene visitas para today_date las usamos (con todos
+    los campos derivados para que el ML pueda predecir). Si no hay data en BD,
+    cae al generador sintético histórico.
+    """
+    real = _load_real_plan(today_date)
+    if real is not None and len(real) > 0:
+        from loguru import logger
+        logger.info(f"[pipeline] today_plan desde BD real: {len(real)} visitas para {today_date}")
+        return real
     return gen_day_visits(N_HISTORICAL_DAYS + day_seed, today_date, customers)
 
 

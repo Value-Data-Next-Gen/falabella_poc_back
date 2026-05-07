@@ -397,6 +397,17 @@ def import_mock(
     msg = f"Importadas {inserted} visitas para {target_date.isoformat()}"
     if deleted:
         msg += f" (reemplazadas {deleted} visitas previas)"
+
+    # Si la fecha importada es la del simulador, refrescar el snapshot ML para
+    # que la analitica vea las visitas nuevas al instante.
+    try:
+        from state import STATE
+        if STATE.today and target_date.isoformat() == STATE.today.isoformat():
+            STATE.reset_day(start_date=target_date, day_seed=STATE.day_seed)
+            msg += f" (snapshot ML refrescado a {len(STATE.snapshot_df) if STATE.snapshot_df is not None else 0} visitas)"
+    except Exception:  # noqa: BLE001
+        pass
+
     return ImportMockResponse(
         ok=True,
         count=inserted,
