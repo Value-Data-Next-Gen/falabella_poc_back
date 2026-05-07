@@ -139,12 +139,25 @@ class DriverScorecardRow(BaseModel):
 def get_driver_scorecard(
     period_days: int = 30,
     empresa_id: Optional[int] = None,
+    region: str = "all",
     user: CurrentUser = Depends(current_user),
 ) -> list[DriverScorecardRow]:
     if not user.is_falabella:
         raise HTTPException(403, "solo falabella_admin/ops")
     if period_days < 1 or period_days > 365:
         raise HTTPException(400, "period_days fuera de rango")
+    if region not in ("all", "RM", "regiones"):
+        raise HTTPException(400, "region debe ser all|RM|regiones")
+
+    # Filtro region: usa columna `region` propia de cada tabla de log
+    # (poblada al insertar). Evita join con fpoc_simpli_visits porque los
+    # tracking_ids del simulador (TRK*) no se mapean a los ids del Excel.
+    if region == "RM":
+        region_filter = "AND region = 'RM'"
+    elif region == "regiones":
+        region_filter = "AND region IS NOT NULL AND region != 'RM'"
+    else:
+        region_filter = ""
 
     where_empresa = ""
     params_empresa: list = []
@@ -188,9 +201,10 @@ def get_driver_scorecard(
             cur.execute(
                 f"""
                 SELECT COUNT(*) AS n
-                FROM fpoc_visit_comments c
-                WHERE c.vehicle_id = ?
-                  AND c.created_at >= datetime('now', '-{int(period_days)} days')
+                FROM fpoc_visit_comments
+                WHERE vehicle_id = ?
+                  AND created_at >= datetime('now', '-{int(period_days)} days')
+                  {region_filter}
                 """,
                 vid if vid is not None else -1,
             )
@@ -203,6 +217,7 @@ def get_driver_scorecard(
                 FROM fpoc_motivo_corrections
                 WHERE driver_id = ?
                   AND created_at >= datetime('now', '-{int(period_days)} days')
+                  {region_filter}
                 GROUP BY status
                 """,
                 d.driver_id,
@@ -223,6 +238,7 @@ def get_driver_scorecard(
                 WHERE driver_id = ?
                   AND triggered_by IN ('comment_alert','motivo_correction')
                   AND created_at >= datetime('now', '-{int(period_days)} days')
+                  {region_filter}
                 """,
                 d.driver_id,
             )

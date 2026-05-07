@@ -29,7 +29,12 @@ HERE = Path(__file__).resolve().parent
 BACKEND_ROOT = HERE.parent
 SCHEMA_PATH = HERE / "sqlite_schema.sql"
 DEFAULT_DB = BACKEND_ROOT / "valuedata.db"
-SEARCH_DIRS = [BACKEND_ROOT, BACKEND_ROOT.parent, Path.cwd()]
+SEARCH_DIRS = [
+    BACKEND_ROOT.parent / "client" / "data",
+    BACKEND_ROOT,
+    BACKEND_ROOT.parent,
+    Path.cwd(),
+]
 
 
 SIMPLI_COLS = [

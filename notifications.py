@@ -168,6 +168,7 @@ def _log_notification(
     triggered_by: str = "manual",
     content_sid: Optional[str] = None,
     content_variables: Optional[dict] = None,
+    region: Optional[str] = None,
 ) -> int:
     cur = cn.cursor()
     cur.execute(
@@ -175,14 +176,15 @@ def _log_notification(
         INSERT INTO fpoc.notifications_log
           (user_id, to_number, channel, subject, body, tracking_id,
            twilio_sid, status, error_msg, triggered_by,
-           content_sid, content_variables)
-        VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           content_sid, content_variables, region)
+        VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING notification_id
         """,
         user_id, to_number, subject, body, tracking_id,
         twilio_sid, status, error, triggered_by,
         content_sid,
         json.dumps(content_variables) if content_variables else None,
+        region,
     )
     new_id = int(cur.fetchone()[0])
     cn.commit()

@@ -74,6 +74,7 @@ from auth import (
     CurrentUser,
     current_user,
     empresas_router,
+    require_admin,
     router as auth_router,
 )
 
@@ -168,6 +169,7 @@ from comment_simulator import (
 from motivo_corrections import router as motivo_corrections_router
 from drivers_whatsapp import router as drivers_whatsapp_router
 from search import router as search_router
+from twilio_inbound import router as twilio_inbound_router
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -187,6 +189,7 @@ app.include_router(motivo_classifier_router)
 app.include_router(motivo_corrections_router)
 app.include_router(drivers_whatsapp_router)
 app.include_router(search_router)
+app.include_router(twilio_inbound_router)
 
 
 def _scope_df(df, user: CurrentUser):
@@ -218,6 +221,9 @@ def _df_to_visits(df) -> list[Visit]:
             latitude=float(row["latitude"]),
             longitude=float(row["longitude"]),
             load=float(row["load"]),
+            n_subordenes=int(row.get("n_subordenes", 1)),
+            region=str(row["region"]) if row.get("region") is not None else None,
+            comuna=str(row["comuna"]) if row.get("comuna") is not None else None,
             window_start=str(row["window_start"]),
             window_end=str(row["window_end"]),
             planned_arrival_time=str(row["planned_arrival_time"]),
@@ -239,6 +245,55 @@ def _df_to_visits(df) -> list[Visit]:
 @app.get("/api/health")
 def health():
     return {"status": "ok", "ready": STATE.boot is not None}
+
+
+# =============================================================================
+# Config runtime (admin)
+# =============================================================================
+class AppConfigEntry(BaseModel):
+    value: float
+    updated_at: Optional[str] = None
+    updated_by_user_id: Optional[int] = None
+
+
+class AppConfigResponse(BaseModel):
+    eta_window_hours: AppConfigEntry
+    alert_threshold: AppConfigEntry
+
+
+class AppConfigUpdate(BaseModel):
+    eta_window_hours: Optional[float] = Field(default=None, ge=0.0, le=24.0)
+    alert_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+@app.get("/api/admin/config", response_model=AppConfigResponse)
+def get_app_config(user: CurrentUser = Depends(require_admin)):
+    import app_config as _cfg
+    meta = _cfg.get_audit_meta()
+    return AppConfigResponse(
+        eta_window_hours=AppConfigEntry(**meta["eta_window_hours"]),
+        alert_threshold=AppConfigEntry(**meta["alert_threshold"]),
+    )
+
+
+@app.put("/api/admin/config", response_model=AppConfigResponse)
+def update_app_config(
+    body: AppConfigUpdate,
+    user: CurrentUser = Depends(require_admin),
+):
+    import app_config as _cfg
+    if body.eta_window_hours is not None:
+        _cfg.set_eta_window_hours(body.eta_window_hours, user_id=user.user_id)
+    if body.alert_threshold is not None:
+        _cfg.set_alert_threshold(body.alert_threshold, user_id=user.user_id)
+    # Refresca el snapshot para que el nuevo umbral se aplique inmediatamente.
+    if STATE.snapshot_df is not None:
+        STATE._refresh_snapshot(emit_events=False)
+    meta = _cfg.get_audit_meta()
+    return AppConfigResponse(
+        eta_window_hours=AppConfigEntry(**meta["eta_window_hours"]),
+        alert_threshold=AppConfigEntry(**meta["alert_threshold"]),
+    )
 
 
 @app.get("/api/state", response_model=StateResponse)
@@ -301,6 +356,8 @@ def get_visits(
     only_alerts: bool = Query(default=False),
     region: str = Query(default="all", pattern="^(all|RM|regiones)$"),
     only_vip: bool = Query(default=False),
+    eta_window_hours: float | None = Query(default=None, ge=0.0, le=24.0),
+    alert_threshold: float | None = Query(default=None, ge=0.0, le=1.0),
     user: CurrentUser = Depends(current_user),
 ):
     _require_ready()
@@ -310,11 +367,19 @@ def get_visits(
     if status:
         df = df[df["status"] == status]
     if only_alerts:
-        df = df[df["alert_valuedata"] | (df["alert_slack"] != "GREEN")]
+        if eta_window_hours is not None or alert_threshold is not None:
+            from pipeline import compute_alert_mask
+            mask = compute_alert_mask(df, threshold=alert_threshold, eta_window_hours=eta_window_hours)
+            df = df[mask | (df["alert_slack"] != "GREEN")]
+        else:
+            df = df[df["alert_valuedata"] | (df["alert_slack"] != "GREEN")]
     if region != "all":
         from comments import _visit_region
         df = df.copy()
-        df["_region"] = df.apply(lambda r: _visit_region(r.get("latitude"), r.get("longitude")), axis=1)
+        df["_region"] = df.apply(
+            lambda r: _visit_region(r.get("latitude"), r.get("longitude"), r.get("region")),
+            axis=1,
+        )
         df = df[df["_region"] == region]
     if only_vip:
         # cruce por title con fpoc.vip_clients (active=1)
@@ -342,13 +407,29 @@ def get_visits(
 @app.get("/api/alerts/anticipated", response_model=list[AnticipatedAlert])
 def get_anticipated_alerts(
     limit: int = Query(default=20, ge=1, le=200),
+    region: str = Query(default="all", pattern="^(all|RM|regiones)$"),
+    eta_window_hours: float | None = Query(default=None, ge=0.0, le=24.0),
+    alert_threshold: float | None = Query(default=None, ge=0.0, le=1.0),
     user: CurrentUser = Depends(current_user),
 ):
     _require_ready()
     df = _scope_df(STATE.snapshot_df, user)
+    if region != "all":
+        from comments import _visit_region
+        df = df.copy()
+        df["_region"] = df.apply(
+            lambda r: _visit_region(r.get("latitude"), r.get("longitude"), r.get("region")),
+            axis=1,
+        )
+        df = df[df["_region"] == region]
     shap_vals = STATE.shap_vals
     feats = STATE.boot["feature_names"]
-    alerts = df[df["alert_valuedata"]].sort_values("p_fallo", ascending=False).head(limit)
+    if eta_window_hours is not None or alert_threshold is not None:
+        from pipeline import compute_alert_mask
+        mask = compute_alert_mask(df, threshold=alert_threshold, eta_window_hours=eta_window_hours)
+        alerts = df[mask].sort_values("p_fallo", ascending=False).head(limit)
+    else:
+        alerts = df[df["alert_valuedata"]].sort_values("p_fallo", ascending=False).head(limit)
     out: list[AnticipatedAlert] = []
     for _, row in alerts.iterrows():
         idx = int(row["_shap_idx"])

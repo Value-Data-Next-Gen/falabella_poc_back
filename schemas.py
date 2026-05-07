@@ -43,6 +43,9 @@ class Visit(BaseModel):
     latitude: float
     longitude: float
     load: float
+    n_subordenes: int = 1
+    region: Optional[str] = None
+    comuna: Optional[str] = None
     window_start: str
     window_end: str
     planned_arrival_time: str

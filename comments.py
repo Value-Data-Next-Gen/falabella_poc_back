@@ -36,15 +36,17 @@ from state import STATE
 router = APIRouter(tags=["comments"])
 
 
-# Catálogo extraído literal del notebook (celda 8, REGLAS_OPERACIONALES)
+# Catálogo alineado con el del cliente (Excel "Motivo no entrega HD", 11 motivos)
+# + 3 motivos internos extra: NO DESPACHA A LOCALIDAD, RIESGO FRAUDE, DETENCION URGENTE.
 MOTIVOS_CATALOGO: list[str] = [
     "SIN MORADORES",
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION",
+    "NO CONOCEN A CLIENTE",
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN",
     "NO DESPACHA A LOCALIDAD",
     "FUERA DE COBERTURA/ FRECUENCIA",
-    "PROD N ENTREGADO X TIEMPO",
+    "PROD NO ENTREGADO POR TIEMPO",
     "PRODUCTO NO CARGADO",
-    "CLIENTE RECHAZA ENVIO",
+    "CLIENTE RECHAZA",
     "SINIESTRO EN CALLE",
     "PRODUCTO CON PROBLEMAS",
     "NO CUMPLE CONDICIONES RETIRO",
@@ -58,23 +60,36 @@ DEFAULT_ALERT_CONFIG: dict[str, tuple[bool, str]] = {
     "SINIESTRO EN CALLE": (True, "critical"),
     "PRODUCTO ROBADO": (True, "critical"),
     "PRODUCTO NO CARGADO": (True, "high"),
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION": (True, "medium"),
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN": (True, "medium"),
     "RIESGO FRAUDE": (True, "critical"),
     "DETENCION URGENTE": (True, "high"),
 }
 
-# Descripciones default por motivo. Texto literal del notebook
-# auditoria_llm_directo.ipynb (REGLAS_OPERACIONALES). Se usan en el system prompt
-# del LLM cuando no hay override en fpoc.motivo_alert_config.description.
+# Descripciones default por motivo. Texto del catálogo del cliente (Excel
+# "Motivo no entrega HD") + reglas internas de desambiguación "NO usar si..."
+# que ayudan al LLM a no confundir motivos similares.
+# Los 3 motivos extra internos (NO DESPACHA, RIESGO FRAUDE, DETENCION URGENTE)
+# mantienen su descripción interna porque no están en el catálogo del cliente.
 DEFAULT_DESCRIPTIONS: dict[str, str] = {
     "SIN MORADORES": (
-        "Nadie disponible en domicilio. Cliente no atiende, no responde llamado/timbre.\n"
-        "NO usar si: el problema es la dirección -> PROBLEMA DE DIRECCION.\n"
-        "NO usar si: el cliente atendió pero rechazó -> CLIENTE RECHAZA ENVIO."
+        "Al llegar a la dirección de entrega, el conductor no encuentra a ninguna persona en el lugar "
+        "que pueda recibir el paquete. Esto puede suceder cuando el cliente está ausente, si la dirección "
+        "corresponde a un inmueble deshabitado, o cliente reagenda o cliente pide cambiar fecha de entrega.\n"
+        "NO usar si: el problema es la dirección -> PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN.\n"
+        "NO usar si: el cliente atendió pero rechazó -> CLIENTE RECHAZA.\n"
+        "NO usar si: vecinos atienden pero no conocen al destinatario -> NO CONOCEN A CLIENTE."
     ),
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION": (
-        "Dirección errónea, mal escrita, inexistente, sin numeración, no ubicable, mal geolocalizada, sin información de contacto.\n"
-        "NO usar si: la zona no es atendida -> NO DESPACHA o FUERA DE COBERTURA.\n"
+    "NO CONOCEN A CLIENTE": (
+        "Las personas en la dirección indicada afirman no conocer al destinatario o que no corresponde "
+        "a su dirección.\n"
+        "NO usar si: realmente no había nadie -> SIN MORADORES.\n"
+        "NO usar si: la dirección es incorrecta o incompleta -> PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN."
+    ),
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN": (
+        "La dirección proporcionada es incorrecta, está incompleta o es imposible de localizar. "
+        "Puede que falte información crucial como el número de casa o apartamento, o que la dirección "
+        "no corresponda a una ubicación válida.\n"
+        "NO usar si: la zona no es atendida -> NO DESPACHA A LOCALIDAD o FUERA DE COBERTURA/ FRECUENCIA.\n"
         "NO usar si: la dirección está bien pero no había nadie -> SIN MORADORES."
     ),
     "NO DESPACHA A LOCALIDAD": (
@@ -82,43 +97,53 @@ DEFAULT_DESCRIPTIONS: dict[str, str] = {
         "Aun cuando el cliente anula al darse cuenta, la causa raíz sigue siendo no-despacho."
     ),
     "FUERA DE COBERTURA/ FRECUENCIA": (
-        "La ruta no llega a esa zona en el día/horario actual. Frecuencia insuficiente, fuera de ruta del día."
+        "La dirección de entrega está en un área fuera del alcance de la cobertura del servicio, "
+        "o en una zona que no se visita con la frecuencia necesaria para cumplir con la entrega."
     ),
-    "PROD N ENTREGADO X TIEMPO": (
-        "No se alcanzó a entregar dentro del tiempo. Atraso, fin de turno. CONDUCTOR NO GESTIONA cae acá cuando es por gestión de tiempo.\n"
+    "PROD NO ENTREGADO POR TIEMPO": (
+        "El paquete no se pudo entregar dentro del tiempo límite estipulado por el cliente o la empresa. "
+        "Esto puede suceder por tráfico, demoras en rutas previas o cualquier otro contratiempo.\n"
         "NO usar si: hubo siniestro -> SINIESTRO EN CALLE.\n"
         "NO usar si: el producto nunca subió al camión -> PRODUCTO NO CARGADO."
     ),
     "PRODUCTO NO CARGADO": (
-        "El producto no fue cargado al vehículo en origen. Quedó en bodega, no se cargó por capacidad, fue olvidado."
+        "El paquete destinado para la entrega no fue cargado en el vehículo desde el origen, "
+        "por lo que no puede ser entregado."
     ),
-    "CLIENTE RECHAZA ENVIO": (
-        "El cliente está disponible y rechaza recibir: anula, no quiere, devuelve, cancela.\n"
-        "ATENCION: si el cliente anula porque la dirección estaba mal, la causa raíz NO es rechazo - es PROBLEMA DE DIRECCION o NO DESPACHA."
+    "CLIENTE RECHAZA": (
+        "El cliente rechaza recibir el paquete. Esto puede deberse a que ya no lo necesita, cambió "
+        "de opinión, recibió el pedido incorrecto, o cualquier otra razón personal.\n"
+        "ATENCIÓN: si el cliente anula porque la dirección estaba mal, la causa raíz NO es rechazo "
+        "-> es PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN o NO DESPACHA A LOCALIDAD."
     ),
     "SINIESTRO EN CALLE": (
-        "Eventos en ruta: asalto, robo, encerrona, accidente, choque, panne, intervención de carabineros."
+        "Un incidente en la vía pública, como un accidente, manifestación, cierre de calles o "
+        "condiciones climáticas adversas, impide que el conductor llegue al destino de entrega."
     ),
     "PRODUCTO CON PROBLEMAS": (
-        "Producto roto, dañado, embalaje en mal estado, faltante, incompleto."
+        "El producto presenta defectos, daños o cualquier problema que impide su entrega en "
+        "condiciones adecuadas."
     ),
     "NO CUMPLE CONDICIONES RETIRO": (
-        "El destinatario no cumple los requisitos: falta documentación (RUT, autorización), no acredita identidad."
+        "Las condiciones en el lugar de entrega o las condiciones del producto no son adecuadas "
+        "para realizar la entrega o el retiro. Esto puede incluir problemas como falta de espacio, "
+        "restricciones de acceso, o situaciones donde el producto no puede ser retirado porque está en uso."
     ),
     "PRODUCTO ROBADO": (
-        "El producto fue robado/sustraído de la carga."
+        "El paquete fue robado durante el proceso de entrega, ya sea del vehículo de transporte "
+        "o en otro momento del trayecto."
     ),
     "RIESGO FRAUDE": (
         "Pedido sospechoso de fraude (datos del cliente, RUT clonado, dirección de phishing, "
         "intento de estafa, comportamiento inusual). NO entregar. Reportar inmediatamente.\n"
-        "NO usar si: el cliente solo rechaza por arrepentimiento -> CLIENTE RECHAZA ENVIO.\n"
+        "NO usar si: el cliente solo rechaza por arrepentimiento -> CLIENTE RECHAZA.\n"
         "NO usar si: hay siniestro físico -> SINIESTRO EN CALLE."
     ),
     "DETENCION URGENTE": (
         "Detención inmediata de la entrega ordenada por Falabella o transporte (alerta judicial, "
         "cancelación administrativa post-pickup, retención por aduana, etc.). NO entregar y "
         "devolver al CD.\n"
-        "NO usar si: el cliente rechaza personalmente -> CLIENTE RECHAZA ENVIO."
+        "NO usar si: el cliente rechaza personalmente -> CLIENTE RECHAZA."
     ),
 }
 
@@ -916,17 +941,18 @@ def _persist_and_dispatch_comment(
     vehicle_id = meta["vehicle_id"]
     empresa_id = STATE.vehicle_empresa_map.get(int(vehicle_id))
     alertable, severity = _resolve_alert_config(motivo, empresa_id)
+    region = _visit_region(meta.get("latitude"), meta.get("longitude"))
 
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
             """
             INSERT INTO fpoc.visit_comments
-              (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by)
-            VALUES (?, ?, ?, ?, ?, ?)
+              (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             tracking_id, vehicle_id, empresa_id,
-            motivo, comentario, user_id,
+            motivo, comentario, user_id, region,
         )
         cn.commit()
         cur.execute(

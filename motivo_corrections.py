@@ -200,9 +200,11 @@ def maybe_create_correction_from_comment(
         return None
     razonamiento = (result.get("razonamiento") or "")[:400]
 
-    # Driver del vehículo (si está disponible)
+    # Driver + region del vehículo (si está disponible)
     meta = _visit_meta(tracking_id) or {}
     driver_id = meta.get("driver_id")
+    from comments import _visit_region as _viz_region
+    region = _viz_region(meta.get("latitude"), meta.get("longitude"))
 
     correction_id: Optional[int] = None
     try:
@@ -212,11 +214,11 @@ def maybe_create_correction_from_comment(
                 """
                 INSERT INTO fpoc_motivo_corrections
                   (comment_id, tracking_id, motivo_reportado, motivo_sugerido,
-                   confianza, razonamiento, driver_id, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                   confianza, razonamiento, driver_id, status, region)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 comment_id, tracking_id, motivo_reportado, motivo_sugerido,
-                confianza, razonamiento, driver_id,
+                confianza, razonamiento, driver_id, region,
             )
             cn.commit()
             cur.execute("SELECT last_insert_rowid() AS id")

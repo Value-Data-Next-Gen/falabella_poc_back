@@ -152,8 +152,13 @@ def _seed_empresas_synthetic(cn: sqlite3.Connection, ids: list[int]) -> None:
 
 
 def _find_excel() -> Path | None:
-    """Busca datos_eta_*.xlsx en backend/ , project root y cwd."""
-    search_dirs = [BACKEND_ROOT, BACKEND_ROOT.parent, Path.cwd()]
+    """Busca datos_eta_*.xlsx en client/data/, backend/, project root y cwd."""
+    search_dirs = [
+        BACKEND_ROOT.parent / "client" / "data",
+        BACKEND_ROOT,
+        BACKEND_ROOT.parent,
+        Path.cwd(),
+    ]
     for d in search_dirs:
         cands = sorted(d.glob("datos_eta_*.xlsx"))
         if cands:

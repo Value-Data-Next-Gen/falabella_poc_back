@@ -22,9 +22,12 @@ from sklearn.metrics import brier_score_loss, confusion_matrix, roc_auc_score
 # =============================================================================
 SEED = 42
 N_HISTORICAL_DAYS = 60
-N_VISITS_PER_DAY = 120
+# Volumen base: ~600 visitas/día. Multiplicador DOW × mes ajusta por estacionalidad
+# real (ver synthetic_calibration). Domingos terminan en ~66 visitas (factor 0.11),
+# días peak (jun/oct/dic) llegan a ~1000.
+N_VISITS_PER_DAY = 600
 N_VEHICLES = 12
-N_UNIQUE_CUSTOMERS = 800
+N_UNIQUE_CUSTOMERS = 2000
 DEPOT = (-33.45, -70.66)
 COMUNA_GRID = 0.05
 # PLACEHOLDER POC — sin fuente oficial.
@@ -96,23 +99,46 @@ def franja_factor(hour: int) -> float:
 # POOL DE CLIENTES
 # =============================================================================
 def gen_customer_pool(seed: int = SEED) -> list[dict]:
+    """Genera pool de clientes con distribución regional realista.
+
+    ~83% RM (con 20% en problem_comunas escondidos para que el modelo aprenda
+    el patrón); ~17% repartido en 7 regiones según pesos del Excel del cliente.
+    Cada cliente lleva region/comuna y depot regional para evitar distancias
+    Santiago-Concepción inválidas en el modelo.
+    """
+    from synthetic_calibration import (
+        REGION_WEIGHTS, gen_latlon_for_region, pick_comuna, depot_for_region,
+    )
     rng = np.random.default_rng(seed + 1)
     fake = Faker("es_CL")
     Faker.seed(seed + 1)
     customers: list[dict] = []
     pc_list = sorted(PATTERNS["problem_comunas"])
+
+    regions = list(REGION_WEIGHTS.keys())
+    weights = np.array([REGION_WEIGHTS[r] for r in regions])
+    weights = weights / weights.sum()
+
     for i in range(N_UNIQUE_CUSTOMERS):
-        in_problem = bool(rng.random() < 0.20)
-        if in_problem:
-            pc = pc_list[int(rng.integers(0, len(pc_list)))]
-            lat = pc[0] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
-            lon = pc[1] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
+        region = str(rng.choice(regions, p=weights))
+        if region == "RM":
+            in_problem = bool(rng.random() < 0.20)
+            if in_problem:
+                pc = pc_list[int(rng.integers(0, len(pc_list)))]
+                lat = pc[0] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
+                lon = pc[1] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
+            else:
+                for _ in range(20):
+                    lat = DEPOT[0] + rng.uniform(-0.22, 0.22)
+                    lon = DEPOT[1] + rng.uniform(-0.22, 0.22)
+                    if not is_problem_comuna_coords(lat, lon):
+                        break
+            comuna = pick_comuna("RM", rng)
         else:
-            for _ in range(20):
-                lat = DEPOT[0] + rng.uniform(-0.22, 0.22)
-                lon = DEPOT[1] + rng.uniform(-0.22, 0.22)
-                if not is_problem_comuna_coords(lat, lon):
-                    break
+            lat, lon = gen_latlon_for_region(region, rng)
+            comuna = pick_comuna(region, rng)
+
+        depot_lat, depot_lon = depot_for_region(region)
         is_recurrent = bool(rng.random() < 0.15)
         customers.append({
             "customer_id": f"C{i:04d}",
@@ -120,8 +146,12 @@ def gen_customer_pool(seed: int = SEED) -> list[dict]:
             "address": fake.address().replace("\n", ", "),
             "latitude": float(lat),
             "longitude": float(lon),
+            "region": region,
+            "comuna": comuna,
+            "_depot_lat": float(depot_lat),
+            "_depot_lon": float(depot_lon),
             "_is_recurrent": is_recurrent,
-            "_in_problem_comuna": is_problem_comuna_coords(lat, lon),
+            "_in_problem_comuna": is_problem_comuna_coords(lat, lon) if region == "RM" else False,
         })
     return customers
 
@@ -130,9 +160,15 @@ def gen_customer_pool(seed: int = SEED) -> list[dict]:
 # GENERACION DE UN DIA
 # =============================================================================
 def gen_day_visits(day_idx: int, planned_date: date, customers: list[dict]) -> pd.DataFrame:
+    from synthetic_calibration import daily_volume_factor, sample_subordenes
     seed = SEED + 1000 * day_idx
     rng = np.random.default_rng(seed)
-    cust_idx = rng.integers(0, len(customers), size=N_VISITS_PER_DAY)
+
+    # Volumen del día = base × factor DOW × factor mes (ver synthetic_calibration).
+    factor = daily_volume_factor(planned_date)
+    n_visits = max(1, int(round(N_VISITS_PER_DAY * factor)))
+
+    cust_idx = rng.integers(0, len(customers), size=n_visits)
     visits = []
     for i, ci in enumerate(cust_idx):
         c = customers[int(ci)]
@@ -148,7 +184,12 @@ def gen_day_visits(day_idx: int, planned_date: date, customers: list[dict]) -> p
             "address": c["address"],
             "latitude": c["latitude"],
             "longitude": c["longitude"],
+            "region": c.get("region", "RM"),
+            "comuna": c.get("comuna", "Santiago"),
+            "_depot_lat": c.get("_depot_lat", DEPOT[0]),
+            "_depot_lon": c.get("_depot_lon", DEPOT[1]),
             "load": load,
+            "n_subordenes": sample_subordenes(rng),
             "window_start": "09:00:00",
             "window_end": f"{we_h:02d}:00:00",
             "planned_arrival_time": pa_dt.strftime("%H:%M:%S"),
@@ -159,8 +200,8 @@ def gen_day_visits(day_idx: int, planned_date: date, customers: list[dict]) -> p
         })
 
     rng.shuffle(visits)
-    per_vehicle = N_VISITS_PER_DAY // N_VEHICLES
-    extra = N_VISITS_PER_DAY - per_vehicle * N_VEHICLES
+    per_vehicle = n_visits // N_VEHICLES
+    extra = n_visits - per_vehicle * N_VEHICLES
     cursor = 0
     for vidx in range(N_VEHICLES):
         cnt = per_vehicle + (1 if vidx < extra else 0)
@@ -255,8 +296,15 @@ def featurize(df: pd.DataFrame, comuna_failure_rate: dict[str, float] | None = N
     glon = (np.round(df["longitude"].values / COMUNA_GRID) * COMUNA_GRID).round(3)
     df["comuna_id"] = [f"{la:.3f}_{lo:.3f}" for la, lo in zip(glat, glon)]
     df["conductor_id"] = "v" + df["vehicle_id"].astype(int).astype(str)
+    # Distancia al CD regional (no Santiago) si hay info; fallback a DEPOT global.
+    if "_depot_lat" in df.columns and "_depot_lon" in df.columns:
+        depot_lat = df["_depot_lat"].fillna(DEPOT[0]).values
+        depot_lon = df["_depot_lon"].fillna(DEPOT[1]).values
+    else:
+        depot_lat = np.full(len(df), DEPOT[0])
+        depot_lon = np.full(len(df), DEPOT[1])
     df["dist_depot_km"] = haversine_km_vec(
-        np.full(len(df), DEPOT[0]), np.full(len(df), DEPOT[1]),
+        depot_lat, depot_lon,
         df["latitude"].values, df["longitude"].values,
     )
 
@@ -453,12 +501,39 @@ def apply_status_and_predict(
 
     df["_shap_idx"] = np.arange(len(df))
     df["horas_hasta_we"] = X["horas_hasta_window_end"].values
-    df["alert_valuedata"] = (
-        (df["p_fallo"] >= ALERT_THRESHOLD)
-        & (df["horas_hasta_we"] >= ANTICIPATION_HOURS)
+    df["alert_valuedata"] = compute_alert_mask(df)
+    return df, shap_vals
+
+
+def compute_alert_mask(
+    df: pd.DataFrame,
+    *,
+    threshold: float | None = None,
+    eta_window_hours: float | None = None,
+) -> pd.Series:
+    """Reglas para `alert_valuedata`. Lee `app_config` en runtime si no se
+    pasan parámetros explícitos. Permite overrides per-request (ej. preview en UI).
+
+    Requiere que `df` tenga: p_fallo, horas_hasta_we, status.
+    """
+    if threshold is None or eta_window_hours is None:
+        try:
+            from app_config import get_alert_threshold, get_eta_window_hours
+            if threshold is None:
+                threshold = get_alert_threshold()
+            if eta_window_hours is None:
+                eta_window_hours = get_eta_window_hours()
+        except Exception:  # noqa: BLE001
+            # Fallback a constantes si app_config falla (ej. DB caída en tests).
+            if threshold is None:
+                threshold = ALERT_THRESHOLD
+            if eta_window_hours is None:
+                eta_window_hours = ANTICIPATION_HOURS
+    return (
+        (df["p_fallo"] >= threshold)
+        & (df["horas_hasta_we"] >= eta_window_hours)
         & (df["status"] == "pending")
     )
-    return df, shap_vals
 
 
 def top_shap_factors(shap_vals: np.ndarray, feature_names: list[str], idx: int,

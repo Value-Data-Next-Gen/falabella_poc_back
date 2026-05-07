@@ -45,10 +45,15 @@ SAMPLE_COMMENTS: dict[str, list[str]] = {
         "Llamé al teléfono y suena buzón",
         "Casa con luces apagadas, sin moradores",
     ],
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION": [
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN": [
         "Dirección errónea, no corresponde",
         "Calle no existe en el GPS",
-        "Sin numeración, vecinos no conocen al destinatario",
+        "Sin numeración, no ubicable",
+    ],
+    "NO CONOCEN A CLIENTE": [
+        "Vecinos atienden pero no conocen al destinatario",
+        "Aquí no vive esa persona",
+        "El nombre no corresponde a esta dirección",
     ],
     "NO DESPACHA A LOCALIDAD": [
         "Fuera de mi zona de despacho",
@@ -58,7 +63,7 @@ SAMPLE_COMMENTS: dict[str, list[str]] = {
         "No alcanzo a llegar hoy, fuera de ruta",
         "Frecuencia no cubre esta zona el día de hoy",
     ],
-    "PROD N ENTREGADO X TIEMPO": [
+    "PROD NO ENTREGADO POR TIEMPO": [
         "Se acabó la jornada, no alcancé a entregar",
         "Atrasado por tráfico, se cumplió horario",
     ],
@@ -67,7 +72,7 @@ SAMPLE_COMMENTS: dict[str, list[str]] = {
         "No subió al camión por falta de capacidad",
         "Olvidado en origen, no salió en la ruta",
     ],
-    "CLIENTE RECHAZA ENVIO": [
+    "CLIENTE RECHAZA": [
         "El cliente no quiere recibir, anuló compra",
         "Cliente devuelve el paquete sin abrir",
     ],
