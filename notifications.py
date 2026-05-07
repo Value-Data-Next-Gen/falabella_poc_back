@@ -151,6 +151,8 @@ class NotificationLogRow(BaseModel):
     error_msg: Optional[str] = None
     triggered_by: str
     created_at: str
+    direction: Optional[str] = None       # 'inbound' | 'outbound'
+    profile_name: Optional[str] = None    # nombre WA del remitente (en inbound)
 
 
 # ---------- Helpers ----------
@@ -372,6 +374,7 @@ def get_log(
     limit: int = Query(default=50, ge=1, le=500),
     triggered_by: Optional[str] = Query(default=None, description="Filtra por origen: manual / auto_threshold / comment_alert / vip_deadline_warning"),
     status: Optional[str] = Query(default=None, description="Filtra por status: sent / dry_run / error"),
+    direction: Optional[str] = Query(default=None, description="'inbound' (recibidos del driver) | 'outbound' (enviados desde el sistema)"),
     user: CurrentUser = Depends(current_user),
 ) -> list[NotificationLogRow]:
     extra_where: list[str] = []
@@ -382,6 +385,9 @@ def get_log(
     if status:
         extra_where.append("status = ?")
         extra_params.append(status)
+    if direction in ("inbound", "outbound"):
+        extra_where.append("COALESCE(direction, 'outbound') = ?")
+        extra_params.append(direction)
 
     with get_conn() as cn:
         cur = cn.cursor()
@@ -392,7 +398,8 @@ def get_log(
             cur.execute(
                 f"""
                 SELECT notification_id, user_id, to_number, channel, subject,
-                       body, tracking_id, twilio_sid, status, error_msg, triggered_by, created_at
+                       body, tracking_id, twilio_sid, status, error_msg, triggered_by,
+                       created_at, COALESCE(direction, 'outbound') AS direction, profile_name
                 FROM fpoc.notifications_log
                 {where_sql}
                 ORDER BY created_at DESC
@@ -401,20 +408,29 @@ def get_log(
                 *extra_params, limit,
             )
         else:
-            # solo las dirigidas a users de su empresa
-            extra_where_aliased = [f"l.{c.split(' = ')[0]} = ?" for c in extra_where]
+            # solo las dirigidas a users de su empresa (outbound) o de contactos de su empresa (inbound)
+            extra_where_aliased = []
+            for c in extra_where:
+                col = c.split(' = ')[0]
+                # COALESCE(direction, 'outbound') stays unaliased (column expr).
+                if "COALESCE" in col:
+                    extra_where_aliased.append(c)
+                else:
+                    extra_where_aliased.append(f"l.{col} = ?")
             where_sql = " AND " + " AND ".join(extra_where_aliased) if extra_where_aliased else ""
             cur.execute(
                 f"""
                 SELECT l.notification_id, l.user_id, l.to_number, l.channel, l.subject,
-                       l.body, l.tracking_id, l.twilio_sid, l.status, l.error_msg, l.triggered_by, l.created_at
+                       l.body, l.tracking_id, l.twilio_sid, l.status, l.error_msg, l.triggered_by,
+                       l.created_at, COALESCE(l.direction, 'outbound') AS direction, l.profile_name
                 FROM fpoc.notifications_log l
-                INNER JOIN fpoc.users u ON u.user_id = l.user_id
-                WHERE u.empresa_id = ?{where_sql}
+                LEFT JOIN fpoc.users u ON u.user_id = l.user_id
+                LEFT JOIN fpoc.empresa_contactos c ON c.contact_id = l.contact_id
+                WHERE (u.empresa_id = ? OR c.empresa_id = ?){where_sql}
                 ORDER BY l.created_at DESC
                 LIMIT ?
                 """,
-                user.empresa_id, *extra_params, limit,
+                user.empresa_id, user.empresa_id, *extra_params, limit,
             )
         rows = cur.fetchall()
     return [
@@ -430,7 +446,9 @@ def get_log(
             status=r.status,
             error_msg=r.error_msg,
             triggered_by=r.triggered_by,
-            created_at=r.created_at.isoformat(),
+            created_at=r.created_at.isoformat() if hasattr(r.created_at, "isoformat") else str(r.created_at),
+            direction=getattr(r, "direction", None),
+            profile_name=getattr(r, "profile_name", None),
         )
         for r in rows
     ]

@@ -621,7 +621,75 @@ def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -
                 sess.save()
                 return _render_manager_menu(persona) + "\n\n(detecté tu número en el sistema)"
             if kind == "contact":
-                # Contacto opted-in: lo tratamos como cliente con menú simple
+                rol = (persona.get("role") or "").lower()
+                empresa_id = persona.get("empresa_id")
+
+                # Jefe / coordinador → menú manager scopeado a su empresa.
+                if rol in ("jefe", "coordinador"):
+                    mgr_persona = {
+                        "name": persona["name"],
+                        "empresa_id": empresa_id,
+                        "empresa_nombre": persona.get("empresa_nombre"),
+                        "is_falabella": False,
+                    }
+                    sess.state = "menu_manager"
+                    sess.role = "manager"
+                    sess.identified_id = str(persona["id"])
+                    sess.context = {"persona": mgr_persona}
+                    sess.save()
+                    return (
+                        _render_manager_menu(mgr_persona)
+                        + "\n\n(detecté tu número como jefe en el sistema)"
+                    )
+
+                # Driver (contacto con rol=driver) → auto-asignar vehículo de su
+                # empresa con menos visitas pendientes (load-balanced).
+                if rol == "driver":
+                    from state import STATE
+                    veh_emp_map = STATE.vehicle_empresa_map or {}
+                    vehicles_empresa = [vid for vid, eid in veh_emp_map.items() if eid == empresa_id]
+                    if vehicles_empresa and STATE.snapshot_df is not None:
+                        df = STATE.snapshot_df
+                        counts = {
+                            vid: int(((df["vehicle_id"] == vid) & (df["status"] == "pending")).sum())
+                            for vid in vehicles_empresa
+                        }
+                        # Vehículo con menos visitas pendientes (balanceo simple).
+                        vid = min(counts, key=lambda k: counts[k])
+                        # Resolver vehicle_name desde el snapshot
+                        sub = df[df["vehicle_id"] == vid]
+                        vehicle_name = (
+                            str(sub.iloc[0]["vehicle_name"]) if not sub.empty
+                            else f"FAL-{1000 + vid - 1}"
+                        )
+                        driver_synth = {
+                            "driver_id": f"CONTACT-{persona['id']}",
+                            "name": persona["name"],
+                            "vehicle_id": vid,
+                            "vehicle_name": vehicle_name,
+                        }
+                        sess.state = "menu_driver"
+                        sess.role = "driver"
+                        sess.identified_id = driver_synth["driver_id"]
+                        sess.context = {"driver": driver_synth}
+                        sess.save()
+                        return (
+                            _render_driver_menu(driver_synth)
+                            + f"\n\n(te asigné el {vehicle_name} de {persona.get('empresa_nombre','tu empresa')})"
+                        )
+                    # Fallback: empresa sin vehicles cargados → role menu
+                    sess.state = "awaiting_role"
+                    sess.role = "contact"
+                    sess.identified_id = str(persona["id"])
+                    sess.context = {"persona": persona}
+                    sess.save()
+                    return (
+                        f"Hola {persona['name']} 👋\n"
+                        f"No pude encontrar un vehículo asignado en {persona.get('empresa_nombre','tu empresa')}.\n"
+                        + _render_role_menu(profile_name)
+                    )
+
+                # Otro rol o sin rol → role menu manual.
                 sess.state = "awaiting_role"
                 sess.role = "contact"
                 sess.identified_id = str(persona["id"])
