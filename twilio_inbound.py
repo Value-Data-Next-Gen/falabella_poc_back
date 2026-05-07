@@ -509,3 +509,19 @@ def webhook_test():
         "public_url": os.environ.get("TWILIO_INBOUND_PUBLIC_URL", ""),
         "default_empresa_id": os.environ.get("TWILIO_INBOUND_DEFAULT_EMPRESA_ID", ""),
     }
+
+
+# ----------------------------------------------------------------------------
+# Alias path para configuraciones legacy en Twilio Console.
+# Twilio puede estar apuntando a /api/v1/webhooks/twilio/whatsapp de un setup
+# anterior; reusamos el mismo handler.
+# ----------------------------------------------------------------------------
+_legacy_router = APIRouter(prefix="/api/v1/webhooks/twilio", tags=["twilio-inbound"])
+
+
+@_legacy_router.post("/whatsapp")
+async def webhook_inbound_legacy(
+    request: Request,
+    x_twilio_signature: Optional[str] = Header(default=None, alias="X-Twilio-Signature"),
+):
+    return await webhook_inbound(request, x_twilio_signature)

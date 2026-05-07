@@ -169,7 +169,7 @@ from comment_simulator import (
 from motivo_corrections import router as motivo_corrections_router
 from drivers_whatsapp import router as drivers_whatsapp_router
 from search import router as search_router
-from twilio_inbound import router as twilio_inbound_router
+from twilio_inbound import router as twilio_inbound_router, _legacy_router as twilio_legacy_router
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -190,6 +190,7 @@ app.include_router(motivo_corrections_router)
 app.include_router(drivers_whatsapp_router)
 app.include_router(search_router)
 app.include_router(twilio_inbound_router)
+app.include_router(twilio_legacy_router)
 
 
 def _scope_df(df, user: CurrentUser):
