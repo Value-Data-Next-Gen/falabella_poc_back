@@ -279,20 +279,90 @@ def get_driver_scorecard(
 
 
 # =============================================================================
-# Mock SimpliRoute import (Sprint 5 placeholder)
+# Mock SimpliRoute import (Sprint 5+) — persiste en fpoc_simpli_visits
+# Idempotente por fecha: si ya importaste el día, lo dice y no duplica.
 # =============================================================================
 class ImportMockResponse(BaseModel):
     ok: bool
     count: int
     fecha: str
+    already_imported: bool = False
+    message: str = ""
 
 
 @router.post("/api/planificacion/import-mock", response_model=ImportMockResponse)
-def import_mock(_: CurrentUser = Depends(current_user)) -> ImportMockResponse:
-    """Mock para POC: simula la importación desde SimpliRoute. No persiste nada."""
-    import random
+def import_mock(
+    fecha: Optional[str] = None,
+    force: bool = False,
+    user: CurrentUser = Depends(current_user),
+) -> ImportMockResponse:
+    """Importa visitas mock para una fecha y las persiste en fpoc_simpli_visits.
+
+    - `fecha`: 'YYYY-MM-DD'. Default: STATE.today si existe, sino hoy.
+    - `force=true`: re-importar aunque la fecha ya esté cargada (para demos
+      destructivas).
+
+    Idempotencia: marker en `fpoc_planificacion_imports`. Si ya hay para la
+    fecha, devuelve `already_imported=true` + el count anterior, sin duplicar.
+    """
+    from datetime import date as _date_cls
+    from state import STATE
+    if fecha:
+        try:
+            target_date = _date_cls.fromisoformat(fecha)
+        except ValueError:
+            raise HTTPException(400, f"fecha inválida: {fecha} (esperado YYYY-MM-DD)")
+    else:
+        target_date = getattr(STATE, "today", None) or _date_cls.today()
+
+    # Chequeo idempotencia
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT count, imported_at FROM fpoc_planificacion_imports WHERE fecha = ?",
+            (target_date.isoformat(),),
+        )
+        existing = cur.fetchone()
+
+    if existing and not force:
+        prev_count = int(existing[0])
+        prev_at = str(existing[1]) if existing[1] else "?"
+        return ImportMockResponse(
+            ok=True,
+            count=prev_count,
+            fecha=target_date.isoformat(),
+            already_imported=True,
+            message=f"Ya cargaste el día {target_date.isoformat()} ({prev_count} visitas, {prev_at}). Mandá ?force=true para re-importar.",
+        )
+
+    # Importación real: usamos el live_generator (sintetiza visitas con todos
+    # los campos que requiere fpoc_simpli_visits).
+    try:
+        from live_generator import _insert_batch
+        import random
+        n = random.randint(180, 320)
+        with get_conn() as cn:
+            inserted = _insert_batch(cn, target_date, n)
+            cur = cn.cursor()
+            cur.execute(
+                """
+                INSERT INTO fpoc_planificacion_imports (fecha, count, imported_by_user_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(fecha) DO UPDATE SET
+                    count = count + excluded.count,
+                    imported_at = CURRENT_TIMESTAMP,
+                    imported_by_user_id = excluded.imported_by_user_id
+                """,
+                (target_date.isoformat(), inserted, user.user_id),
+            )
+            cn.commit()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Error importando: {e}")
+
     return ImportMockResponse(
         ok=True,
-        count=random.randint(180, 320),
-        fecha=datetime.utcnow().date().isoformat(),
+        count=inserted,
+        fecha=target_date.isoformat(),
+        already_imported=False,
+        message=f"Importadas {inserted} visitas para {target_date.isoformat()}",
     )

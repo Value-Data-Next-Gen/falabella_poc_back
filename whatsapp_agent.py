@@ -161,6 +161,8 @@ def _find_persona_by_phone(phone: str) -> Optional[dict]:
             "empresa_id": None,
             "empresa_nombre": None,
         }
+    # Para WhatsApp NO filtramos por activo (el flag es para login web).
+    # Si la persona está cargada con su rol, la detectamos.
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
@@ -169,7 +171,7 @@ def _find_persona_by_phone(phone: str) -> Optional[dict]:
                    e.nombre AS empresa_nombre
             FROM fpoc_users u
             LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = u.empresa_id
-            WHERE u.phone_e164 = ? AND u.activo = 1 LIMIT 1
+            WHERE u.phone_e164 = ? LIMIT 1
             """,
             (phone,),
         )
