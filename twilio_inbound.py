@@ -471,9 +471,29 @@ async def webhook_inbound(
         logger.warning(f"[twilio-inbound] firma inválida from={form.get('From')} url={url}")
         raise HTTPException(status_code=403, detail="Invalid signature")
 
+    # ----- Detectar STATUS CALLBACK (Twilio reporta entrega/error de un outbound) -----
+    # Twilio manda al mismo webhook 2 cosas: (a) inbound real del usuario; (b) status
+    # callback con MessageStatus + el SID del outbound original. Si es (b) actualizamos
+    # el row outbound y no creamos un inbound nuevo (que apareceria con body vacio).
+    msg_status = form.get("MessageStatus") or form.get("SmsStatus")
+    twilio_sid = form.get("MessageSid") or form.get("SmsMessageSid")
+    if msg_status and twilio_sid and not (form.get("Body") or "").strip():
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "UPDATE fpoc_notifications_log SET status = ? "
+                    "WHERE twilio_sid = ? AND COALESCE(direction,'outbound') = 'outbound'",
+                    (msg_status, twilio_sid),
+                )
+                cn.commit()
+            logger.info(f"[twilio-inbound] status_callback sid={twilio_sid} status={msg_status}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[twilio-inbound] status_callback update fallo: {e}")
+        return _twiml(None)
+
     from_number = _normalize_phone(form.get("From", ""))
     body = (form.get("Body") or "").strip()
-    twilio_sid = form.get("MessageSid") or form.get("SmsMessageSid")
     profile_name = form.get("ProfileName")
     num_media = int(form.get("NumMedia") or 0)
     media_urls = None
@@ -495,6 +515,24 @@ async def webhook_inbound(
                 f"¡Bienvenido{(' ' + profile_name) if profile_name else ''}! "
                 "Quedaste suscrito a alertas. Escribe 'help' para ver comandos."
             )
+            # Notificar al stream que un usuario NUEVO quedó conectado.
+            try:
+                from datetime import datetime as _dt
+                from events import EVENTS
+                from state import STATE
+                EVENTS.emit(
+                    "wa_user_onboarded",
+                    STATE.sim_clock or _dt.utcnow(),
+                    {
+                        "phone": from_number,
+                        "name": profile_name or from_number,
+                        "kind": "contact",
+                        "source": "inbound",
+                        "contact_id": new_contact_id,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     _log_inbound(
         from_number=from_number,

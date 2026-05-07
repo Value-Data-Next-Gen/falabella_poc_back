@@ -259,6 +259,28 @@ def onboard(body: OnboardRequest, user: CurrentUser = Depends(require_admin)) ->
     except Exception:  # noqa: BLE001
         pass
 
+    # Emitir evento al stream para que el front muestre toast/badge en vivo.
+    try:
+        from datetime import datetime as _dt
+        from events import EVENTS
+        from state import STATE as _STATE
+        EVENTS.emit(
+            "wa_user_onboarded",
+            _STATE.sim_clock or _dt.utcnow(),
+            {
+                "phone": phone,
+                "name": body.name,
+                "kind": kind,
+                "source": "manual_admin",
+                "by_user_id": user.user_id,
+                "id": persisted_id,
+                "empresa_id": body.empresa_id,
+                "empresa_nombre": empresa_nombre,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     sandbox_number = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886").replace("whatsapp:", "")
     join_code = body.sandbox_join_code or os.environ.get("TWILIO_SANDBOX_JOIN_CODE", "")
     sandbox_join = (

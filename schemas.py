@@ -210,6 +210,14 @@ class StreamEvent(BaseModel):
     razonamiento: Optional[str] = None
     decision: Optional[str] = None
     decided_by: Optional[str] = None
+    # Sprint 8: wa_user_onboarded
+    phone: Optional[str] = None
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    source: Optional[str] = None
+    contact_id: Optional[int] = None
+    empresa_id: Optional[int] = None
+    empresa_nombre: Optional[str] = None
 
 
 # ---- Empresa contactos (destinatarios WhatsApp por empresa transportista) ----
