@@ -142,6 +142,75 @@ def _find_driver_by_phone(phone: str) -> Optional[dict]:
             "vehicle_name": r[3], "phone_e164": r[4]}
 
 
+def _find_persona_by_phone(phone: str) -> Optional[dict]:
+    """Busca el número en cascada: drivers → users → contactos.
+
+    Devuelve dict con `kind` que orienta el flujo del agente:
+      - 'driver'  → conductor (tiene ruta asignada)
+      - 'manager' → transport_manager / falabella_admin / falabella_ops
+      - 'contact' → contacto de empresa (sin login)
+    """
+    drv = _find_driver_by_phone(phone)
+    if drv is not None:
+        return {
+            "kind": "driver",
+            "id": drv["driver_id"],
+            "name": drv["name"],
+            "vehicle_id": drv["vehicle_id"],
+            "vehicle_name": drv["vehicle_name"],
+            "empresa_id": None,
+            "empresa_nombre": None,
+        }
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """
+            SELECT u.user_id, u.email, u.display_name, u.role, u.empresa_id,
+                   e.nombre AS empresa_nombre
+            FROM fpoc_users u
+            LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = u.empresa_id
+            WHERE u.phone_e164 = ? AND u.activo = 1 LIMIT 1
+            """,
+            (phone,),
+        )
+        r = cur.fetchone()
+    if r is not None:
+        return {
+            "kind": "manager",
+            "id": int(r[0]),
+            "user_id": int(r[0]),
+            "email": str(r[1]),
+            "name": str(r[2]),
+            "role": str(r[3]),
+            "empresa_id": int(r[4]) if r[4] is not None else None,
+            "empresa_nombre": str(r[5]) if r[5] else None,
+            "is_falabella": str(r[3]) in ("falabella_admin", "falabella_ops"),
+        }
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """
+            SELECT c.contact_id, c.nombre, c.rol, c.empresa_id, e.nombre AS empresa_nombre
+            FROM fpoc_empresa_contactos c
+            LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = c.empresa_id
+            WHERE c.phone_e164 = ? AND c.active = 1 LIMIT 1
+            """,
+            (phone,),
+        )
+        r = cur.fetchone()
+    if r is not None:
+        return {
+            "kind": "contact",
+            "id": int(r[0]),
+            "contact_id": int(r[0]),
+            "name": str(r[1]),
+            "role": str(r[2]) if r[2] else "otro",
+            "empresa_id": int(r[3]) if r[3] is not None else None,
+            "empresa_nombre": str(r[4]) if r[4] else None,
+        }
+    return None
+
+
 def _find_driver_by_id_or_rut(token: str) -> Optional[dict]:
     """Acepta driver_id (D-001), RUT (12345678-9), o vehicle_id (22)."""
     t = token.strip().upper().replace(".", "").replace("-", "")
@@ -225,6 +294,33 @@ MENU_MOTIVOS = [
 # =============================================================================
 # Renders
 # =============================================================================
+def _vehicle_ids_for_empresa(empresa_id: Optional[int]) -> list[int]:
+    """Vehicles asignados a una empresa via STATE.vehicle_empresa_map."""
+    from state import STATE
+    if empresa_id is None:
+        return list(STATE.vehicle_empresa_map.keys())
+    return [vid for vid, eid in STATE.vehicle_empresa_map.items() if eid == empresa_id]
+
+
+def _empresa_kpis(empresa_id: Optional[int], is_falabella: bool) -> dict:
+    """Visitas/alertas del snapshot, scopeadas a la empresa (si manager) o
+    todas (si falabella_*)."""
+    from state import STATE
+    if STATE.snapshot_df is None:
+        return {}
+    df = STATE.snapshot_df
+    if not is_falabella and empresa_id is not None:
+        allowed = set(_vehicle_ids_for_empresa(empresa_id))
+        df = df[df["vehicle_id"].isin(allowed)]
+    return {
+        "total": int(len(df)),
+        "pending": int((df["status"] == "pending").sum()),
+        "completed": int((df["status"] == "completed").sum()),
+        "alerts": int(df["alert_valuedata"].sum()),
+        "alerts_critical": int(((df["alert_valuedata"]) & (df["p_fallo"] >= 0.7)).sum()),
+    }
+
+
 def _render_role_menu(profile_name: Optional[str]) -> str:
     saludo = f"Hola {profile_name}" if profile_name else "Hola"
     return (
@@ -248,6 +344,102 @@ def _render_driver_menu(driver: dict) -> str:
         " 4️⃣  Hablar con coordinador\n"
         " 9️⃣  Salir"
     )
+
+
+def _render_manager_menu(persona: dict) -> str:
+    """Menú para transport_manager / falabella_admin / falabella_ops."""
+    name = persona["name"]
+    empresa_str = (
+        f" · {persona['empresa_nombre']}" if persona.get("empresa_nombre")
+        else " · vista global Falabella"
+    )
+    role_label = "Falabella" if persona.get("is_falabella") else "Manager"
+    return (
+        f"Hola {name} 👋  ({role_label}{empresa_str})\n"
+        "¿Qué querés ver?\n"
+        " 1️⃣  KPIs de hoy\n"
+        " 2️⃣  Alertas críticas\n"
+        " 3️⃣  Listar mis drivers\n"
+        " 4️⃣  Buscar visita (TRK)\n"
+        " 5️⃣  Reportar incidente\n"
+        " 9️⃣  Salir"
+    )
+
+
+def _render_manager_kpis(persona: dict) -> str:
+    is_falabella = bool(persona.get("is_falabella"))
+    k = _empresa_kpis(persona.get("empresa_id"), is_falabella)
+    if not k:
+        return "Backend warming up, probá de nuevo en unos segundos."
+    head = "📊 KPIs hoy"
+    if persona.get("empresa_nombre"):
+        head += f" — {persona['empresa_nombre']}"
+    return (
+        f"{head}\n"
+        f"• Visitas: {k['total']}\n"
+        f"• Pendientes: {k['pending']}\n"
+        f"• Completadas: {k['completed']}\n"
+        f"• Alertas anticipadas: {k['alerts']}\n"
+        f"• Alertas críticas (≥70%): {k['alerts_critical']}\n\n"
+        "Mandá '2' para ver las alertas, o 'menu' para volver."
+    )
+
+
+def _render_manager_alerts(persona: dict, limit: int = 5) -> str:
+    from state import STATE
+    if STATE.snapshot_df is None:
+        return "Snapshot no listo."
+    df = STATE.snapshot_df
+    is_falabella = bool(persona.get("is_falabella"))
+    if not is_falabella and persona.get("empresa_id") is not None:
+        allowed = set(_vehicle_ids_for_empresa(persona["empresa_id"]))
+        df = df[df["vehicle_id"].isin(allowed)]
+    alerts = df[df["alert_valuedata"]].sort_values("p_fallo", ascending=False).head(limit)
+    if alerts.empty:
+        return "✅ Sin alertas anticipadas en este momento."
+    lines = [f"⚠️ Top {len(alerts)} alertas (de mayor riesgo):"]
+    for _, r in alerts.iterrows():
+        risk = int(float(r["p_fallo"]) * 100)
+        lines.append(
+            f"  · {r['tracking_id']} {risk}% — {str(r['title'])[:25]} ({str(r.get('comuna', ''))[:15]}) {str(r['vehicle_name'])}"
+        )
+    lines.append("\nPara ver detalle: '4' y pegá el TRK. 'menu' para volver.")
+    return "\n".join(lines)
+
+
+def _render_manager_drivers(persona: dict) -> str:
+    """Lista los drivers de la empresa con métricas básicas."""
+    from state import STATE
+    if STATE.snapshot_df is None:
+        return "Snapshot no listo."
+    is_falabella = bool(persona.get("is_falabella"))
+    if is_falabella:
+        vehicles = list(STATE.vehicle_empresa_map.keys())
+    else:
+        vehicles = _vehicle_ids_for_empresa(persona.get("empresa_id"))
+    if not vehicles:
+        return "No hay vehículos asignados a tu empresa."
+    df = STATE.snapshot_df[STATE.snapshot_df["vehicle_id"].isin(vehicles)]
+    lines = ["🚚 Drivers / Vehículos:"]
+    for vid in sorted(vehicles):
+        sub = df[df["vehicle_id"] == vid]
+        if sub.empty:
+            continue
+        total = len(sub)
+        pending = int((sub["status"] == "pending").sum())
+        alerts = int(sub["alert_valuedata"].sum())
+        # Resolver nombre del driver
+        driver_name = "—"
+        for d in STATE.drivers:
+            if int(d.get("vehicle_id") or -1) == vid:
+                driver_name = d.get("name", "—")
+                break
+        v_name = str(sub.iloc[0]["vehicle_name"])
+        lines.append(f"  · {v_name}: {driver_name[:20]} — {total}vis ({pending}pend, {alerts}🔴)")
+    if len(lines) == 1:
+        return "Sin drivers activos en el snapshot."
+    lines.append("\n'menu' para volver.")
+    return "\n".join(lines)
 
 
 def _render_route(driver: dict) -> str:
@@ -352,28 +544,54 @@ def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -
     text = (body or "").strip()
     text_lower = text.lower()
 
-    # Comandos universales (siempre disponibles dentro del flujo)
-    if text_lower in ("menu", "menú", "inicio", "volver", "start", "hola"):
-        s = Session(phone=phone, state="awaiting_role")
-        s.save()
-        return _render_role_menu(profile_name)
+    # 'salir' siempre limpia
     if text_lower in ("salir", "exit", "bye", "chao"):
         Session.delete(phone)
         return "👋 Listo, conversación cerrada. Mandá 'hola' para empezar de nuevo."
+
+    # 'menu'/'hola'/'inicio'/'volver'/'start' resetea a idle y vuelve a entrar al
+    # flujo (que correrá la auto-detección por phone).
+    if text_lower in ("menu", "menú", "inicio", "volver", "start", "hola"):
+        Session.delete(phone)
+        # cae al cargar Session abajo, que vendrá idle y disparará auto-detect
 
     sess = Session.load(phone)
 
     # Si no hay sesión activa o el usuario es nuevo: arrancamos en awaiting_role
     if sess.state == "idle":
-        # Auto-detect driver por phone → directo al menú driver
-        driver = _find_driver_by_phone(phone)
-        if driver:
-            sess.state = "menu_driver"
-            sess.role = "driver"
-            sess.identified_id = driver["driver_id"]
-            sess.context = {"driver": driver}
-            sess.save()
-            return _render_driver_menu(driver) + "\n\n(detecté tu número en el sistema)"
+        # Auto-detect persona por phone → directo al menú correspondiente
+        persona = _find_persona_by_phone(phone)
+        if persona:
+            kind = persona["kind"]
+            if kind == "driver":
+                sess.state = "menu_driver"
+                sess.role = "driver"
+                sess.identified_id = persona["id"]
+                sess.context = {"driver": {
+                    "driver_id": persona["id"], "name": persona["name"],
+                    "vehicle_id": persona["vehicle_id"], "vehicle_name": persona["vehicle_name"],
+                }}
+                sess.save()
+                return _render_driver_menu(sess.context["driver"]) + "\n\n(detecté tu número en el sistema)"
+            if kind == "manager":
+                sess.state = "menu_manager"
+                sess.role = "manager"
+                sess.identified_id = str(persona["id"])
+                sess.context = {"persona": persona}
+                sess.save()
+                return _render_manager_menu(persona) + "\n\n(detecté tu número en el sistema)"
+            if kind == "contact":
+                # Contacto opted-in: lo tratamos como cliente con menú simple
+                sess.state = "awaiting_role"
+                sess.role = "contact"
+                sess.identified_id = str(persona["id"])
+                sess.context = {"persona": persona}
+                sess.save()
+                return (
+                    f"Hola {persona['name']} 👋\n"
+                    f"Estás registrado como contacto de {persona.get('empresa_nombre','la empresa')}.\n"
+                    + _render_role_menu(profile_name)
+                )
         sess.state = "awaiting_role"
         sess.save()
         return _render_role_menu(profile_name)
@@ -651,10 +869,66 @@ def _on_awaiting_client_comment(sess: Session, text: str, text_lower: str, ident
     return "✅ Mensaje enviado al conductor. Gracias."
 
 
+def _on_menu_manager(sess: Session, text: str, text_lower: str, identity: dict) -> str:
+    persona = sess.context.get("persona")
+    if not persona:
+        sess.reset()
+        sess.save()
+        return _render_role_menu(None)
+    if text == "1" or "kpi" in text_lower:
+        return _render_manager_kpis(persona) + "\n"
+    if text == "2" or "alert" in text_lower:
+        return _render_manager_alerts(persona) + "\n"
+    if text == "3" or "driver" in text_lower or "conductor" in text_lower:
+        return _render_manager_drivers(persona) + "\n"
+    if text == "4" or text_lower.startswith("trk"):
+        # Si tipearon TRK directamente, atajo
+        if text_lower.startswith("trk"):
+            visit = _visit_by_tracking(text.upper().strip())
+            if visit:
+                return _render_client_visit(visit) + "\n\n('menu' para volver)"
+            return f"No encuentro {text}. Probá otro tracking_id o 'menu'."
+        sess.state = "manager_search_tracking"
+        sess.save()
+        return "Pegá el tracking_id que querés inspeccionar (ej TRK0600009) o '0' para cancelar:"
+    if text == "5" or "reportar" in text_lower or "incidente" in text_lower:
+        # Manager también puede reportar como driver. Reusamos awaiting_tracking.
+        sess.state = "awaiting_tracking"
+        # Cargamos un "driver virtual" con el manager para que persistencia funcione
+        sess.context["driver"] = {
+            "driver_id": f"MGR-{persona['id']}",
+            "name": persona["name"],
+            "vehicle_id": None,
+            "vehicle_name": persona.get("empresa_nombre", "manager"),
+        }
+        sess.save()
+        return "Decime el tracking_id (ej: TRK0600009) o '0' para cancelar:"
+    if text == "9" or text_lower in ("salir", "exit"):
+        Session.delete(sess.phone)
+        return "👋 Hasta luego."
+    return "No entendí. Elegí 1, 2, 3, 4, 5 o 9. 'menu' para volver."
+
+
+def _on_manager_search_tracking(sess: Session, text: str, text_lower: str, identity: dict) -> str:
+    if text == "0":
+        persona = sess.context.get("persona")
+        sess.state = "menu_manager"
+        sess.save()
+        return _render_manager_menu(persona) if persona else _render_role_menu(None)
+    visit = _visit_by_tracking(text.upper().strip())
+    if visit is None:
+        return f"No encuentro {text}. Pegá el tracking_id completo (ej TRK0600009) o '0' para cancelar."
+    sess.state = "menu_manager"
+    sess.save()
+    return _render_client_visit(visit) + "\n\nMandá '2' para alertas o 'menu' para el menú."
+
+
 _STATE_HANDLERS = {
     "awaiting_role": _on_awaiting_role,
     "awaiting_driver_id": _on_awaiting_driver_id,
     "menu_driver": _on_menu_driver,
+    "menu_manager": _on_menu_manager,
+    "manager_search_tracking": _on_manager_search_tracking,
     "awaiting_tracking": _on_awaiting_tracking,
     "choosing_motivo": _on_choosing_motivo,
     "awaiting_comentario": _on_awaiting_comentario,
