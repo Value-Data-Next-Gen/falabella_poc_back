@@ -364,12 +364,19 @@ def import_mock(
         )
 
     # Importación real: usamos el live_generator (sintetiza visitas con todos
-    # los campos que requiere fpoc_simpli_visits).
+    # los campos que requiere fpoc_simpli_visits, drivers de fpoc_drivers).
+    # Antes de insertar, limpiamos las visitas existentes para esa fecha así
+    # los drivers ficticios del seed inicial no se mezclan con los reales y el
+    # match driver↔visita queda 1:1.
     try:
         from live_generator import _insert_batch
         import random
         n = random.randint(180, 320)
         with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute("DELETE FROM fpoc_simpli_visits WHERE planned_date = ?", (target_date.isoformat(),))
+            deleted = cur.rowcount or 0
+            cn.commit()
             inserted = _insert_batch(cn, target_date, n)
             cur = cn.cursor()
             cur.execute(
@@ -377,7 +384,7 @@ def import_mock(
                 INSERT INTO fpoc_planificacion_imports (fecha, count, imported_by_user_id)
                 VALUES (?, ?, ?)
                 ON CONFLICT(fecha) DO UPDATE SET
-                    count = count + excluded.count,
+                    count = excluded.count,
                     imported_at = CURRENT_TIMESTAMP,
                     imported_by_user_id = excluded.imported_by_user_id
                 """,
@@ -387,10 +394,13 @@ def import_mock(
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"Error importando: {e}")
 
+    msg = f"Importadas {inserted} visitas para {target_date.isoformat()}"
+    if deleted:
+        msg += f" (reemplazadas {deleted} visitas previas)"
     return ImportMockResponse(
         ok=True,
         count=inserted,
         fecha=target_date.isoformat(),
         already_imported=False,
-        message=f"Importadas {inserted} visitas para {target_date.isoformat()}",
+        message=msg,
     )
