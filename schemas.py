@@ -43,6 +43,9 @@ class Visit(BaseModel):
     latitude: float
     longitude: float
     load: float
+    n_subordenes: int = 1
+    region: Optional[str] = None
+    comuna: Optional[str] = None
     window_start: str
     window_end: str
     planned_arrival_time: str
@@ -197,3 +200,96 @@ class StreamEvent(BaseModel):
     comentario: Optional[str] = None
     severity: Optional[str] = None
     reported_by: Optional[str] = None
+    # Sprint 4.A2: motivo_correction_suggested / motivo_correction_decided
+    correction_id: Optional[int] = None
+    comment_id: Optional[int] = None
+    motivo_reportado: Optional[str] = None
+    motivo_sugerido: Optional[str] = None
+    motivo_aplicado: Optional[str] = None
+    confianza: Optional[str] = None
+    razonamiento: Optional[str] = None
+    decision: Optional[str] = None
+    decided_by: Optional[str] = None
+    # Sprint 8: wa_user_onboarded
+    phone: Optional[str] = None
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    source: Optional[str] = None
+    contact_id: Optional[int] = None
+    empresa_id: Optional[int] = None
+    empresa_nombre: Optional[str] = None
+
+
+# ---- Empresa contactos (destinatarios WhatsApp por empresa transportista) ----
+class EmpresaSummary(BaseModel):
+    """Resumen por empresa: cantidad de contactos, opt-in y última alerta."""
+    empresa_id: int
+    nombre: str
+    activo: bool
+    contactos_count: int
+    opted_in_count: int
+    last_alert_at: Optional[str] = None
+
+
+class ContactoOut(BaseModel):
+    contact_id: int
+    empresa_id: int
+    nombre: str
+    rol: str  # jefe / coordinador / dispatcher / driver / otro
+    phone_e164: str
+    email: Optional[str] = None
+    severities_in: Optional[list[str]] = None  # NULL/None = todas
+    motivos_in: Optional[list[str]] = None     # NULL/None = todos
+    region_filter: str = "all"                  # RM | regiones | all
+    opted_in_at: Optional[str] = None
+    active: bool = True
+    notes: Optional[str] = None
+    created_by_user_id: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ContactoCreate(BaseModel):
+    nombre: str = Field(min_length=1, max_length=200)
+    rol: str  # validado contra ALLOWED_ROLES en empresa_contactos.py
+    phone_e164: str = Field(min_length=9, max_length=20)
+    email: Optional[str] = Field(default=None, max_length=200)
+    severities_in: Optional[list[str]] = None
+    motivos_in: Optional[list[str]] = None
+    region_filter: Optional[str] = "all"
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class ContactoUpdate(BaseModel):
+    nombre: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    rol: Optional[str] = None
+    phone_e164: Optional[str] = Field(default=None, min_length=9, max_length=20)
+    email: Optional[str] = Field(default=None, max_length=200)
+    severities_in: Optional[list[str]] = None
+    motivos_in: Optional[list[str]] = None
+    region_filter: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=500)
+    active: Optional[bool] = None
+
+
+class BulkCSVResult(BaseModel):
+    added: int
+    skipped: list[dict]   # [{"row": int, "reason": str}]
+    errors: list[dict]    # [{"row": int, "reason": str}]
+
+
+class TestBroadcastRow(BaseModel):
+    contact_id: int
+    nombre: str
+    phone: str
+    status: str  # sent | dry_run | error | disabled
+    twilio_sid: Optional[str] = None
+    error: Optional[str] = None
+
+
+class TestBroadcastResult(BaseModel):
+    empresa_id: int
+    body: str
+    sent: int
+    failed: int
+    results: list[TestBroadcastRow]

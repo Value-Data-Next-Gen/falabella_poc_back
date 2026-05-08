@@ -15,6 +15,12 @@ if [ -f requirements.txt ]; then
   pip install --no-cache-dir -r requirements.txt
 fi
 
+# Persistencia SQLite en /home/data (sobrevive redeploys en App Service Linux).
+# /home está montado como Azure Files; el resto del filesystem es efímero.
+if [ -n "${SQLITE_PATH:-}" ]; then
+  mkdir -p "$(dirname "$SQLITE_PATH")"
+fi
+
 PORT="${PORT:-8000}"
 
 # 1 worker porque el modelo + SHAP + STATE viven en memoria del proceso.

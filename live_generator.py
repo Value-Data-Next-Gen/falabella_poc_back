@@ -65,10 +65,30 @@ SAMPLE_TITLES = [
     "López Import", "Díaz Retail", "Castro Logistics",
 ]
 SAMPLE_COMMUNES = [
+    # RM (peso 80%)
     "Las Condes", "Ñuñoa", "Providencia", "Santiago Centro", "Maipú",
     "Lo Barnechea", "Puente Alto", "La Florida", "Vitacura", "La Dehesa",
     "La Reina", "Peñalolén", "Macul", "San Miguel", "Quilicura",
+    "Las Condes", "Ñuñoa", "Providencia", "Santiago Centro", "Maipú",
+    "Lo Barnechea", "Puente Alto", "La Florida", "Vitacura",
+    "La Reina", "Peñalolén", "Macul", "San Miguel",
+    # Regiones (peso 20%)
+    "Viña del Mar", "Valparaíso", "Concepción", "Talcahuano", "Temuco",
+    "La Serena", "Coquimbo", "Antofagasta", "Talca", "Rancagua",
 ]
+COMUNA_REGION = {
+    "Las Condes": "RM", "Ñuñoa": "RM", "Providencia": "RM", "Santiago Centro": "RM",
+    "Maipú": "RM", "Lo Barnechea": "RM", "Puente Alto": "RM", "La Florida": "RM",
+    "Vitacura": "RM", "La Dehesa": "RM", "La Reina": "RM", "Peñalolén": "RM",
+    "Macul": "RM", "San Miguel": "RM", "Quilicura": "RM",
+    "Viña del Mar": "Valparaíso", "Valparaíso": "Valparaíso",
+    "Concepción": "Biobío", "Talcahuano": "Biobío",
+    "Temuco": "Araucanía",
+    "La Serena": "Coquimbo", "Coquimbo": "Coquimbo",
+    "Antofagasta": "Antofagasta",
+    "Talca": "Maule",
+    "Rancagua": "O'Higgins",
+}
 SAMPLE_STREETS = [
     "Av. Apoquindo", "Av. Providencia", "Los Leones", "Pedro de Valdivia",
     "Tobalaba", "Vitacura", "Kennedy", "Cristóbal Colón", "Irarrázaval",
@@ -104,12 +124,39 @@ def _choose_from(rng: random.Random, pool: list) -> str:
     return pool[rng.randrange(len(pool))]
 
 
+def _load_real_drivers() -> list[tuple[str, int]]:
+    """Lee los drivers REALES (fpoc_drivers + onboardeados via WhatsApp) para
+    que las visitas generadas/importadas matcheen con los conductores que el
+    cliente ve en mantenedores. Cae a DRIVER_NAMES si la tabla está vacía."""
+    try:
+        from db import get_conn
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT name, vehicle_id FROM fpoc_drivers "
+                "WHERE active = 1 AND name IS NOT NULL AND vehicle_id IS NOT NULL "
+                "ORDER BY vehicle_id"
+            )
+            rows = cur.fetchall()
+        if rows:
+            return [(str(r[0]), int(r[1])) for r in rows]
+    except Exception:  # noqa: BLE001
+        pass
+    return [(n, i + 1) for i, n in enumerate(DRIVER_NAMES[:12])]
+
+
 def _gen_row(rng: random.Random, empresas: list[tuple[int, str]], today: date,
               id_counter: int = 0) -> dict:
-    """Construye un dict con todas las columnas requeridas por fpoc.simpli_visits."""
+    """Construye un dict con todas las columnas requeridas por fpoc.simpli_visits.
+    Usa los drivers reales de fpoc_drivers para que las visitas importadas
+    coincidan con los conductores del CRUD (Jessica, Manuel, etc.)."""
     empresa_id, _ = empresas[rng.randrange(len(empresas))]
-    driver = _choose_from(rng, DRIVER_NAMES)
-    patente_falsa = rng.randint(1, 40)
+    drivers = _load_real_drivers()
+    driver_name, driver_vid = drivers[rng.randrange(len(drivers))]
+    driver = driver_name
+    # Patente: usar el vehicle_id del driver real (1..12) en vez de un random 1..40,
+    # así Patente_falsa matchea con FAL-1{vid:03d} y el join driver↔vehicle queda coherente.
+    patente_falsa = driver_vid
     ct = rng.choice(["CD OMNICANAL LOF2", "CD NORTE", "CD SUR"])
 
     # Windows horarios típicos AM (08-12) / PM (13-18)
@@ -147,8 +194,14 @@ def _gen_row(rng: random.Random, empresas: list[tuple[int, str]], today: date,
 
     title = _choose_from(rng, SAMPLE_TITLES) + f" #{rng.randint(100, 9999)}"
     comuna = _choose_from(rng, SAMPLE_COMMUNES)
+    region = COMUNA_REGION.get(comuna, "RM")
     calle = _choose_from(rng, SAMPLE_STREETS)
     address = f"{calle} {rng.randint(100, 9999)}, {comuna}"
+    # ruta_id: hash determinístico de (driver, patente) → NNN, mismo día = misma ruta
+    import hashlib as _hl
+    _h = _hl.md5(f"{driver}{patente_falsa}".encode()).hexdigest()
+    _nnn = int(_h[:4], 16) % 1000
+    ruta_id = f"R-{today.strftime('%Y%m%d')}-{_nnn:03d}"
 
     return {
         "planned_date": today,
@@ -156,6 +209,9 @@ def _gen_row(rng: random.Random, empresas: list[tuple[int, str]], today: date,
         "title": title,
         "order": rng.randint(1, 120),
         "address": address,
+        "region": region,
+        "comuna": comuna,
+        "ruta_id": ruta_id,
         "checkout_cl": checkout_dt,
         "current_eta_cl": eta_dt,
         "status": status,
@@ -189,6 +245,7 @@ def _gen_row(rng: random.Random, empresas: list[tuple[int, str]], today: date,
 
 SIMPLI_COLS = [
     "planned_date", "id", "title", "order", "address",
+    "region", "comuna", "ruta_id",
     "checkout_cl", "current_eta_cl", "status",
     "checkout_comment", "checkout_observation", "reference", "country",
     "sla_hour_checkout_eta", "bin_start", "bin_end", "bin_label", "bin_index",

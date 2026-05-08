@@ -1,5 +1,9 @@
 """Comentarios del transportista + configuración de motivos alertables.
 
+Helpers de región para filtrar destinatarios WhatsApp por geografía:
+  _visit_region(lat, lon) -> 'RM' | 'regiones'
+
+
 El catálogo de motivos viene del notebook `auditoria_llm_directo.ipynb` (celda
 `REGLAS_OPERACIONALES`). El classifier LLM vive en `motivo_classifier.py` y
 expone `POST /api/motivos/classify`.
@@ -14,6 +18,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from typing import Optional
@@ -31,19 +36,23 @@ from state import STATE
 router = APIRouter(tags=["comments"])
 
 
-# Catálogo extraído literal del notebook (celda 8, REGLAS_OPERACIONALES)
+# Catálogo alineado con el del cliente (Excel "Motivo no entrega HD", 11 motivos)
+# + 3 motivos internos extra: NO DESPACHA A LOCALIDAD, RIESGO FRAUDE, DETENCION URGENTE.
 MOTIVOS_CATALOGO: list[str] = [
     "SIN MORADORES",
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION",
+    "NO CONOCEN A CLIENTE",
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN",
     "NO DESPACHA A LOCALIDAD",
     "FUERA DE COBERTURA/ FRECUENCIA",
-    "PROD N ENTREGADO X TIEMPO",
+    "PROD NO ENTREGADO POR TIEMPO",
     "PRODUCTO NO CARGADO",
-    "CLIENTE RECHAZA ENVIO",
+    "CLIENTE RECHAZA",
     "SINIESTRO EN CALLE",
     "PRODUCTO CON PROBLEMAS",
     "NO CUMPLE CONDICIONES RETIRO",
     "PRODUCTO ROBADO",
+    "RIESGO FRAUDE",
+    "DETENCION URGENTE",
 ]
 
 # Defaults: mapping motivo -> (alertable, severity)
@@ -51,21 +60,36 @@ DEFAULT_ALERT_CONFIG: dict[str, tuple[bool, str]] = {
     "SINIESTRO EN CALLE": (True, "critical"),
     "PRODUCTO ROBADO": (True, "critical"),
     "PRODUCTO NO CARGADO": (True, "high"),
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION": (True, "medium"),
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN": (True, "medium"),
+    "RIESGO FRAUDE": (True, "critical"),
+    "DETENCION URGENTE": (True, "high"),
 }
 
-# Descripciones default por motivo. Texto literal del notebook
-# auditoria_llm_directo.ipynb (REGLAS_OPERACIONALES). Se usan en el system prompt
-# del LLM cuando no hay override en fpoc.motivo_alert_config.description.
+# Descripciones default por motivo. Texto del catálogo del cliente (Excel
+# "Motivo no entrega HD") + reglas internas de desambiguación "NO usar si..."
+# que ayudan al LLM a no confundir motivos similares.
+# Los 3 motivos extra internos (NO DESPACHA, RIESGO FRAUDE, DETENCION URGENTE)
+# mantienen su descripción interna porque no están en el catálogo del cliente.
 DEFAULT_DESCRIPTIONS: dict[str, str] = {
     "SIN MORADORES": (
-        "Nadie disponible en domicilio. Cliente no atiende, no responde llamado/timbre.\n"
-        "NO usar si: el problema es la dirección -> PROBLEMA DE DIRECCION.\n"
-        "NO usar si: el cliente atendió pero rechazó -> CLIENTE RECHAZA ENVIO."
+        "Al llegar a la dirección de entrega, el conductor no encuentra a ninguna persona en el lugar "
+        "que pueda recibir el paquete. Esto puede suceder cuando el cliente está ausente, si la dirección "
+        "corresponde a un inmueble deshabitado, o cliente reagenda o cliente pide cambiar fecha de entrega.\n"
+        "NO usar si: el problema es la dirección -> PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN.\n"
+        "NO usar si: el cliente atendió pero rechazó -> CLIENTE RECHAZA.\n"
+        "NO usar si: vecinos atienden pero no conocen al destinatario -> NO CONOCEN A CLIENTE."
     ),
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION": (
-        "Dirección errónea, mal escrita, inexistente, sin numeración, no ubicable, mal geolocalizada, sin información de contacto.\n"
-        "NO usar si: la zona no es atendida -> NO DESPACHA o FUERA DE COBERTURA.\n"
+    "NO CONOCEN A CLIENTE": (
+        "Las personas en la dirección indicada afirman no conocer al destinatario o que no corresponde "
+        "a su dirección.\n"
+        "NO usar si: realmente no había nadie -> SIN MORADORES.\n"
+        "NO usar si: la dirección es incorrecta o incompleta -> PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN."
+    ),
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN": (
+        "La dirección proporcionada es incorrecta, está incompleta o es imposible de localizar. "
+        "Puede que falte información crucial como el número de casa o apartamento, o que la dirección "
+        "no corresponda a una ubicación válida.\n"
+        "NO usar si: la zona no es atendida -> NO DESPACHA A LOCALIDAD o FUERA DE COBERTURA/ FRECUENCIA.\n"
         "NO usar si: la dirección está bien pero no había nadie -> SIN MORADORES."
     ),
     "NO DESPACHA A LOCALIDAD": (
@@ -73,35 +97,92 @@ DEFAULT_DESCRIPTIONS: dict[str, str] = {
         "Aun cuando el cliente anula al darse cuenta, la causa raíz sigue siendo no-despacho."
     ),
     "FUERA DE COBERTURA/ FRECUENCIA": (
-        "La ruta no llega a esa zona en el día/horario actual. Frecuencia insuficiente, fuera de ruta del día."
+        "La dirección de entrega está en un área fuera del alcance de la cobertura del servicio, "
+        "o en una zona que no se visita con la frecuencia necesaria para cumplir con la entrega."
     ),
-    "PROD N ENTREGADO X TIEMPO": (
-        "No se alcanzó a entregar dentro del tiempo. Atraso, fin de turno. CONDUCTOR NO GESTIONA cae acá cuando es por gestión de tiempo.\n"
+    "PROD NO ENTREGADO POR TIEMPO": (
+        "El paquete no se pudo entregar dentro del tiempo límite estipulado por el cliente o la empresa. "
+        "Esto puede suceder por tráfico, demoras en rutas previas o cualquier otro contratiempo.\n"
         "NO usar si: hubo siniestro -> SINIESTRO EN CALLE.\n"
         "NO usar si: el producto nunca subió al camión -> PRODUCTO NO CARGADO."
     ),
     "PRODUCTO NO CARGADO": (
-        "El producto no fue cargado al vehículo en origen. Quedó en bodega, no se cargó por capacidad, fue olvidado."
+        "El paquete destinado para la entrega no fue cargado en el vehículo desde el origen, "
+        "por lo que no puede ser entregado."
     ),
-    "CLIENTE RECHAZA ENVIO": (
-        "El cliente está disponible y rechaza recibir: anula, no quiere, devuelve, cancela.\n"
-        "ATENCION: si el cliente anula porque la dirección estaba mal, la causa raíz NO es rechazo - es PROBLEMA DE DIRECCION o NO DESPACHA."
+    "CLIENTE RECHAZA": (
+        "El cliente rechaza recibir el paquete. Esto puede deberse a que ya no lo necesita, cambió "
+        "de opinión, recibió el pedido incorrecto, o cualquier otra razón personal.\n"
+        "ATENCIÓN: si el cliente anula porque la dirección estaba mal, la causa raíz NO es rechazo "
+        "-> es PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN o NO DESPACHA A LOCALIDAD."
     ),
     "SINIESTRO EN CALLE": (
-        "Eventos en ruta: asalto, robo, encerrona, accidente, choque, panne, intervención de carabineros."
+        "Un incidente en la vía pública, como un accidente, manifestación, cierre de calles o "
+        "condiciones climáticas adversas, impide que el conductor llegue al destino de entrega."
     ),
     "PRODUCTO CON PROBLEMAS": (
-        "Producto roto, dañado, embalaje en mal estado, faltante, incompleto."
+        "El producto presenta defectos, daños o cualquier problema que impide su entrega en "
+        "condiciones adecuadas."
     ),
     "NO CUMPLE CONDICIONES RETIRO": (
-        "El destinatario no cumple los requisitos: falta documentación (RUT, autorización), no acredita identidad."
+        "Las condiciones en el lugar de entrega o las condiciones del producto no son adecuadas "
+        "para realizar la entrega o el retiro. Esto puede incluir problemas como falta de espacio, "
+        "restricciones de acceso, o situaciones donde el producto no puede ser retirado porque está en uso."
     ),
     "PRODUCTO ROBADO": (
-        "El producto fue robado/sustraído de la carga."
+        "El paquete fue robado durante el proceso de entrega, ya sea del vehículo de transporte "
+        "o en otro momento del trayecto."
+    ),
+    "RIESGO FRAUDE": (
+        "Pedido sospechoso de fraude (datos del cliente, RUT clonado, dirección de phishing, "
+        "intento de estafa, comportamiento inusual). NO entregar. Reportar inmediatamente.\n"
+        "NO usar si: el cliente solo rechaza por arrepentimiento -> CLIENTE RECHAZA.\n"
+        "NO usar si: hay siniestro físico -> SINIESTRO EN CALLE."
+    ),
+    "DETENCION URGENTE": (
+        "Detención inmediata de la entrega ordenada por Falabella o transporte (alerta judicial, "
+        "cancelación administrativa post-pickup, retención por aduana, etc.). NO entregar y "
+        "devolver al CD.\n"
+        "NO usar si: el cliente rechaza personalmente -> CLIENTE RECHAZA."
     ),
 }
 
 ALLOWED_SEVERITY = {"low", "medium", "high", "critical"}
+
+
+# =============================================================================
+# Helper geográfico: clasifica una visita como RM o regiones según lat/lon.
+# Bounding box aproximado para Santiago / Región Metropolitana basado en DEPOT.
+# =============================================================================
+_RM_LAT_MIN, _RM_LAT_MAX = -33.7, -33.2
+_RM_LON_MIN, _RM_LON_MAX = -70.9, -70.4
+
+
+def _visit_region(
+    lat: Optional[float],
+    lon: Optional[float],
+    region_col: Optional[str] = None,
+) -> str:
+    """Devuelve 'RM' o 'regiones'.
+
+    Sprint 6: si `region_col` viene del dataset (columna `fpoc_simpli_visits.region`),
+    preferimos ese valor sobre el cálculo lat/lon. Devolvemos 'RM' si region_col == 'RM',
+    'regiones' si tiene cualquier otro valor no-vacío, o caemos al bbox lat/lon.
+    """
+    if region_col is not None and isinstance(region_col, str) and region_col.strip():
+        rc = region_col.strip()
+        return "RM" if rc.upper() == "RM" else "regiones"
+    if lat is None or lon is None:
+        return "regiones"
+    try:
+        latf = float(lat); lonf = float(lon)
+    except (TypeError, ValueError):
+        return "regiones"
+    if latf == 0 and lonf == 0:
+        return "regiones"
+    if _RM_LAT_MIN <= latf <= _RM_LAT_MAX and _RM_LON_MIN <= lonf <= _RM_LON_MAX:
+        return "RM"
+    return "regiones"
 
 
 # =============================================================================
@@ -244,6 +325,32 @@ def _visit_meta(tracking_id: str) -> Optional[dict]:
                 empresa_nombre = e["nombre"]
                 break
 
+    # Campos enriquecidos opcionales (Sprint 3): suborden, CT, folios.
+    # En el snapshot sintético sólo `reference` está disponible; lo exponemos como
+    # folio principal. `suborden` y `ct` se intentan resolver desde fpoc_simpli_visits
+    # / fpoc_geo_suborders matcheando por reference si existe en datos reales.
+    reference = str(row.get("reference", "")) if row.get("reference") is not None else ""
+    customer_id = str(row.get("customer_id", "")) if row.get("customer_id") is not None else ""
+
+    suborden: Optional[str] = None
+    ct: Optional[str] = None
+    folios: list[str] = [reference] if reference else []
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            # Buscar CT por reference en fpoc_simpli_visits (datos reales)
+            if reference:
+                cur.execute(
+                    "SELECT ct FROM fpoc.simpli_visits WHERE CAST(reference AS TEXT) = ? LIMIT 1",
+                    reference.replace("FAL-", ""),
+                )
+                r = cur.fetchone()
+                if r and r.ct:
+                    ct = str(r.ct)
+            # Buscar suborden por idruta (no hay match real con sintético, queda None)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[_visit_meta] enrichment skipped: {e}")
+
     return {
         "vehicle_id": vehicle_id,
         "vehicle_name": str(row["vehicle_name"]),
@@ -270,6 +377,12 @@ def _visit_meta(tracking_id: str) -> Optional[dict]:
         # Empresa
         "empresa_id": empresa_id,
         "empresa_nombre": empresa_nombre,
+        # Sprint 3: enriquecimiento operativo
+        "reference": reference or None,
+        "customer_id": customer_id or None,
+        "suborden": suborden,
+        "ct": ct,
+        "folios": folios,
     }
 
 
@@ -513,6 +626,24 @@ def _build_alert_whatsapp_body(
     if empresa:
         lines.append(f"*Empresa:* {empresa}")
 
+    # Sprint 3: identificadores operativos (suborden / CT / folios). Solo se
+    # incluyen si están disponibles — no inventamos campos.
+    sub_ct_folio_parts: list[str] = []
+    suborden = meta.get("suborden")
+    if suborden:
+        sub_ct_folio_parts.append(f"*Suborden:* {suborden}")
+    ct = meta.get("ct")
+    if ct:
+        sub_ct_folio_parts.append(f"*CT:* {ct}")
+    folios = meta.get("folios") or []
+    if folios:
+        # Limitamos a 3 folios para no inflar el body
+        shown = ", ".join(folios[:3])
+        suffix = f" (+{len(folios) - 3} más)" if len(folios) > 3 else ""
+        sub_ct_folio_parts.append(f"*Folios:* {shown}{suffix}")
+    if sub_ct_folio_parts:
+        lines.append("  ·  ".join(sub_ct_folio_parts))
+
     lines.append("")
 
     # Cliente / visita
@@ -557,6 +688,238 @@ def _build_alert_whatsapp_body(
     return "\n".join(lines)
 
 
+def _resolve_alert_targets(
+    *,
+    empresa_id: Optional[int],
+    severity: str,
+    motivo: str,
+    visit_region: str,
+) -> tuple[list[tuple[Optional[int], str]], dict[str, int]]:
+    """Resuelve la lista de destinatarios para una alerta, combinando:
+      A) `fpoc_users` con `notify_whatsapp=1` (admin/ops + manager de la empresa)
+      B) `fpoc_empresa_contactos` activos con opt-in, filtrados por
+         severidad/motivo/región.
+
+    Devuelve (targets, contact_ids_by_phone). targets es la lista lista para
+    `send_whatsapp`; contact_ids_by_phone permite re-asociar el log al
+    contact_id después.
+
+    Dedup por phone_e164: si el mismo número aparece como user y como contacto,
+    se queda con el user (porque ese sí tiene user_id).
+    """
+    targets_users: list[tuple[Optional[int], str]] = []
+    targets_contacts: list[tuple[Optional[int], str]] = []
+    targets_drivers: list[tuple[Optional[int], str]] = []
+    contact_ids_by_phone: dict[str, int] = {}
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        # A) Users
+        cur.execute(
+            """
+            SELECT user_id, phone_e164 FROM fpoc.users
+            WHERE activo = 1 AND notify_whatsapp = 1
+              AND phone_e164 IS NOT NULL AND length(phone_e164) > 0
+              AND (role IN ('falabella_admin','falabella_ops') OR empresa_id = ?)
+            """,
+            empresa_id,
+        )
+        for u in cur.fetchall():
+            targets_users.append((int(u.user_id), u.phone_e164))
+
+        # C) Drivers de la empresa con opt-in WhatsApp (Sprint 4.A1).
+        # Match por empresa via mapping vehicle_empresa (state) — vamos por SQL
+        # buscando drivers cuya empresa coincide (heurística: drivers cuyo
+        # vehicle_id está en el set de vehículos de la empresa).
+        cur.execute(
+            """
+            SELECT DISTINCT d.driver_id, d.phone_e164
+            FROM fpoc_drivers d
+            WHERE d.active = 1
+              AND d.notify_whatsapp = 1
+              AND d.opted_in_at IS NOT NULL
+              AND d.phone_e164 IS NOT NULL AND length(d.phone_e164) > 0
+            """
+        )
+        all_drivers = cur.fetchall()
+        # Filtramos a la empresa via STATE.vehicle_empresa_map (best-effort).
+        try:
+            from state import STATE
+            vmap = getattr(STATE, "vehicle_empresa_map", {}) or {}
+            # Nota: drivers tienen vehicle_id 1:1 en `fpoc_drivers.vehicle_id`,
+            # pero la fuente de verdad es STATE; recuperamos empresa de cada driver.
+            cur.execute(
+                "SELECT driver_id, vehicle_id FROM fpoc_drivers WHERE active = 1"
+            )
+            driver_to_vehicle = {r.driver_id: int(r.vehicle_id) for r in cur.fetchall()}
+        except Exception:  # noqa: BLE001
+            vmap = {}
+            driver_to_vehicle = {}
+
+        for d in all_drivers:
+            vid = driver_to_vehicle.get(d.driver_id)
+            if empresa_id is not None and vid is not None:
+                d_emp = vmap.get(vid)
+                if d_emp != empresa_id:
+                    continue
+            targets_drivers.append((None, d.phone_e164))
+
+        # B) Contactos de la empresa (con opt-in). Filtros JSON los aplicamos en Python.
+        cur.execute(
+            """
+            SELECT contact_id, phone_e164, severities_in, motivos_in, region_filter
+            FROM fpoc_empresa_contactos
+            WHERE active = 1
+              AND opted_in_at IS NOT NULL
+              AND empresa_id = ?
+            """,
+            empresa_id,
+        )
+        for c in cur.fetchall():
+            phone = c.phone_e164
+            # Severity filter
+            sev_raw = c.severities_in
+            if sev_raw:
+                try:
+                    sev_list = json.loads(sev_raw)
+                except Exception:  # noqa: BLE001
+                    sev_list = None
+                if sev_list and severity not in sev_list:
+                    continue
+            # Motivo filter
+            mot_raw = c.motivos_in
+            if mot_raw:
+                try:
+                    mot_list = json.loads(mot_raw)
+                except Exception:  # noqa: BLE001
+                    mot_list = None
+                if mot_list and motivo not in mot_list:
+                    continue
+            # Region filter
+            region = (c.region_filter or "all").lower()
+            if region != "all" and region != visit_region:
+                continue
+            targets_contacts.append((None, phone))
+            contact_ids_by_phone[phone] = int(c.contact_id)
+
+    # Dedup: phones que ya aparecen en users no se incluyen como contactos.
+    # Prioridad users > contactos > drivers (Sprint 4.A1).
+    user_phones = {p for _, p in targets_users}
+    targets = list(targets_users)
+    contact_phones: set[str] = set()
+    for uid, phone in targets_contacts:
+        if phone in user_phones:
+            continue
+        targets.append((uid, phone))
+        contact_phones.add(phone)
+    for uid, phone in targets_drivers:
+        if phone in user_phones or phone in contact_phones:
+            continue
+        targets.append((uid, phone))
+
+    return targets, contact_ids_by_phone
+
+
+def _backfill_contact_id_in_log(
+    *,
+    tracking_id: str,
+    contact_ids_by_phone: dict[str, int],
+) -> None:
+    """Después de send_whatsapp, asocia contact_id a las filas recién creadas.
+    `send_whatsapp` no conoce nuestros contact_ids; busca por tracking + phone +
+    user_id NULL y completa el campo. Tolerante a fallos (best-effort)."""
+    if not contact_ids_by_phone:
+        return
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            for phone, cid in contact_ids_by_phone.items():
+                cur.execute(
+                    """
+                    UPDATE fpoc_notifications_log
+                    SET contact_id = ?
+                    WHERE notification_id IN (
+                        SELECT notification_id FROM fpoc_notifications_log
+                        WHERE tracking_id = ? AND to_number = ? AND user_id IS NULL AND contact_id IS NULL
+                        ORDER BY notification_id DESC LIMIT 1
+                    )
+                    """,
+                    cid, tracking_id, phone,
+                )
+            cn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[comments] backfill contact_id falló: {e}")
+
+
+_SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def severity_rank(s: str) -> int:
+    """Numérico para comparar severities (low=0, critical=3)."""
+    return _SEVERITY_RANK.get((s or "low").lower(), 0)
+
+
+def dispatch_comment_alert(
+    *, tracking_id: str, motivo: str, comentario: str,
+    user_display_name: str, triggered_by: str = "comment_alert",
+    extra_subject: Optional[str] = None,
+) -> dict:
+    """Emite evento + WhatsApp para un comentario alertable.
+
+    Reutilizable: lo llama _persist_and_dispatch_comment al crear el comentario
+    y también accept_correction cuando la severity escala. Devuelve dict con
+    {alertable, severity, sent}.
+    """
+    meta = _visit_meta(tracking_id)
+    if meta is None:
+        return {"alertable": False, "severity": None, "sent": 0, "error": "tracking not found"}
+    vehicle_id = meta["vehicle_id"]
+    empresa_id = STATE.vehicle_empresa_map.get(int(vehicle_id))
+    alertable, severity = _resolve_alert_config(motivo, empresa_id)
+    if not alertable:
+        return {"alertable": False, "severity": severity, "sent": 0}
+
+    EVENTS.emit("comment_alert", STATE.sim_clock or datetime.utcnow(), {
+        "tracking_id": tracking_id,
+        "vehicle_id": vehicle_id,
+        "vehicle_name": meta["vehicle_name"],
+        "title": meta["title"],
+        "motivo": motivo,
+        "comentario": (comentario or "")[:200],
+        "severity": severity,
+        "reason": f"{triggered_by}: {motivo}",
+        "reported_by": user_display_name,
+    })
+
+    sent = 0
+    if os.environ.get("ENABLE_AUTO_NOTIFY", "false").lower() == "true":
+        try:
+            from notifications import send_whatsapp
+            visit_region = _visit_region(meta.get("latitude"), meta.get("longitude"))
+            targets, contact_ids_by_phone = _resolve_alert_targets(
+                empresa_id=empresa_id, severity=severity,
+                motivo=motivo, visit_region=visit_region,
+            )
+            if targets:
+                subj_pref = (extra_subject + " · ") if extra_subject else ""
+                body = _build_alert_whatsapp_body(
+                    severity=severity, motivo=motivo, comentario=comentario,
+                    user_display_name=user_display_name, tracking_id=tracking_id, meta=meta,
+                )
+                send_whatsapp(
+                    body=body, targets=targets,
+                    subject=f"{subj_pref}Motivo {motivo} · {meta.get('vehicle_name','')} · {meta.get('plate') or ''}".strip(),
+                    tracking_id=tracking_id, triggered_by=triggered_by,
+                )
+                _backfill_contact_id_in_log(
+                    tracking_id=tracking_id, contact_ids_by_phone=contact_ids_by_phone,
+                )
+                sent = len(targets)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[comments] dispatch_comment_alert falló: {e}")
+    return {"alertable": True, "severity": severity, "sent": sent}
+
+
 def _persist_and_dispatch_comment(
     tracking_id: str,
     motivo: str,
@@ -578,17 +941,18 @@ def _persist_and_dispatch_comment(
     vehicle_id = meta["vehicle_id"]
     empresa_id = STATE.vehicle_empresa_map.get(int(vehicle_id))
     alertable, severity = _resolve_alert_config(motivo, empresa_id)
+    region = _visit_region(meta.get("latitude"), meta.get("longitude"))
 
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
             """
             INSERT INTO fpoc.visit_comments
-              (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by)
-            VALUES (?, ?, ?, ?, ?, ?)
+              (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             tracking_id, vehicle_id, empresa_id,
-            motivo, comentario, user_id,
+            motivo, comentario, user_id, region,
         )
         cn.commit()
         cur.execute(
@@ -621,18 +985,13 @@ def _persist_and_dispatch_comment(
         if os.environ.get("ENABLE_AUTO_NOTIFY", "false").lower() == "true":
             try:
                 from notifications import send_whatsapp
-                with get_conn() as cn:
-                    cur = cn.cursor()
-                    cur.execute(
-                        """
-                        SELECT user_id, phone_e164 FROM fpoc.users
-                        WHERE activo = 1 AND notify_whatsapp = 1
-                          AND phone_e164 IS NOT NULL AND length(phone_e164) > 0
-                          AND (role IN ('falabella_admin','falabella_ops') OR empresa_id = ?)
-                        """,
-                        empresa_id,
-                    )
-                    targets = [(int(u.user_id), u.phone_e164) for u in cur.fetchall()]
+                visit_region = _visit_region(meta.get("latitude"), meta.get("longitude"))
+                targets, contact_ids_by_phone = _resolve_alert_targets(
+                    empresa_id=empresa_id,
+                    severity=severity,
+                    motivo=motivo,
+                    visit_region=visit_region,
+                )
                 if targets:
                     body = _build_alert_whatsapp_body(
                         severity=severity,
@@ -648,8 +1007,30 @@ def _persist_and_dispatch_comment(
                         tracking_id=tracking_id,
                         triggered_by="comment_alert",
                     )
+                    # Patch posterior: send_whatsapp loguea con user_id=None para
+                    # los contactos. Actualizamos las filas más recientes para
+                    # poblar contact_id donde aplique.
+                    _backfill_contact_id_in_log(
+                        tracking_id=tracking_id,
+                        contact_ids_by_phone=contact_ids_by_phone,
+                    )
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[comments] auto-notify falló: {e}")
+
+    # Sprint 4.A2: validación LLM automática del motivo (siempre, aun si no es
+    # alertable, mientras el classifier devuelva algo no-fallback distinto).
+    try:
+        from motivo_corrections import maybe_create_correction_from_comment
+        maybe_create_correction_from_comment(
+            comment_id=int(r.comment_id),
+            tracking_id=tracking_id,
+            motivo_reportado=motivo,
+            comentario=comentario,
+            empresa_id=empresa_id,
+            user_display_name=user_display_name,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[comments] motivo correction hook falló: {e}")
 
     return VisitComment(
         comment_id=int(r.comment_id),

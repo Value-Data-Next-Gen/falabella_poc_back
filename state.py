@@ -429,7 +429,8 @@ class AppState:
                     )
                     users = cur.fetchall()
 
-                targets: list[tuple[int, str]] = []
+                targets: list[tuple[int | None, str]] = []
+                user_phones: set[str] = set()
                 for u in users:
                     if bool(u.notify_only_vip) and not vip:
                         continue
@@ -438,6 +439,51 @@ class AppState:
                     # dispara si p_fallo >= umbral_p  O  slack <= umbral_s
                     if n["p_fallo"] >= umbral_p or n["slack_min"] <= umbral_s or vip:
                         targets.append((int(u.user_id), u.phone_e164))
+                        user_phones.add(u.phone_e164)
+
+                # Merge con destinatarios de fpoc_empresa_contactos. Para
+                # auto_threshold (alertas ML) no hay motivo/severity explícitos:
+                # asumimos severity 'high' y omitimos filtro de motivo. Filtro
+                # de región se aplica con _visit_region(lat, lon) si vino el
+                # dato (los notifs actuales no incluyen geo → 'regiones').
+                try:
+                    from comments import _visit_region as _viz_region  # local import
+                    import json as _json
+                    with get_conn() as cn:
+                        cur = cn.cursor()
+                        cur.execute(
+                            """
+                            SELECT contact_id, phone_e164, severities_in, motivos_in, region_filter
+                            FROM fpoc_empresa_contactos
+                            WHERE active = 1 AND opted_in_at IS NOT NULL
+                              AND empresa_id = ?
+                            """,
+                            empresa_id,
+                        )
+                        contactos = cur.fetchall()
+                    visit_region = _viz_region(n.get("latitude"), n.get("longitude"))
+                    inferred_severity = "high"
+                    for c in contactos:
+                        if c.phone_e164 in user_phones:
+                            continue
+                        sev_raw = c.severities_in
+                        if sev_raw:
+                            try:
+                                sev_list = _json.loads(sev_raw)
+                            except Exception:  # noqa: BLE001
+                                sev_list = None
+                            if sev_list and inferred_severity not in sev_list:
+                                continue
+                        # Sin motivo en auto_threshold → si el contacto definió
+                        # motivos_in restrictivos, no aplica para esta alerta.
+                        if c.motivos_in:
+                            continue
+                        region = (c.region_filter or "all").lower()
+                        if region != "all" and region != visit_region:
+                            continue
+                        targets.append((None, c.phone_e164))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[auto-notify] merge contactos falló: {e}")
 
                 if not targets:
                     continue

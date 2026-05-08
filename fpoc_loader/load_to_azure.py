@@ -20,8 +20,13 @@ from dotenv import load_dotenv
 HERE = Path(__file__).resolve().parent
 BACKEND_ROOT = HERE.parent
 DDL_PATH = HERE / "ddl.sql"
-# Buscar el xlsx en backend/, backend/../ y cwd.
-SEARCH_DIRS = [BACKEND_ROOT, BACKEND_ROOT.parent, Path.cwd()]
+# Buscar el xlsx en client/data/, backend/, project root y cwd.
+SEARCH_DIRS = [
+    BACKEND_ROOT.parent / "client" / "data",
+    BACKEND_ROOT,
+    BACKEND_ROOT.parent,
+    Path.cwd(),
+]
 
 SIMPLI_COLS = [
     "planned_date", "id", "title", "order", "address",

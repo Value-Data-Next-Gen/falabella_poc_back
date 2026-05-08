@@ -85,10 +85,15 @@ _KEYWORDS: dict[str, list[str]] = {
         "roto", "danado", "embalaje", "faltante", "incompleto",
         "caja abierta", "deteriorado", "rotura", "averiado",
     ],
-    "PROBLEMA DE DIRECCION/ SIN INFORMACION": [
+    "PROBLEMA DE DIRECCIÓN/ SIN INFORMACIÓN": [
         "direccion erronea", "direccion mal", "direccion incorrecta",
         "sin numeracion", "no existe", "no ubicable", "mal geolocaliz",
-        "calle no existe", "no encontre la direccion", "vecinos no conocen",
+        "calle no existe", "no encontre la direccion",
+    ],
+    "NO CONOCEN A CLIENTE": [
+        "no conocen al cliente", "no conoce al destinatario", "no lo conocen",
+        "vecinos no conocen", "no corresponde", "no vive aqui", "no vive aca",
+        "no es esta direccion",
     ],
     "NO DESPACHA A LOCALIDAD": [
         "no despacha", "fuera de mi zona", "no atendemos", "comuna no atendida",
@@ -97,11 +102,11 @@ _KEYWORDS: dict[str, list[str]] = {
     "FUERA DE COBERTURA/ FRECUENCIA": [
         "fuera de cobertura", "fuera de ruta", "frecuencia", "no alcanzo a llegar",
     ],
-    "PROD N ENTREGADO X TIEMPO": [
+    "PROD NO ENTREGADO POR TIEMPO": [
         "fin de jornada", "fin de turno", "se acabo el tiempo", "no alcance",
         "atraso", "tarde", "horario cumplido",
     ],
-    "CLIENTE RECHAZA ENVIO": [
+    "CLIENTE RECHAZA": [
         "cliente rechaza", "no quiere recibir", "anulo compra", "anulo el pedido",
         "devuelve", "cancela", "rechazo el envio",
     ],

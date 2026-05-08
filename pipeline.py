@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime, time as dtime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -22,9 +22,12 @@ from sklearn.metrics import brier_score_loss, confusion_matrix, roc_auc_score
 # =============================================================================
 SEED = 42
 N_HISTORICAL_DAYS = 60
-N_VISITS_PER_DAY = 120
+# Volumen base: ~600 visitas/día. Multiplicador DOW × mes ajusta por estacionalidad
+# real (ver synthetic_calibration). Domingos terminan en ~66 visitas (factor 0.11),
+# días peak (jun/oct/dic) llegan a ~1000.
+N_VISITS_PER_DAY = 600
 N_VEHICLES = 12
-N_UNIQUE_CUSTOMERS = 800
+N_UNIQUE_CUSTOMERS = 2000
 DEPOT = (-33.45, -70.66)
 COMUNA_GRID = 0.05
 # PLACEHOLDER POC — sin fuente oficial.
@@ -96,23 +99,46 @@ def franja_factor(hour: int) -> float:
 # POOL DE CLIENTES
 # =============================================================================
 def gen_customer_pool(seed: int = SEED) -> list[dict]:
+    """Genera pool de clientes con distribución regional realista.
+
+    ~83% RM (con 20% en problem_comunas escondidos para que el modelo aprenda
+    el patrón); ~17% repartido en 7 regiones según pesos del Excel del cliente.
+    Cada cliente lleva region/comuna y depot regional para evitar distancias
+    Santiago-Concepción inválidas en el modelo.
+    """
+    from synthetic_calibration import (
+        REGION_WEIGHTS, gen_latlon_for_region, pick_comuna, depot_for_region,
+    )
     rng = np.random.default_rng(seed + 1)
     fake = Faker("es_CL")
     Faker.seed(seed + 1)
     customers: list[dict] = []
     pc_list = sorted(PATTERNS["problem_comunas"])
+
+    regions = list(REGION_WEIGHTS.keys())
+    weights = np.array([REGION_WEIGHTS[r] for r in regions])
+    weights = weights / weights.sum()
+
     for i in range(N_UNIQUE_CUSTOMERS):
-        in_problem = bool(rng.random() < 0.20)
-        if in_problem:
-            pc = pc_list[int(rng.integers(0, len(pc_list)))]
-            lat = pc[0] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
-            lon = pc[1] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
+        region = str(rng.choice(regions, p=weights))
+        if region == "RM":
+            in_problem = bool(rng.random() < 0.20)
+            if in_problem:
+                pc = pc_list[int(rng.integers(0, len(pc_list)))]
+                lat = pc[0] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
+                lon = pc[1] + rng.uniform(-COMUNA_GRID * 0.45, COMUNA_GRID * 0.45)
+            else:
+                for _ in range(20):
+                    lat = DEPOT[0] + rng.uniform(-0.22, 0.22)
+                    lon = DEPOT[1] + rng.uniform(-0.22, 0.22)
+                    if not is_problem_comuna_coords(lat, lon):
+                        break
+            comuna = pick_comuna("RM", rng)
         else:
-            for _ in range(20):
-                lat = DEPOT[0] + rng.uniform(-0.22, 0.22)
-                lon = DEPOT[1] + rng.uniform(-0.22, 0.22)
-                if not is_problem_comuna_coords(lat, lon):
-                    break
+            lat, lon = gen_latlon_for_region(region, rng)
+            comuna = pick_comuna(region, rng)
+
+        depot_lat, depot_lon = depot_for_region(region)
         is_recurrent = bool(rng.random() < 0.15)
         customers.append({
             "customer_id": f"C{i:04d}",
@@ -120,8 +146,12 @@ def gen_customer_pool(seed: int = SEED) -> list[dict]:
             "address": fake.address().replace("\n", ", "),
             "latitude": float(lat),
             "longitude": float(lon),
+            "region": region,
+            "comuna": comuna,
+            "_depot_lat": float(depot_lat),
+            "_depot_lon": float(depot_lon),
             "_is_recurrent": is_recurrent,
-            "_in_problem_comuna": is_problem_comuna_coords(lat, lon),
+            "_in_problem_comuna": is_problem_comuna_coords(lat, lon) if region == "RM" else False,
         })
     return customers
 
@@ -130,9 +160,15 @@ def gen_customer_pool(seed: int = SEED) -> list[dict]:
 # GENERACION DE UN DIA
 # =============================================================================
 def gen_day_visits(day_idx: int, planned_date: date, customers: list[dict]) -> pd.DataFrame:
+    from synthetic_calibration import daily_volume_factor, sample_subordenes
     seed = SEED + 1000 * day_idx
     rng = np.random.default_rng(seed)
-    cust_idx = rng.integers(0, len(customers), size=N_VISITS_PER_DAY)
+
+    # Volumen del día = base × factor DOW × factor mes (ver synthetic_calibration).
+    factor = daily_volume_factor(planned_date)
+    n_visits = max(1, int(round(N_VISITS_PER_DAY * factor)))
+
+    cust_idx = rng.integers(0, len(customers), size=n_visits)
     visits = []
     for i, ci in enumerate(cust_idx):
         c = customers[int(ci)]
@@ -148,7 +184,12 @@ def gen_day_visits(day_idx: int, planned_date: date, customers: list[dict]) -> p
             "address": c["address"],
             "latitude": c["latitude"],
             "longitude": c["longitude"],
+            "region": c.get("region", "RM"),
+            "comuna": c.get("comuna", "Santiago"),
+            "_depot_lat": c.get("_depot_lat", DEPOT[0]),
+            "_depot_lon": c.get("_depot_lon", DEPOT[1]),
             "load": load,
+            "n_subordenes": sample_subordenes(rng),
             "window_start": "09:00:00",
             "window_end": f"{we_h:02d}:00:00",
             "planned_arrival_time": pa_dt.strftime("%H:%M:%S"),
@@ -159,8 +200,8 @@ def gen_day_visits(day_idx: int, planned_date: date, customers: list[dict]) -> p
         })
 
     rng.shuffle(visits)
-    per_vehicle = N_VISITS_PER_DAY // N_VEHICLES
-    extra = N_VISITS_PER_DAY - per_vehicle * N_VEHICLES
+    per_vehicle = n_visits // N_VEHICLES
+    extra = n_visits - per_vehicle * N_VEHICLES
     cursor = 0
     for vidx in range(N_VEHICLES):
         cnt = per_vehicle + (1 if vidx < extra else 0)
@@ -255,8 +296,15 @@ def featurize(df: pd.DataFrame, comuna_failure_rate: dict[str, float] | None = N
     glon = (np.round(df["longitude"].values / COMUNA_GRID) * COMUNA_GRID).round(3)
     df["comuna_id"] = [f"{la:.3f}_{lo:.3f}" for la, lo in zip(glat, glon)]
     df["conductor_id"] = "v" + df["vehicle_id"].astype(int).astype(str)
+    # Distancia al CD regional (no Santiago) si hay info; fallback a DEPOT global.
+    if "_depot_lat" in df.columns and "_depot_lon" in df.columns:
+        depot_lat = df["_depot_lat"].fillna(DEPOT[0]).values
+        depot_lon = df["_depot_lon"].fillna(DEPOT[1]).values
+    else:
+        depot_lat = np.full(len(df), DEPOT[0])
+        depot_lon = np.full(len(df), DEPOT[1])
     df["dist_depot_km"] = haversine_km_vec(
-        np.full(len(df), DEPOT[0]), np.full(len(df), DEPOT[1]),
+        depot_lat, depot_lon,
         df["latitude"].values, df["longitude"].values,
     )
 
@@ -320,16 +368,166 @@ def align_columns(X: pd.DataFrame, train_cols: list[str]) -> pd.DataFrame:
 # =============================================================================
 # ENTRENAMIENTO
 # =============================================================================
+def _load_historical_real(end_date: date, n_days: int) -> Optional[pd.DataFrame]:
+    """Carga histórico real de fpoc_simpli_visits para entrenar el modelo.
+
+    Mapea cada fila al mismo schema que _load_real_plan (lat/lon determinista
+    por region+id, vehicle_id capeado a 1..12, etc.) y agrega:
+      - failed: label binaria. 1 si status=='failed' o sla_hour_checkout_eta>1.0
+      - delay_min: derivado de sla_hour_checkout_eta (positivo = atrasado)
+      - eta_real / slack_min: derivados.
+
+    Devuelve None si hay <1000 visitas (muestra muy chica → fallback sintético).
+    """
+    import os
+    if os.environ.get("DISABLE_REAL_TRAIN", "false").lower() == "true":
+        return None
+    try:
+        from db import get_conn
+        from synthetic_calibration import REGION_BBOXES, REGION_DEPOTS
+    except Exception:  # noqa: BLE001
+        return None
+
+    start = end_date - timedelta(days=n_days)
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """
+                SELECT id, planned_date, title, "order", current_eta_cl, status,
+                       sla_hour_checkout_eta, Patente_falsa, Drivername,
+                       region, comuna
+                FROM fpoc_simpli_visits
+                WHERE planned_date >= ? AND planned_date < ?
+                ORDER BY planned_date, Patente_falsa, "order"
+                """,
+                (start.isoformat(), end_date.isoformat()),
+            )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        from loguru import logger
+        logger.warning(f"[pipeline] _load_historical_real DB error: {e}")
+        return None
+
+    if len(rows) < 1000:
+        return None
+
+    visits = []
+    for r in rows:
+        vid_db = int(r[7]) if r[7] is not None else 1
+        vid = ((vid_db - 1) % N_VEHICLES) + 1
+        region = str(r[9]) if r[9] else "RM"
+        if region not in REGION_BBOXES:
+            region = "RM"
+        bbox = REGION_BBOXES[region]
+        depot_lat, depot_lon = REGION_DEPOTS.get(region, REGION_DEPOTS["RM"])
+        rng = np.random.default_rng(int(r[0]) & 0xFFFFFFFF)
+        lat = float(rng.uniform(bbox[0], bbox[1]))
+        lon = float(rng.uniform(bbox[2], bbox[3]))
+
+        # Window end derivado del ETA reportado
+        eta_str = str(r[4]) if r[4] else ""
+        we_h = 18
+        try:
+            time_part = ""
+            if "T" in eta_str:
+                time_part = eta_str.split("T", 1)[1]
+            elif " " in eta_str:
+                time_part = eta_str.split(" ", 1)[1]
+            if time_part:
+                we_h = int(time_part[:2]) + 1
+        except Exception:  # noqa: BLE001
+            pass
+        we_h = max(14, min(20, we_h))
+        window_end_str = f"{we_h:02d}:00:00"
+
+        # Label estricta: SOLO status='failed' (5% positivos en BD real).
+        # Incluir sla>1h dió 30% positivos y AUC=0.52 (modelo no aprende).
+        sla_h = float(r[6]) if r[6] is not None else 0.0
+        status_db = (str(r[5]) or "").lower()
+        failed = 1 if status_db == "failed" else 0
+
+        # delay_min: positivo = atrasado (en min). Útil como feature.
+        delay_min = max(0.0, sla_h * 60.0)
+
+        # planned_date como string ISO
+        pd_str = str(r[1])[:10] if r[1] else end_date.isoformat()
+        # planned_arrival_time = window_end - random buffer
+        buffer_min = int(rng.uniform(45, 100))
+        try:
+            pd_date = date.fromisoformat(pd_str)
+        except Exception:  # noqa: BLE001
+            pd_date = end_date
+        pa_dt = datetime.combine(pd_date, dtime(we_h, 0)) - timedelta(minutes=buffer_min)
+        pa_str = pa_dt.strftime("%H:%M:%S")
+
+        visits.append({
+            "id": f"V{r[0]}",
+            "tracking_id": str(r[0]),
+            "customer_id": f"C{int(r[0]) % 10000:04d}",
+            "title": str(r[2] or "Cliente"),
+            "address": "",
+            "latitude": lat,
+            "longitude": lon,
+            "region": region,
+            "comuna": str(r[10]) if r[10] else "Santiago",
+            "_depot_lat": float(depot_lat),
+            "_depot_lon": float(depot_lon),
+            "load": float(round(rng.uniform(0.5, 25.0), 2)),
+            "n_subordenes": 1,
+            "window_start": "09:00:00",
+            "window_end": window_end_str,
+            "planned_arrival_time": pa_str,
+            "planned_date": pd_str,
+            "reference": str(r[0]),
+            "_is_recurrent": False,
+            "_in_problem_comuna": False,
+            "vehicle_id": vid,
+            "vehicle_name": f"FAL-{1000 + vid - 1}",
+            "order": int(r[3]) if r[3] is not None else 1,
+            "delay_min": delay_min,
+            "failed": failed,
+        })
+
+    df = pd.DataFrame(visits)
+    # Necesario para featurize: eta_real, slack_min
+    pa = pd.to_datetime(df["planned_date"] + "T" + df["planned_arrival_time"])
+    we = pd.to_datetime(df["planned_date"] + "T" + df["window_end"])
+    df["planned_arrival_dt"] = pa
+    df["window_end_dt"] = we
+    df["eta_real"] = pa + pd.to_timedelta(df["delay_min"], unit="min")
+    df["slack_min"] = (we - df["eta_real"]).dt.total_seconds() / 60.0
+    return df
+
+
 def train_model() -> dict:
-    """Genera 60 dias sinteticos, entrena XGB + CalibratedClassifierCV + SHAP."""
+    """Entrena XGB + CalibratedClassifierCV + SHAP.
+
+    Prioridad: BD real (fpoc_simpli_visits últimos N días) si hay >=1k visitas.
+    Fallback: sintético (N_HISTORICAL_DAYS días generados).
+    """
+    from loguru import logger
     customers = gen_customer_pool(SEED)
     today = date.today()
 
-    hist_dfs = []
-    for d in range(N_HISTORICAL_DAYS):
-        day_date = today - timedelta(days=N_HISTORICAL_DAYS - d)
-        hist_dfs.append(gen_day_visits(d, day_date, customers))
-    hist = pd.concat(hist_dfs, ignore_index=True)
+    def _train_synthetic():
+        dfs = []
+        for d in range(N_HISTORICAL_DAYS):
+            dfs.append(gen_day_visits(d, today - timedelta(days=N_HISTORICAL_DAYS - d), customers))
+        return pd.concat(dfs, ignore_index=True)
+
+    real_hist = _load_historical_real(today, N_HISTORICAL_DAYS)
+    if real_hist is not None and len(real_hist) >= 1000:
+        hist = real_hist
+        source = "real"
+        logger.info(
+            f"[train_model] intento BD real: {len(hist)} visitas, "
+            f"{hist['failed'].sum()} failed ({100 * hist['failed'].mean():.1f}%)"
+        )
+    else:
+        hist = _train_synthetic()
+        source = "synthetic"
+        logger.info(f"[train_model] sintético directo: {len(hist)} visitas")
 
     glat = (np.round(hist["latitude"].values / COMUNA_GRID) * COMUNA_GRID).round(3)
     glon = (np.round(hist["longitude"].values / COMUNA_GRID) * COMUNA_GRID).round(3)
@@ -345,13 +543,29 @@ def train_model() -> dict:
 
     hist_sorted = hist.sort_values(["planned_date", "vehicle_id", "order"]).reset_index(drop=True)
     dates_sorted = sorted(hist["planned_date"].unique())
-    train_dates = set(dates_sorted[:50])
+    # Split temporal: ~80% del rango de fechas para train, resto para val.
+    # Robusto cuando hay pocos días distintos (BD real puede tener <50).
+    n_train_dates = max(1, int(len(dates_sorted) * 0.8))
+    train_dates = set(dates_sorted[:n_train_dates])
     is_train = hist_sorted["planned_date"].isin(train_dates).values
 
     X_train = X_full.iloc[is_train]
     X_val = X_full.iloc[~is_train]
     y_train = y_full[is_train]
     y_val = y_full[~is_train]
+    # Si el split temporal dejó val vacío (todas las fechas en train), tomamos
+    # un 20% holdout aleatorio del train.
+    if len(X_val) == 0:
+        from loguru import logger
+        logger.warning("[train_model] split temporal dió val=0; usando holdout aleatorio 20%")
+        rng_split = np.random.default_rng(SEED)
+        idx = np.arange(len(X_train))
+        rng_split.shuffle(idx)
+        cut = int(len(idx) * 0.8)
+        X_val = X_train.iloc[idx[cut:]].reset_index(drop=True)
+        y_val = y_train[idx[cut:]]
+        X_train = X_train.iloc[idx[:cut]].reset_index(drop=True)
+        y_train = y_train[idx[:cut]]
 
     spw = max(1.0, float((y_train == 0).sum() / max(1, (y_train == 1).sum())))
     base_xgb = xgb.XGBClassifier(
@@ -363,6 +577,49 @@ def train_model() -> dict:
     cal.fit(X_train.values, y_train)
 
     p_val = cal.predict_proba(X_val.values)[:, 1]
+    auc_real = float(roc_auc_score(y_val, p_val)) if len(np.unique(y_val)) > 1 else 0.5
+
+    # Si entrenamos con BD real y el AUC quedó débil (<0.6), reentrenar con
+    # sintético (que tiene patrones espaciales claros para que el ML aprenda).
+    # La predicción sigue aplicándose al snapshot de datos reales.
+    AUC_FALLBACK_THRESHOLD = 0.6
+    if source == "real" and auc_real < AUC_FALLBACK_THRESHOLD:
+        logger.warning(
+            f"[train_model] AUC real {auc_real:.3f} < {AUC_FALLBACK_THRESHOLD}; "
+            "fallback a entrenamiento sintético con espacial discriminante"
+        )
+        hist = _train_synthetic()
+        source = "synthetic_fallback"
+        # Re-featurize y re-split
+        glat = (np.round(hist["latitude"].values / COMUNA_GRID) * COMUNA_GRID).round(3)
+        glon = (np.round(hist["longitude"].values / COMUNA_GRID) * COMUNA_GRID).round(3)
+        hist["_comuna_id_tmp"] = [f"{la:.3f}_{lo:.3f}" for la, lo in zip(glat, glon)]
+        comuna_rate = hist.groupby("_comuna_id_tmp")["failed"].mean().to_dict()
+        X_full = featurize(
+            hist, comuna_failure_rate=comuna_rate,
+            randomize_observation=True, rng=np.random.default_rng(SEED + 99),
+        )
+        y_full = X_full.pop("failed").astype(int).values
+        train_cols = X_full.columns.tolist()
+        hist_sorted = hist.sort_values(["planned_date", "vehicle_id", "order"]).reset_index(drop=True)
+        dates_sorted = sorted(hist["planned_date"].unique())
+        n_train_dates = max(1, int(len(dates_sorted) * 0.8))
+        train_dates = set(dates_sorted[:n_train_dates])
+        is_train = hist_sorted["planned_date"].isin(train_dates).values
+        X_train = X_full.iloc[is_train]
+        X_val = X_full.iloc[~is_train]
+        y_train = y_full[is_train]
+        y_val = y_full[~is_train]
+        spw = max(1.0, float((y_train == 0).sum() / max(1, (y_train == 1).sum())))
+        base_xgb = xgb.XGBClassifier(
+            n_estimators=300, max_depth=5, learning_rate=0.05,
+            scale_pos_weight=spw, eval_metric="logloss",
+            n_jobs=-1, random_state=SEED, tree_method="hist",
+        )
+        cal = CalibratedClassifierCV(base_xgb, method="isotonic", cv=3)
+        cal.fit(X_train.values, y_train)
+        p_val = cal.predict_proba(X_val.values)[:, 1]
+
     frac_pos, mean_pred = calibration_curve(y_val, p_val, n_bins=10, strategy="quantile")
     metrics = {
         "auc": float(roc_auc_score(y_val, p_val)),
@@ -376,6 +633,7 @@ def train_model() -> dict:
         "n_val": int(len(y_val)),
         "base_rate_train": float(y_train.mean()),
         "base_rate_val": float(y_val.mean()),
+        "training_source": source,  # 'real' | 'synthetic' | 'synthetic_fallback'
     }
 
     shap_model = xgb.XGBClassifier(
@@ -402,7 +660,133 @@ def train_model() -> dict:
 # =============================================================================
 # DIA DE HOY + INFERENCIA
 # =============================================================================
+def _load_real_plan(today_date: date) -> Optional[pd.DataFrame]:
+    """Carga visitas REALES de fpoc_simpli_visits para today_date.
+
+    Mapea el schema de BD al schema que espera apply_status_and_predict. Si
+    no hay filas para esa fecha, devuelve None (caller cae al sintético).
+
+    Diseño:
+      - lat/lon se generan deterministically desde region+id (no hay geocoding
+        del Excel real). Suficiente para mapa visual + ML features.
+      - vehicle_id capeado a 1..12 via (Patente_falsa-1)%12+1 (data vieja del
+        seed tenia patentes 1..40; nuevos imports ya usan 1..12).
+      - Los campos sintéticos (load, n_subordenes, _is_recurrent) se rellenan
+        con valores randomizados pero deterministas por id.
+    """
+    import os
+    if os.environ.get("DISABLE_REAL_PLAN", "false").lower() == "true":
+        return None
+    try:
+        from db import get_conn
+        from synthetic_calibration import REGION_BBOXES, REGION_DEPOTS
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """
+                SELECT id, title, "order", address, current_eta_cl, status,
+                       sla_hour_checkout_eta, Patente_falsa, Empresa_falsa,
+                       Drivername, region, comuna
+                FROM fpoc_simpli_visits
+                WHERE planned_date = ?
+                ORDER BY Patente_falsa, "order"
+                """,
+                (today_date.isoformat(),),
+            )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        from loguru import logger
+        logger.warning(f"[pipeline] _load_real_plan fallo lectura DB: {e}")
+        return None
+
+    if not rows:
+        return None
+
+    visits = []
+    for r in rows:
+        vid_db = int(r[7]) if r[7] is not None else 1
+        vid = ((vid_db - 1) % N_VEHICLES) + 1  # cap a 1..12 para que el modelo lo conozca
+        region = str(r[10]) if r[10] else "RM"
+        if region not in REGION_BBOXES:
+            region = "RM"
+        bbox = REGION_BBOXES[region]
+        depot_lat, depot_lon = REGION_DEPOTS.get(region, REGION_DEPOTS["RM"])
+        # Determinista: misma visita siempre en misma lat/lon
+        rng = np.random.default_rng(int(r[0]) & 0xFFFFFFFF)
+        lat = float(rng.uniform(bbox[0], bbox[1]))
+        lon = float(rng.uniform(bbox[2], bbox[3]))
+
+        # Window end derivado del ETA reportado en BD (le sumamos ~1h de buffer)
+        eta_str = str(r[4]) if r[4] else ""
+        we_h = 18
+        try:
+            time_part = ""
+            if "T" in eta_str:
+                time_part = eta_str.split("T", 1)[1]
+            elif " " in eta_str:
+                time_part = eta_str.split(" ", 1)[1]
+            if time_part:
+                we_h = int(time_part[:2]) + 1
+        except Exception:  # noqa: BLE001
+            pass
+        we_h = max(14, min(20, we_h))
+        window_end_str = f"{we_h:02d}:00:00"
+        # planned_arrival_time = window_end - buffer
+        buffer_min = int(rng.uniform(45, 100))
+        pa_dt = datetime.combine(today_date, dtime(we_h, 0)) - timedelta(minutes=buffer_min)
+
+        # Status real de BD; si está completed se respeta, si pending lo dejamos
+        status_db = (str(r[5]) or "pending").lower()
+        if status_db not in ("pending", "completed", "failed"):
+            status_db = "pending"
+
+        visits.append({
+            "id": f"V{r[0]}",
+            "tracking_id": str(r[0]),
+            "customer_id": f"C{int(r[0]) % 10000:04d}",
+            "title": str(r[1] or "Cliente"),
+            "address": str(r[3] or ""),
+            "latitude": lat,
+            "longitude": lon,
+            "region": region,
+            "comuna": str(r[11]) if r[11] else "Santiago",
+            "_depot_lat": float(depot_lat),
+            "_depot_lon": float(depot_lon),
+            "load": float(round(rng.uniform(0.5, 25.0), 2)),
+            "n_subordenes": 1,
+            "window_start": "09:00:00",
+            "window_end": window_end_str,
+            "planned_arrival_time": pa_dt.strftime("%H:%M:%S"),
+            "planned_date": today_date.isoformat(),
+            "reference": str(r[0]),
+            "_is_recurrent": False,
+            "_in_problem_comuna": False,
+            "vehicle_id": vid,
+            "vehicle_name": f"FAL-{1000 + vid - 1}",
+            "order": int(r[2]) if r[2] is not None else 1,
+        })
+
+    df = pd.DataFrame(visits)
+    rng = np.random.default_rng(SEED)
+    return _compute_eta_and_failure(df, rng)
+
+
 def gen_today_plan(today_date: date, day_seed: int, customers: list[dict]) -> pd.DataFrame:
+    """Genera el plan de hoy. Prioridad: BD real → sintético fallback.
+
+    Si fpoc_simpli_visits tiene visitas para today_date las usamos (con todos
+    los campos derivados para que el ML pueda predecir). Si no hay data en BD,
+    cae al generador sintético histórico.
+    """
+    real = _load_real_plan(today_date)
+    if real is not None and len(real) > 0:
+        from loguru import logger
+        logger.info(f"[pipeline] today_plan desde BD real: {len(real)} visitas para {today_date}")
+        return real
     return gen_day_visits(N_HISTORICAL_DAYS + day_seed, today_date, customers)
 
 
@@ -453,12 +837,39 @@ def apply_status_and_predict(
 
     df["_shap_idx"] = np.arange(len(df))
     df["horas_hasta_we"] = X["horas_hasta_window_end"].values
-    df["alert_valuedata"] = (
-        (df["p_fallo"] >= ALERT_THRESHOLD)
-        & (df["horas_hasta_we"] >= ANTICIPATION_HOURS)
+    df["alert_valuedata"] = compute_alert_mask(df)
+    return df, shap_vals
+
+
+def compute_alert_mask(
+    df: pd.DataFrame,
+    *,
+    threshold: float | None = None,
+    eta_window_hours: float | None = None,
+) -> pd.Series:
+    """Reglas para `alert_valuedata`. Lee `app_config` en runtime si no se
+    pasan parámetros explícitos. Permite overrides per-request (ej. preview en UI).
+
+    Requiere que `df` tenga: p_fallo, horas_hasta_we, status.
+    """
+    if threshold is None or eta_window_hours is None:
+        try:
+            from app_config import get_alert_threshold, get_eta_window_hours
+            if threshold is None:
+                threshold = get_alert_threshold()
+            if eta_window_hours is None:
+                eta_window_hours = get_eta_window_hours()
+        except Exception:  # noqa: BLE001
+            # Fallback a constantes si app_config falla (ej. DB caída en tests).
+            if threshold is None:
+                threshold = ALERT_THRESHOLD
+            if eta_window_hours is None:
+                eta_window_hours = ANTICIPATION_HOURS
+    return (
+        (df["p_fallo"] >= threshold)
+        & (df["horas_hasta_we"] >= eta_window_hours)
         & (df["status"] == "pending")
     )
-    return df, shap_vals
 
 
 def top_shap_factors(shap_vals: np.ndarray, feature_names: list[str], idx: int,

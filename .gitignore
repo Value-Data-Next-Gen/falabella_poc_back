@@ -19,7 +19,9 @@ dist/
 build/
 *.sqlite
 *.db
-!valuedata.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.parquet
 data/
 
@@ -33,5 +35,6 @@ data/
 *.synctex.gz
 *.toc
 *.pdf
+!MANUAL_USUARIO.pdf
 MODELO.log
 PIPELINE.log
