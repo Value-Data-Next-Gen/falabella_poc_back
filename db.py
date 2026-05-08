@@ -58,6 +58,55 @@ def _rewrite_sql(sql: str) -> str:
     return sql
 
 
+# Reverso: fpoc_<tabla> -> fpoc.<tabla> + datetime('now', '-X days') -> DATEADD()
+# Para que código SQLite-style funcione contra SQL Server.
+_FPOC_TABLE_RE = re.compile(r"\bfpoc_([a-zA-Z_][a-zA-Z0-9_]*)\b")
+_DATETIME_NOW_RE = re.compile(
+    r"datetime\s*\(\s*'now'\s*,\s*'-?(\d+)\s+(day|days|hour|hours|minute|minutes)'\s*\)",
+    re.IGNORECASE,
+)
+_CURRENT_TS_RE = re.compile(r"\bCURRENT_TIMESTAMP\b", re.IGNORECASE)
+# LIMIT N al final del query (no maneja OFFSET — para eso hay que reescribir manualmente).
+_LIMIT_TAIL_RE = re.compile(r"\s+LIMIT\s+(\d+)\s*;?\s*$", re.IGNORECASE)
+_SELECT_TOKEN_RE = re.compile(r"\bSELECT\b", re.IGNORECASE)
+# INSERT OR IGNORE no tiene equivalente directo en T-SQL; lo neutralizamos a INSERT
+# y dejamos al caller manejar duplicados (idealmente con MERGE o IF NOT EXISTS).
+_INSERT_OR_IGNORE_RE = re.compile(r"\bINSERT\s+OR\s+IGNORE\b", re.IGNORECASE)
+
+
+def _rewrite_sql_for_mssql(sql: str) -> str:
+    """Convierte SQL escrito en estilo SQLite a sintaxis SQL Server.
+
+    - fpoc_<tabla>                  -> fpoc.<tabla>      (schema dot notation)
+    - datetime('now', '-N days')    -> DATEADD(day, -N, SYSUTCDATETIME())
+    - ... LIMIT N (al final)        -> SELECT TOP N ...
+    - INSERT OR IGNORE              -> INSERT (caller maneja duplicado)
+    """
+    sql = _FPOC_TABLE_RE.sub(r"fpoc.\1", sql)
+
+    def _datetime_repl(m):
+        n = m.group(1)
+        unit = m.group(2).lower()
+        unit_map = {
+            "day": "day", "days": "day",
+            "hour": "hour", "hours": "hour",
+            "minute": "minute", "minutes": "minute",
+        }
+        u = unit_map.get(unit, "day")
+        return f"DATEADD({u}, -{n}, SYSUTCDATETIME())"
+
+    sql = _DATETIME_NOW_RE.sub(_datetime_repl, sql)
+
+    m = _LIMIT_TAIL_RE.search(sql)
+    if m:
+        n = m.group(1)
+        sql = _LIMIT_TAIL_RE.sub("", sql)
+        sql = _SELECT_TOKEN_RE.sub(f"SELECT TOP {n}", sql, count=1)
+
+    sql = _INSERT_OR_IGNORE_RE.sub("INSERT", sql)
+    return sql
+
+
 # -------- Row con acceso por atributo (case-insensitive) --------
 class AttrRow:
     """Wrap sqlite3.Row para soportar `row.column_name` (como pyodbc)."""
@@ -195,6 +244,94 @@ def _open_sqlite() -> SqliteConn:
     return SqliteConn(raw)
 
 
+class MssqlCursor:
+    """Wrap pyodbc cursor para reescribir SQL estilo SQLite (fpoc_tabla,
+    datetime('now', '-N days')) a sintaxis MSSQL en cada execute/executemany."""
+
+    def __init__(self, cur) -> None:
+        self._cur = cur
+
+    def execute(self, sql, *params):
+        sql = _rewrite_sql_for_mssql(sql)
+        if len(params) == 1 and isinstance(params[0], (tuple, list)):
+            self._cur.execute(sql, params[0])
+        elif params:
+            self._cur.execute(sql, params)
+        else:
+            self._cur.execute(sql)
+        return self
+
+    def executemany(self, sql, seq):
+        sql = _rewrite_sql_for_mssql(sql)
+        self._cur.executemany(sql, seq)
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    @property
+    def fast_executemany(self):
+        return self._cur.fast_executemany
+
+    @fast_executemany.setter
+    def fast_executemany(self, value):
+        self._cur.fast_executemany = value
+
+    def close(self):
+        self._cur.close()
+
+
+class MssqlConn:
+    """Wrapper de pyodbc.Connection que aplica el rewrite SQLite->MSSQL en
+    cada cursor.execute. Emula el shape de SqliteConn (context manager)."""
+
+    def __init__(self, raw) -> None:
+        self._raw = raw
+
+    def cursor(self) -> MssqlCursor:
+        return MssqlCursor(self._raw.cursor())
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def rollback(self) -> None:
+        self._raw.rollback()
+
+    def close(self) -> None:
+        self._raw.close()
+
+    def execute(self, sql, *params):
+        cur = self.cursor()
+        cur.execute(sql, *params)
+        return cur
+
+    def __enter__(self) -> "MssqlConn":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            if exc_type is not None:
+                self._raw.rollback()
+            else:
+                self._raw.commit()
+        finally:
+            self._raw.close()
+
+
 def _open_sqlserver():
     import pyodbc  # import perezoso
 
@@ -207,7 +344,7 @@ def _open_sqlserver():
         f"PWD={os.environ['DB_PASSWORD']};"
         "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
     )
-    return pyodbc.connect(cs, autocommit=False)
+    return MssqlConn(pyodbc.connect(cs, autocommit=False))
 
 
 def get_conn():
