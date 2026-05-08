@@ -271,7 +271,7 @@ def _resolve_planned_date(requested: Optional[str]) -> str:
         cur = cn.cursor()
         if today_iso:
             cur.execute(
-                "SELECT 1 FROM fpoc_simpli_visits WHERE planned_date = ? LIMIT 1",
+                "SELECT 1 FROM fpoc_simpli_visits WHERE planned_date = ?",
                 today_iso,
             )
             if cur.fetchone():

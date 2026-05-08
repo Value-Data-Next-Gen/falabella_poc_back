@@ -132,7 +132,7 @@ def _find_driver_by_phone(phone: str) -> Optional[dict]:
         cur = cn.cursor()
         cur.execute(
             "SELECT driver_id, name, vehicle_id, vehicle_name, phone_e164 "
-            "FROM fpoc_drivers WHERE phone_e164 = ? AND active = 1 LIMIT 1",
+            "FROM fpoc_drivers WHERE phone_e164 = ? AND active = 1",
             (phone,),
         )
         r = cur.fetchone()
@@ -171,7 +171,7 @@ def _find_persona_by_phone(phone: str) -> Optional[dict]:
                    e.nombre AS empresa_nombre
             FROM fpoc_users u
             LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = u.empresa_id
-            WHERE u.phone_e164 = ? LIMIT 1
+            WHERE u.phone_e164 = ?
             """,
             (phone,),
         )
@@ -195,7 +195,7 @@ def _find_persona_by_phone(phone: str) -> Optional[dict]:
             SELECT c.contact_id, c.nombre, c.rol, c.empresa_id, e.nombre AS empresa_nombre
             FROM fpoc_empresa_contactos c
             LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = c.empresa_id
-            WHERE c.phone_e164 = ? AND c.active = 1 LIMIT 1
+            WHERE c.phone_e164 = ? AND c.active = 1
             """,
             (phone,),
         )
@@ -225,7 +225,7 @@ def _find_driver_by_id_or_rut(token: str) -> Optional[dict]:
             "WHERE active = 1 AND ("
             "  REPLACE(REPLACE(UPPER(driver_id), '-', ''), '.', '') = ? "
             "  OR CAST(vehicle_id AS TEXT) = ?"
-            ") LIMIT 1",
+            ")",
             (t, token.strip()),
         )
         r = cur.fetchone()
@@ -291,7 +291,6 @@ def _visit_by_tracking(tracking_id: str) -> Optional[dict]:
                        current_eta_cl, ruta_id
                 FROM fpoc_simpli_visits
                 WHERE CAST(id AS TEXT) = ? OR ruta_id = ?
-                LIMIT 1
                 """,
                 (tracking_id, tracking_id),
             )

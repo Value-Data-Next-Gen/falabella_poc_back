@@ -106,7 +106,7 @@ def _identify_phone(phone_e164: str) -> dict:
         cur = cn.cursor()
         cur.execute(
             "SELECT user_id, role, empresa_id FROM fpoc_users "
-            "WHERE phone_e164 = ? AND activo = 1 LIMIT 1",
+            "WHERE phone_e164 = ? AND activo = 1",
             (phone_e164,),
         )
         r = cur.fetchone()
@@ -118,7 +118,7 @@ def _identify_phone(phone_e164: str) -> dict:
 
         cur.execute(
             "SELECT contact_id, empresa_id FROM fpoc_empresa_contactos "
-            "WHERE phone_e164 = ? AND active = 1 LIMIT 1",
+            "WHERE phone_e164 = ? AND active = 1",
             (phone_e164,),
         )
         r = cur.fetchone()
@@ -129,7 +129,7 @@ def _identify_phone(phone_e164: str) -> dict:
 
         cur.execute(
             "SELECT driver_id FROM fpoc_drivers "
-            "WHERE phone_e164 = ? AND active = 1 LIMIT 1",
+            "WHERE phone_e164 = ? AND active = 1",
             (phone_e164,),
         )
         r = cur.fetchone()
@@ -153,7 +153,7 @@ def _auto_onboard(phone_e164: str, profile_name: Optional[str]) -> Optional[int]
                 return None
         else:
             # Tomar la primera empresa activa
-            cur.execute("SELECT empresa_id FROM fpoc_empresas_transporte WHERE activo = 1 ORDER BY empresa_id LIMIT 1")
+            cur.execute("SELECT empresa_id FROM fpoc_empresas_transporte WHERE activo = 1 ORDER BY empresa_id")
             r = cur.fetchone()
             if r is None:
                 return None
