@@ -72,6 +72,9 @@ _SELECT_TOKEN_RE = re.compile(r"\bSELECT\b", re.IGNORECASE)
 # INSERT OR IGNORE no tiene equivalente directo en T-SQL; lo neutralizamos a INSERT
 # y dejamos al caller manejar duplicados (idealmente con MERGE o IF NOT EXISTS).
 _INSERT_OR_IGNORE_RE = re.compile(r"\bINSERT\s+OR\s+IGNORE\b", re.IGNORECASE)
+# last_insert_rowid() (SQLite) -> SCOPE_IDENTITY() (T-SQL) para devolver el id
+# autoincrementado del INSERT recien hecho en el mismo cursor.
+_LAST_INSERT_ROWID_RE = re.compile(r"\blast_insert_rowid\s*\(\s*\)", re.IGNORECASE)
 
 
 def _rewrite_sql_for_mssql(sql: str) -> str:
@@ -104,6 +107,7 @@ def _rewrite_sql_for_mssql(sql: str) -> str:
         sql = _SELECT_TOKEN_RE.sub(f"SELECT TOP {n}", sql, count=1)
 
     sql = _INSERT_OR_IGNORE_RE.sub("INSERT", sql)
+    sql = _LAST_INSERT_ROWID_RE.sub("SCOPE_IDENTITY()", sql)
     return sql
 
 
