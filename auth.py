@@ -253,9 +253,20 @@ def login(req: LoginRequest, request: Request) -> LoginResponse:
         _log_access("login_failed", email=email, ip=ip, ua=ua,
                     error="user not found or inactive")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
-    if not bcrypt.verify(req.password, u["password_hash"]):
+    try:
+        ok = bcrypt.verify(req.password, u["password_hash"]) if u["password_hash"] else False
+    except Exception as e:  # noqa: BLE001
+        # Hash mal formado / NULL / encoding roto -> tratar como credencial invalida
+        # (no spamear 500). Ver logs del backend para diagnostico (auth.bcrypt).
+        logger.warning(
+            f"[auth] bcrypt.verify fallo para user_id={u['user_id']} email={email}: "
+            f"{type(e).__name__}: {e} (hash_type={type(u['password_hash']).__name__} "
+            f"hash_len={len(u['password_hash']) if u['password_hash'] else 0})"
+        )
+        ok = False
+    if not ok:
         _log_access("login_failed", user_id=u["user_id"], email=email, ip=ip, ua=ua,
-                    error="wrong password")
+                    error="wrong password or hash error")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Credenciales inválidas")
 
     _log_access("login_success", user_id=u["user_id"], email=u["email"], ip=ip, ua=ua)
