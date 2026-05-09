@@ -95,8 +95,53 @@ def _build_warning_body(*, cliente: str, deadline: str, mins_left: int,
     )
 
 
+_VIP_SCHEMA_FIXED = False
+
+
+def _ensure_vip_columns() -> None:
+    """Auto-migracion idempotente: agrega deadline_time, alert_minutes_before
+    y last_alert_sent_at a fpoc.vip_clients si faltan (Azure SQL solamente).
+
+    Corre una sola vez por proceso (flag _VIP_SCHEMA_FIXED).
+    """
+    global _VIP_SCHEMA_FIXED
+    if _VIP_SCHEMA_FIXED:
+        return
+    try:
+        from db import backend
+        if backend() != "sqlserver":
+            _VIP_SCHEMA_FIXED = True
+            return
+        cols = [
+            ("deadline_time", "NVARCHAR(8) NULL"),
+            ("alert_minutes_before", "INT NOT NULL CONSTRAINT DF_vip_alert_min DEFAULT 60 WITH VALUES"),
+            ("last_alert_sent_at", "DATETIME2 NULL"),
+        ]
+        with get_conn() as cn:
+            cur = cn.cursor()
+            added: list[str] = []
+            for col, ddl in cols:
+                cur.execute(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = 'fpoc' AND TABLE_NAME = 'vip_clients' "
+                    "AND COLUMN_NAME = ?",
+                    (col,),
+                )
+                if cur.fetchone():
+                    continue
+                cur.execute(f"ALTER TABLE [fpoc].[vip_clients] ADD {col} {ddl}")
+                added.append(col)
+            cn.commit()
+            if added:
+                logger.info(f"[vip-deadline] auto-migracion OK, columnas agregadas: {added}")
+        _VIP_SCHEMA_FIXED = True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vip-deadline] auto-migracion fallo (reintenta despues): {e}")
+
+
 def check_vip_deadlines() -> dict:
     """Función pública del cron. Devuelve resumen para logs/health."""
+    _ensure_vip_columns()
     if STATE.snapshot_df is None or STATE.sim_clock is None or STATE.today is None:
         return {"checked": 0, "fired": 0, "skipped_warmup": True}
 
