@@ -458,8 +458,63 @@ def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str]
 
 
 # =============================================================================
+# Status callback helper
+# =============================================================================
+def _apply_status_callback(twilio_sid: str, msg_status: str) -> None:
+    """Persiste el status reportado por Twilio sobre un outbound.
+
+    Twilio dispara este callback sobre `Status Callback URL` (configurado en
+    el sandbox). Tambien lo manda al `When a message comes in` con body vacio
+    — ahi tambien lo capturamos en /inbound antes de procesar como inbound.
+    """
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "UPDATE fpoc_notifications_log SET status = ? "
+                "WHERE twilio_sid = ? AND COALESCE(direction,'outbound') = 'outbound'",
+                (msg_status, twilio_sid),
+            )
+            cn.commit()
+        logger.info(f"[twilio-status] sid={twilio_sid} status={msg_status}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[twilio-status] update fallo: {e}")
+
+
+# =============================================================================
 # Endpoints
 # =============================================================================
+@router.post("/status")
+async def webhook_status(
+    request: Request,
+    x_twilio_signature: Optional[str] = Header(default=None, alias="X-Twilio-Signature"),
+):
+    """Endpoint dedicado para Status Callback de Twilio.
+
+    Twilio acepta dos webhooks distintos en el sandbox:
+      - When a message comes in -> /api/twilio/inbound
+      - Status Callback URL     -> /api/twilio/status
+
+    Ambos validan firma y son idempotentes. Devolvemos siempre 200 con TwiML
+    vacio para que Twilio no reintente.
+    """
+    raw_body = await request.body()
+    form = dict(parse_qsl(raw_body.decode("utf-8"), keep_blank_values=True))
+
+    auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+    public_url = os.environ.get("TWILIO_INBOUND_PUBLIC_URL", "").rstrip("/")
+    url = (public_url + "/api/twilio/status") if public_url else str(request.url)
+    if auth_token and not _validate_signature(auth_token, url, form, x_twilio_signature):
+        logger.warning(f"[twilio-status] firma invalida sid={form.get('MessageSid')}")
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    msg_status = form.get("MessageStatus") or form.get("SmsStatus")
+    twilio_sid = form.get("MessageSid") or form.get("SmsMessageSid")
+    if msg_status and twilio_sid:
+        _apply_status_callback(twilio_sid, msg_status)
+    return _twiml(None)
+
+
 @router.post("/inbound")
 async def webhook_inbound(
     request: Request,
@@ -486,18 +541,7 @@ async def webhook_inbound(
     msg_status = form.get("MessageStatus") or form.get("SmsStatus")
     twilio_sid = form.get("MessageSid") or form.get("SmsMessageSid")
     if msg_status and twilio_sid and not (form.get("Body") or "").strip():
-        try:
-            with get_conn() as cn:
-                cur = cn.cursor()
-                cur.execute(
-                    "UPDATE fpoc_notifications_log SET status = ? "
-                    "WHERE twilio_sid = ? AND COALESCE(direction,'outbound') = 'outbound'",
-                    (msg_status, twilio_sid),
-                )
-                cn.commit()
-            logger.info(f"[twilio-inbound] status_callback sid={twilio_sid} status={msg_status}")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[twilio-inbound] status_callback update fallo: {e}")
+        _apply_status_callback(twilio_sid, msg_status)
         return _twiml(None)
 
     from_number = _normalize_phone(form.get("From", ""))

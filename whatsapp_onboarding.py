@@ -137,22 +137,24 @@ def onboard(body: OnboardRequest, user: CurrentUser = Depends(require_admin)) ->
             driver_id = f"DRV-{vid:03d}"
             cur.execute(
                 """
-                INSERT INTO fpoc_drivers
-                  (driver_id, name, phone, phone_e164, vehicle_id, vehicle_name,
-                   active, notify_whatsapp, opted_in_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP)
-                ON CONFLICT(driver_id) DO UPDATE SET
-                  name = excluded.name,
-                  phone = excluded.phone,
-                  phone_e164 = excluded.phone_e164,
-                  vehicle_id = excluded.vehicle_id,
-                  vehicle_name = excluded.vehicle_name,
-                  active = 1,
-                  notify_whatsapp = 1,
-                  opted_in_at = CURRENT_TIMESTAMP
+                UPDATE fpoc_drivers
+                   SET name = ?, phone = ?, phone_e164 = ?, vehicle_id = ?,
+                       vehicle_name = ?, active = 1, notify_whatsapp = 1,
+                       opted_in_at = CURRENT_TIMESTAMP
+                 WHERE driver_id = ?
                 """,
-                (driver_id, body.name, phone, phone, vid, vehicle_name),
+                (body.name, phone, phone, vid, vehicle_name, driver_id),
             )
+            if cur.rowcount == 0:
+                cur.execute(
+                    """
+                    INSERT INTO fpoc_drivers
+                      (driver_id, name, phone, phone_e164, vehicle_id, vehicle_name,
+                       active, notify_whatsapp, opted_in_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP)
+                    """,
+                    (driver_id, body.name, phone, phone, vid, vehicle_name),
+                )
             cn.commit()
             persisted_id = driver_id
 
@@ -179,20 +181,23 @@ def onboard(body: OnboardRequest, user: CurrentUser = Depends(require_admin)) ->
             pwd_hash = bcrypt.hash(f"wa-onboarded-{phone}")
             cur.execute(
                 """
-                INSERT INTO fpoc_users
-                  (email, password_hash, display_name, role, empresa_id,
-                   activo, phone_e164, notify_whatsapp)
-                VALUES (?, ?, ?, ?, ?, 1, ?, 1)
-                ON CONFLICT(email) DO UPDATE SET
-                  display_name = excluded.display_name,
-                  role = excluded.role,
-                  empresa_id = excluded.empresa_id,
-                  activo = 1,
-                  phone_e164 = excluded.phone_e164,
-                  notify_whatsapp = 1
+                UPDATE fpoc_users
+                   SET display_name = ?, role = ?, empresa_id = ?,
+                       activo = 1, phone_e164 = ?, notify_whatsapp = 1
+                 WHERE email = ?
                 """,
-                (email, pwd_hash, body.name, role, empresa_id, phone),
+                (body.name, role, empresa_id, phone, email),
             )
+            if cur.rowcount == 0:
+                cur.execute(
+                    """
+                    INSERT INTO fpoc_users
+                      (email, password_hash, display_name, role, empresa_id,
+                       activo, phone_e164, notify_whatsapp)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, 1)
+                    """,
+                    (email, pwd_hash, body.name, role, empresa_id, phone),
+                )
             cn.commit()
             cur.execute("SELECT user_id FROM fpoc_users WHERE phone_e164 = ?", (phone,))
             r = cur.fetchone()
