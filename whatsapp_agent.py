@@ -86,27 +86,34 @@ class Session:
         )
 
     def save(self) -> None:
+        ctx_json = json.dumps(self.context) if self.context else None
         with get_conn() as cn:
             cur = cn.cursor()
+            # UPSERT portable (SQLite + SQL Server): UPDATE primero; si no afecto
+            # filas, INSERT. Sin ON CONFLICT (no soportado por T-SQL).
             cur.execute(
                 """
-                INSERT INTO fpoc_whatsapp_sessions
-                  (phone_e164, state, role, identified_id, context, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(phone_e164) DO UPDATE SET
-                  state = excluded.state,
-                  role = excluded.role,
-                  identified_id = excluded.identified_id,
-                  context = excluded.context,
-                  updated_at = CURRENT_TIMESTAMP
+                UPDATE fpoc_whatsapp_sessions
+                   SET state = ?, role = ?, identified_id = ?, context = ?,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE phone_e164 = ?
                 """,
-                (
-                    self.phone,
-                    self.state,
-                    self.role,
-                    self.identified_id,
-                    json.dumps(self.context) if self.context else None,
-                ),
+                (self.state, self.role, self.identified_id, ctx_json, self.phone),
+            )
+            if cur.rowcount == 0:
+                cur.execute(
+                    """
+                    INSERT INTO fpoc_whatsapp_sessions
+                      (phone_e164, state, role, identified_id, context, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        self.phone,
+                        self.state,
+                        self.role,
+                        self.identified_id,
+                        ctx_json,
+                    ),
             )
             cn.commit()
 
