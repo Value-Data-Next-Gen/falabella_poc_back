@@ -170,8 +170,12 @@ def _auto_onboard(phone_e164: str, profile_name: Optional[str]) -> Optional[int]
                 (empresa_id, nombre, phone_e164),
             )
             cn.commit()
-            cur.execute("SELECT last_insert_rowid()")
-            return int(cur.fetchone()[0])
+            try:
+                cur.execute("SELECT last_insert_rowid()")
+                row = cur.fetchone()
+                return int(row[0]) if row and row[0] is not None else None
+            except Exception:
+                return None
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[twilio-inbound] auto-onboard insert falló: {e}")
             return None
@@ -207,8 +211,12 @@ def _log_inbound(
              twilio_sid, triggered_by, profile_name, media_urls),
         )
         cn.commit()
-        cur.execute("SELECT last_insert_rowid()")
-        return int(cur.fetchone()[0])
+        try:
+            cur.execute("SELECT last_insert_rowid()")
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            return 0
 
 
 # =============================================================================

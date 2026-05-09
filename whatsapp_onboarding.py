@@ -235,8 +235,12 @@ def onboard(body: OnboardRequest, user: CurrentUser = Depends(require_admin)) ->
                     """,
                     (empresa_id, body.name, rol, phone),
                 )
-                cur.execute("SELECT last_insert_rowid()")
-                cid = int(cur.fetchone()[0])
+                try:
+                    cur.execute("SELECT last_insert_rowid()")
+                    row = cur.fetchone()
+                    cid = int(row[0]) if row and row[0] is not None else 0
+                except Exception:
+                    cid = 0
             cn.commit()
             persisted_id = str(cid)
     else:
