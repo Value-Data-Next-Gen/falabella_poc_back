@@ -13,14 +13,16 @@ Endpoints (prefijo /api/admin):
 """
 from __future__ import annotations
 
+import io
 from datetime import date
-from typing import Optional
+from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr, Field
 
-from auth import CurrentUser, require_admin
+from auth import CurrentUser, current_user, require_admin
 from db import get_conn
 
 router = APIRouter(prefix="/api/admin", tags=["admin-maestros"])
@@ -308,6 +310,7 @@ class DriverIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     phone: Optional[str] = Field(default=None, max_length=50)
     license: Optional[str] = Field(default="A-3 Profesional", max_length=50)
+    empresa_id: int = Field(ge=1)
     vehicle_id: int = Field(ge=1)
     vehicle_name: str = Field(min_length=1, max_length=50)
     rating: float = Field(default=4.5, ge=0.0, le=5.0)
@@ -321,6 +324,7 @@ class DriverUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     phone: Optional[str] = Field(default=None, max_length=50)
     license: Optional[str] = Field(default=None, max_length=50)
+    empresa_id: Optional[int] = Field(default=None, ge=1)
     vehicle_id: Optional[int] = Field(default=None, ge=1)
     vehicle_name: Optional[str] = Field(default=None, min_length=1, max_length=50)
     rating: Optional[float] = Field(default=None, ge=0.0, le=5.0)
@@ -335,6 +339,8 @@ class DriverOut(BaseModel):
     name: str
     phone: Optional[str] = None
     license: Optional[str] = None
+    empresa_id: Optional[int] = None
+    empresa_nombre: Optional[str] = None
     vehicle_id: int
     vehicle_name: str
     rating: float
@@ -349,6 +355,8 @@ def _driver_row(r) -> DriverOut:
     joined = r.joined_at
     return DriverOut(
         driver_id=r.driver_id, name=r.name, phone=r.phone, license=r.license,
+        empresa_id=int(r.empresa_id) if r.empresa_id is not None else None,
+        empresa_nombre=getattr(r, "empresa_nombre", None),
         vehicle_id=int(r.vehicle_id), vehicle_name=r.vehicle_name,
         rating=float(r.rating), deliveries_30d=int(r.deliveries_30d),
         fail_rate_30d=float(r.fail_rate_30d),
@@ -367,14 +375,41 @@ def _refresh_state_maestros() -> None:
         pass  # Tolerante: el endpoint igual devolvió OK al cliente.
 
 
+def require_fleet_access(user: CurrentUser = Depends(current_user)) -> CurrentUser:
+    """Drivers/Vehicles: permite admin/ops o transport_manager (scopeado a su empresa).
+
+    Los endpoints que la usan deben validar empresa_id contra user.empresa_id en el
+    body/recurso vía _enforce_fleet_empresa.
+    """
+    if user.is_falabella:
+        return user
+    if user.role == "transport_manager" and user.empresa_id is not None:
+        return user
+    raise HTTPException(403, "Requiere rol falabella o transport_manager con empresa")
+
+
+def _enforce_fleet_empresa(user: CurrentUser, empresa_id: Optional[int]) -> None:
+    """transport_manager solo puede tocar recursos de SU empresa."""
+    if user.is_falabella:
+        return
+    if empresa_id is None:
+        raise HTTPException(400, "empresa_id requerido")
+    if user.empresa_id != empresa_id:
+        raise HTTPException(403, "Solo podés gestionar tu empresa")
+
+
 def _fetch_driver(driver_id: str) -> DriverOut:
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            """SELECT driver_id, name, phone, license, vehicle_id, vehicle_name,
-                       rating, deliveries_30d, fail_rate_30d, joined_at, active,
-                       is_problem_hidden
-                FROM fpoc.drivers WHERE driver_id = ?""",
+            """SELECT d.driver_id, d.name, d.phone, d.license, d.empresa_id,
+                       e.nombre AS empresa_nombre,
+                       d.vehicle_id, d.vehicle_name,
+                       d.rating, d.deliveries_30d, d.fail_rate_30d, d.joined_at, d.active,
+                       d.is_problem_hidden
+                FROM fpoc.drivers d
+                LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = d.empresa_id
+                WHERE d.driver_id = ?""",
             driver_id,
         )
         r = cur.fetchone()
@@ -387,9 +422,12 @@ def _fetch_vehicle(vehicle_id: int) -> VehicleOut:
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            """SELECT vehicle_id, name, type, plate, capacity_m3, driver_id, driver_name,
-                       depot_lat, depot_lon, year, active, is_problem_hidden
-                FROM fpoc.vehicles WHERE vehicle_id = ?""",
+            """SELECT v.vehicle_id, v.empresa_id, e.nombre AS empresa_nombre,
+                       v.name, v.type, v.plate, v.capacity_m3, v.driver_id, v.driver_name,
+                       v.depot_lat, v.depot_lon, v.year, v.active, v.is_problem_hidden
+                FROM fpoc.vehicles v
+                LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = v.empresa_id
+                WHERE v.vehicle_id = ?""",
             vehicle_id,
         )
         r = cur.fetchone()
@@ -399,30 +437,39 @@ def _fetch_vehicle(vehicle_id: int) -> VehicleOut:
 
 
 @router.get("/drivers", response_model=list[DriverOut])
-def list_drivers(_: CurrentUser = Depends(require_admin)) -> list[DriverOut]:
+def list_drivers(user: CurrentUser = Depends(require_fleet_access)) -> list[DriverOut]:
+    where = "" if user.is_falabella else "WHERE d.empresa_id = ?"
+    params: list = [] if user.is_falabella else [user.empresa_id]
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            """SELECT driver_id, name, phone, license, vehicle_id, vehicle_name,
-                       rating, deliveries_30d, fail_rate_30d, joined_at, active,
-                       is_problem_hidden
-                FROM fpoc.drivers ORDER BY vehicle_id"""
+            f"""SELECT d.driver_id, d.name, d.phone, d.license, d.empresa_id,
+                       e.nombre AS empresa_nombre,
+                       d.vehicle_id, d.vehicle_name,
+                       d.rating, d.deliveries_30d, d.fail_rate_30d, d.joined_at, d.active,
+                       d.is_problem_hidden
+                FROM fpoc.drivers d
+                LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = d.empresa_id
+                {where}
+                ORDER BY d.empresa_id, d.vehicle_id""",
+            *params,
         )
         return [_driver_row(r) for r in cur.fetchall()]
 
 
 @router.post("/drivers", response_model=DriverOut)
-def create_driver(req: DriverIn, _: CurrentUser = Depends(require_admin)) -> DriverOut:
+def create_driver(req: DriverIn, user: CurrentUser = Depends(require_fleet_access)) -> DriverOut:
+    _enforce_fleet_empresa(user, req.empresa_id)
     with get_conn() as cn:
         cur = cn.cursor()
         try:
             cur.execute(
                 """INSERT INTO fpoc.drivers
-                    (driver_id, name, phone, license, vehicle_id, vehicle_name,
+                    (driver_id, name, phone, license, empresa_id, vehicle_id, vehicle_name,
                      rating, deliveries_30d, fail_rate_30d, joined_at, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 req.driver_id, req.name, req.phone, req.license,
-                req.vehicle_id, req.vehicle_name,
+                req.empresa_id, req.vehicle_id, req.vehicle_name,
                 req.rating, req.deliveries_30d, req.fail_rate_30d,
                 req.joined_at.isoformat() if req.joined_at else None,
                 1 if req.active else 0,
@@ -437,9 +484,14 @@ def create_driver(req: DriverIn, _: CurrentUser = Depends(require_admin)) -> Dri
 
 @router.put("/drivers/{driver_id}", response_model=DriverOut)
 def update_driver(driver_id: str, req: DriverUpdate,
-                   _: CurrentUser = Depends(require_admin)) -> DriverOut:
+                   user: CurrentUser = Depends(require_fleet_access)) -> DriverOut:
+    # Verificar que el driver es de la empresa del manager (si aplica)
+    existing = _fetch_driver(driver_id)
+    _enforce_fleet_empresa(user, existing.empresa_id)
+    if req.empresa_id is not None:
+        _enforce_fleet_empresa(user, req.empresa_id)
     sets, params = [], []
-    for field in ["name", "phone", "license", "vehicle_id", "vehicle_name",
+    for field in ["name", "phone", "license", "empresa_id", "vehicle_id", "vehicle_name",
                    "rating", "deliveries_30d", "fail_rate_30d"]:
         v = getattr(req, field)
         if v is not None:
@@ -463,7 +515,9 @@ def update_driver(driver_id: str, req: DriverUpdate,
 
 
 @router.delete("/drivers/{driver_id}")
-def delete_driver(driver_id: str, _: CurrentUser = Depends(require_admin)) -> dict:
+def delete_driver(driver_id: str, user: CurrentUser = Depends(require_fleet_access)) -> dict:
+    existing = _fetch_driver(driver_id)
+    _enforce_fleet_empresa(user, existing.empresa_id)
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute("DELETE FROM fpoc.drivers WHERE driver_id = ?", driver_id)
@@ -479,6 +533,7 @@ def delete_driver(driver_id: str, _: CurrentUser = Depends(require_admin)) -> di
 # ============================================================================
 class VehicleIn(BaseModel):
     vehicle_id: int = Field(ge=1)
+    empresa_id: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=50)
     type: str = Field(min_length=1, max_length=50)
     plate: str = Field(min_length=1, max_length=20)
@@ -492,6 +547,7 @@ class VehicleIn(BaseModel):
 
 
 class VehicleUpdate(BaseModel):
+    empresa_id: Optional[int] = Field(default=None, ge=1)
     name: Optional[str] = Field(default=None, min_length=1, max_length=50)
     type: Optional[str] = Field(default=None, min_length=1, max_length=50)
     plate: Optional[str] = Field(default=None, min_length=1, max_length=20)
@@ -504,6 +560,8 @@ class VehicleUpdate(BaseModel):
 
 class VehicleOut(BaseModel):
     vehicle_id: int
+    empresa_id: Optional[int] = None
+    empresa_nombre: Optional[str] = None
     name: str
     type: str
     plate: str
@@ -519,7 +577,10 @@ class VehicleOut(BaseModel):
 
 def _vehicle_row(r) -> VehicleOut:
     return VehicleOut(
-        vehicle_id=int(r.vehicle_id), name=r.name, type=r.type, plate=r.plate,
+        vehicle_id=int(r.vehicle_id),
+        empresa_id=int(r.empresa_id) if r.empresa_id is not None else None,
+        empresa_nombre=getattr(r, "empresa_nombre", None),
+        name=r.name, type=r.type, plate=r.plate,
         capacity_m3=int(r.capacity_m3),
         driver_id=r.driver_id, driver_name=r.driver_name,
         depot_lat=float(r.depot_lat), depot_lon=float(r.depot_lon),
@@ -530,28 +591,36 @@ def _vehicle_row(r) -> VehicleOut:
 
 
 @router.get("/vehicles", response_model=list[VehicleOut])
-def list_vehicles(_: CurrentUser = Depends(require_admin)) -> list[VehicleOut]:
+def list_vehicles(user: CurrentUser = Depends(require_fleet_access)) -> list[VehicleOut]:
+    where = "" if user.is_falabella else "WHERE v.empresa_id = ?"
+    params: list = [] if user.is_falabella else [user.empresa_id]
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            """SELECT vehicle_id, name, type, plate, capacity_m3, driver_id, driver_name,
-                       depot_lat, depot_lon, year, active, is_problem_hidden
-                FROM fpoc.vehicles ORDER BY vehicle_id"""
+            f"""SELECT v.vehicle_id, v.empresa_id, e.nombre AS empresa_nombre,
+                       v.name, v.type, v.plate, v.capacity_m3, v.driver_id, v.driver_name,
+                       v.depot_lat, v.depot_lon, v.year, v.active, v.is_problem_hidden
+                FROM fpoc.vehicles v
+                LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = v.empresa_id
+                {where}
+                ORDER BY v.empresa_id, v.vehicle_id""",
+            *params,
         )
         return [_vehicle_row(r) for r in cur.fetchall()]
 
 
 @router.post("/vehicles", response_model=VehicleOut)
-def create_vehicle(req: VehicleIn, _: CurrentUser = Depends(require_admin)) -> VehicleOut:
+def create_vehicle(req: VehicleIn, user: CurrentUser = Depends(require_fleet_access)) -> VehicleOut:
+    _enforce_fleet_empresa(user, req.empresa_id)
     with get_conn() as cn:
         cur = cn.cursor()
         try:
             cur.execute(
                 """INSERT INTO fpoc.vehicles
-                    (vehicle_id, name, type, plate, capacity_m3, driver_id, driver_name,
+                    (vehicle_id, empresa_id, name, type, plate, capacity_m3, driver_id, driver_name,
                      depot_lat, depot_lon, year, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                req.vehicle_id, req.name, req.type, req.plate, req.capacity_m3,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                req.vehicle_id, req.empresa_id, req.name, req.type, req.plate, req.capacity_m3,
                 req.driver_id, req.driver_name, req.depot_lat, req.depot_lon,
                 req.year, 1 if req.active else 0,
             )
@@ -565,9 +634,13 @@ def create_vehicle(req: VehicleIn, _: CurrentUser = Depends(require_admin)) -> V
 
 @router.put("/vehicles/{vehicle_id}", response_model=VehicleOut)
 def update_vehicle(vehicle_id: int, req: VehicleUpdate,
-                    _: CurrentUser = Depends(require_admin)) -> VehicleOut:
+                    user: CurrentUser = Depends(require_fleet_access)) -> VehicleOut:
+    existing = _fetch_vehicle(vehicle_id)
+    _enforce_fleet_empresa(user, existing.empresa_id)
+    if req.empresa_id is not None:
+        _enforce_fleet_empresa(user, req.empresa_id)
     sets, params = [], []
-    for field in ["name", "type", "plate", "capacity_m3", "driver_id", "driver_name", "year"]:
+    for field in ["empresa_id", "name", "type", "plate", "capacity_m3", "driver_id", "driver_name", "year"]:
         v = getattr(req, field)
         if v is not None:
             sets.append(f"{field} = ?"); params.append(v)
@@ -588,7 +661,9 @@ def update_vehicle(vehicle_id: int, req: VehicleUpdate,
 
 
 @router.delete("/vehicles/{vehicle_id}")
-def delete_vehicle(vehicle_id: int, _: CurrentUser = Depends(require_admin)) -> dict:
+def delete_vehicle(vehicle_id: int, user: CurrentUser = Depends(require_fleet_access)) -> dict:
+    existing = _fetch_vehicle(vehicle_id)
+    _enforce_fleet_empresa(user, existing.empresa_id)
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute("DELETE FROM fpoc.vehicles WHERE vehicle_id = ?", vehicle_id)
@@ -597,6 +672,262 @@ def delete_vehicle(vehicle_id: int, _: CurrentUser = Depends(require_admin)) -> 
         cn.commit()
     _refresh_state_maestros()
     return {"deleted": vehicle_id}
+
+
+# ============================================================================
+# Dotacion diaria
+# ============================================================================
+DotacionEstado = Literal["disponible", "ausente", "licencia", "mantencion", "baja", "reemplazo"]
+
+
+class DotacionUpdate(BaseModel):
+    fecha: date
+    empresa_id: int = Field(ge=1)
+    driver_id: Optional[str] = Field(default=None, max_length=20)
+    vehicle_id: Optional[int] = Field(default=None, ge=1)
+    estado: DotacionEstado = "disponible"
+    motivo: Optional[str] = Field(default=None, max_length=500)
+
+
+class DotacionRowOut(BaseModel):
+    fecha: str
+    empresa_id: int
+    empresa_nombre: Optional[str] = None
+    driver_id: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_active: bool = True
+    default_vehicle_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    vehicle_name: Optional[str] = None
+    plate: Optional[str] = None
+    vehicle_active: bool = True
+    estado: DotacionEstado = "disponible"
+    motivo: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+def _can_access_empresa(user: CurrentUser, empresa_id: int) -> None:
+    if user.is_falabella:
+        return
+    if user.role == "transport_manager" and user.empresa_id == empresa_id:
+        return
+    raise HTTPException(403, "sin permisos para esa empresa")
+
+
+def _dotacion_empresa_ids(user: CurrentUser, empresa_id: Optional[int]) -> list[int]:
+    if not user.is_falabella:
+        if user.empresa_id is None:
+            return []
+        return [int(user.empresa_id)]
+    if empresa_id is not None:
+        return [int(empresa_id)]
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute("SELECT empresa_id FROM fpoc.empresas_transporte WHERE activo = 1 ORDER BY empresa_id")
+        return [int(r.empresa_id) for r in cur.fetchall()]
+
+
+def _fetch_dotacion_rows(fecha: date, empresa_ids: list[int]) -> list[DotacionRowOut]:
+    if not empresa_ids:
+        return []
+    marks = ",".join(["?"] * len(empresa_ids))
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            f"""
+            SELECT empresa_id, nombre
+            FROM fpoc.empresas_transporte
+            WHERE empresa_id IN ({marks})
+            """,
+            *empresa_ids,
+        )
+        empresas = {int(r.empresa_id): r.nombre for r in cur.fetchall()}
+
+        cur.execute(
+            f"""
+            SELECT d.driver_id, d.name, d.empresa_id, d.vehicle_id, d.vehicle_name, d.active
+            FROM fpoc.drivers d
+            WHERE d.empresa_id IN ({marks}) AND d.active = 1
+            ORDER BY d.empresa_id, d.vehicle_id, d.name
+            """,
+            *empresa_ids,
+        )
+        drivers = cur.fetchall()
+
+        cur.execute(
+            f"""
+            SELECT v.vehicle_id, v.empresa_id, v.name, v.plate, v.driver_id, v.driver_name, v.active
+            FROM fpoc.vehicles v
+            WHERE v.empresa_id IN ({marks}) AND v.active = 1
+            ORDER BY v.empresa_id, v.vehicle_id
+            """,
+            *empresa_ids,
+        )
+        vehicles = cur.fetchall()
+        vehicle_by_id = {int(v.vehicle_id): v for v in vehicles}
+
+        cur.execute(
+            f"""
+            SELECT dotacion_id, fecha, empresa_id, driver_id, vehicle_id, estado, motivo, updated_at
+            FROM fpoc.dotacion_diaria
+            WHERE fecha = ? AND empresa_id IN ({marks})
+            """,
+            fecha.isoformat(), *empresa_ids,
+        )
+        overrides = cur.fetchall()
+
+    by_driver = {str(r.driver_id): r for r in overrides if r.driver_id is not None}
+    by_vehicle = {int(r.vehicle_id): r for r in overrides if r.vehicle_id is not None}
+    used_vehicle_ids: set[int] = set()
+    out: list[DotacionRowOut] = []
+
+    for d in drivers:
+        default_vid = int(d.vehicle_id) if d.vehicle_id is not None else None
+        ov = by_driver.get(str(d.driver_id))
+        if ov is None and default_vid is not None:
+            ov = by_vehicle.get(default_vid)
+        vid = int(ov.vehicle_id) if ov is not None and ov.vehicle_id is not None else default_vid
+        vehicle = vehicle_by_id.get(vid) if vid is not None else None
+        if vid is not None:
+            used_vehicle_ids.add(vid)
+        estado = str(ov.estado) if ov is not None else "disponible"
+        out.append(DotacionRowOut(
+            fecha=fecha.isoformat(),
+            empresa_id=int(d.empresa_id),
+            empresa_nombre=empresas.get(int(d.empresa_id)),
+            driver_id=str(d.driver_id),
+            driver_name=str(d.name),
+            driver_active=bool(d.active),
+            default_vehicle_id=default_vid,
+            vehicle_id=vid,
+            vehicle_name=(str(vehicle.name) if vehicle is not None else d.vehicle_name),
+            plate=(str(vehicle.plate) if vehicle is not None and vehicle.plate is not None else None),
+            vehicle_active=bool(vehicle.active) if vehicle is not None else True,
+            estado=estado,  # type: ignore[arg-type]
+            motivo=str(ov.motivo) if ov is not None and ov.motivo else None,
+            updated_at=(
+                ov.updated_at.isoformat()
+                if ov is not None and hasattr(ov.updated_at, "isoformat")
+                else (str(ov.updated_at) if ov is not None and ov.updated_at is not None else None)
+            ),
+        ))
+
+    for v in vehicles:
+        vid = int(v.vehicle_id)
+        if vid in used_vehicle_ids:
+            continue
+        ov = by_vehicle.get(vid)
+        estado = str(ov.estado) if ov is not None else "disponible"
+        out.append(DotacionRowOut(
+            fecha=fecha.isoformat(),
+            empresa_id=int(v.empresa_id),
+            empresa_nombre=empresas.get(int(v.empresa_id)),
+            driver_id=None,
+            driver_name=None,
+            driver_active=True,
+            default_vehicle_id=vid,
+            vehicle_id=vid,
+            vehicle_name=str(v.name),
+            plate=str(v.plate) if v.plate is not None else None,
+            vehicle_active=bool(v.active),
+            estado=estado,  # type: ignore[arg-type]
+            motivo=str(ov.motivo) if ov is not None and ov.motivo else None,
+            updated_at=(
+                ov.updated_at.isoformat()
+                if ov is not None and hasattr(ov.updated_at, "isoformat")
+                else (str(ov.updated_at) if ov is not None and ov.updated_at is not None else None)
+            ),
+        ))
+
+    out.sort(key=lambda r: (r.empresa_id, r.vehicle_id or 0, r.driver_name or ""))
+    return out
+
+
+def _validate_dotacion_target(cn, req: DotacionUpdate) -> None:
+    if req.driver_id is None and req.vehicle_id is None:
+        raise HTTPException(400, "driver_id o vehicle_id requerido")
+    cur = cn.cursor()
+    if req.driver_id is not None:
+        cur.execute("SELECT empresa_id FROM fpoc.drivers WHERE driver_id = ?", req.driver_id)
+        d = cur.fetchone()
+        if not d:
+            raise HTTPException(404, "driver no encontrado")
+        if int(d.empresa_id) != req.empresa_id:
+            raise HTTPException(400, "driver no pertenece a la empresa indicada")
+    if req.vehicle_id is not None:
+        cur.execute("SELECT empresa_id FROM fpoc.vehicles WHERE vehicle_id = ?", req.vehicle_id)
+        v = cur.fetchone()
+        if not v:
+            raise HTTPException(404, "vehicle no encontrado")
+        if int(v.empresa_id) != req.empresa_id:
+            raise HTTPException(400, "vehiculo no pertenece a la empresa indicada")
+
+
+@router.get("/dotacion-diaria", response_model=list[DotacionRowOut])
+def list_dotacion_diaria(
+    fecha: Optional[date] = Query(default=None),
+    empresa_id: Optional[int] = Query(default=None),
+    user: CurrentUser = Depends(current_user),
+) -> list[DotacionRowOut]:
+    fecha = fecha or date.today()
+    empresa_ids = _dotacion_empresa_ids(user, empresa_id)
+    for eid in empresa_ids:
+        _can_access_empresa(user, eid)
+    return _fetch_dotacion_rows(fecha, empresa_ids)
+
+
+@router.put("/dotacion-diaria")
+def upsert_dotacion_diaria(
+    req: DotacionUpdate,
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    _can_access_empresa(user, req.empresa_id)
+    with get_conn() as cn:
+        _validate_dotacion_target(cn, req)
+        cur = cn.cursor()
+        if req.driver_id is not None:
+            cur.execute(
+                """
+                SELECT dotacion_id
+                FROM fpoc.dotacion_diaria
+                WHERE fecha = ? AND empresa_id = ? AND driver_id = ?
+                """,
+                req.fecha.isoformat(), req.empresa_id, req.driver_id,
+            )
+        else:
+            cur.execute(
+                """
+                SELECT dotacion_id
+                FROM fpoc.dotacion_diaria
+                WHERE fecha = ? AND empresa_id = ? AND driver_id IS NULL AND vehicle_id = ?
+                """,
+                req.fecha.isoformat(), req.empresa_id, req.vehicle_id,
+            )
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(
+                """
+                UPDATE fpoc.dotacion_diaria
+                   SET vehicle_id = ?, estado = ?, motivo = ?,
+                       updated_by_user_id = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE dotacion_id = ?
+                """,
+                req.vehicle_id, req.estado, req.motivo, user.user_id, int(existing.dotacion_id),
+            )
+            dotacion_id = int(existing.dotacion_id)
+        else:
+            cur.execute(
+                """
+                INSERT INTO fpoc.dotacion_diaria
+                    (fecha, empresa_id, driver_id, vehicle_id, estado, motivo, updated_by_user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                req.fecha.isoformat(), req.empresa_id, req.driver_id, req.vehicle_id,
+                req.estado, req.motivo, user.user_id,
+            )
+            dotacion_id = int(getattr(cur, "lastrowid", 0) or 0)
+        cn.commit()
+    return {"status": "ok", "dotacion_id": dotacion_id}
 
 
 # ============================================================================
@@ -758,3 +1089,294 @@ def delete_client(customer_id: str, _: CurrentUser = Depends(require_admin)) -> 
         cn.commit()
     _refresh_state_maestros()
     return {"deleted": customer_id}
+
+
+# ============================================================================
+# Excel template + upload masivo (drivers, vehicles, dotacion)
+# ============================================================================
+class BulkUploadResult(BaseModel):
+    created: int = 0
+    updated: int = 0
+    errors: list[str] = []
+
+
+def _xlsx_response(filename: str, headers: list[str], rows: list[list[Any]]) -> StreamingResponse:
+    """Genera un xlsx in-memory con headers + rows. Usa openpyxl (ya en deps)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.append(headers)
+    for r in rows:
+        ws.append(r)
+    # Formatear header en negrita
+    for cell in ws[1]:
+        cell.font = cell.font.copy(bold=True)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _read_xlsx_rows(file_bytes: bytes) -> tuple[list[str], list[list[Any]]]:
+    """Devuelve (headers, rows). Headers normalizados a lower."""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        headers_raw = next(rows_iter)
+    except StopIteration:
+        return [], []
+    headers = [str(h).strip().lower() if h is not None else "" for h in headers_raw]
+    rows = [list(r) for r in rows_iter if any(c is not None for c in r)]
+    return headers, rows
+
+
+# ----- Drivers -----
+@router.get("/drivers/template")
+def drivers_template(empresa_id: int = Query(...),
+                      user: CurrentUser = Depends(require_fleet_access)) -> StreamingResponse:
+    _enforce_fleet_empresa(user, empresa_id)
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """SELECT driver_id, name, phone, license, vehicle_id, vehicle_name, active
+                FROM fpoc.drivers WHERE empresa_id = ? ORDER BY driver_id""",
+            empresa_id,
+        )
+        rows = [
+            [r.driver_id, r.name, r.phone or "", r.license or "",
+             int(r.vehicle_id), r.vehicle_name or "", 1 if r.active else 0]
+            for r in cur.fetchall()
+        ]
+    headers = ["driver_id", "name", "phone", "license", "vehicle_id", "vehicle_name", "active"]
+    return _xlsx_response(f"drivers_empresa_{empresa_id}.xlsx", headers, rows)
+
+
+@router.post("/drivers/upload", response_model=BulkUploadResult)
+async def drivers_upload(
+    empresa_id: int = Query(...),
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(require_fleet_access),
+) -> BulkUploadResult:
+    _enforce_fleet_empresa(user, empresa_id)
+    headers, rows = _read_xlsx_rows(await file.read())
+    required = ["driver_id", "name", "vehicle_id", "vehicle_name"]
+    missing = [h for h in required if h not in headers]
+    if missing:
+        raise HTTPException(400, f"Faltan columnas requeridas: {missing}")
+    idx = {h: i for i, h in enumerate(headers)}
+    result = BulkUploadResult()
+    with get_conn() as cn:
+        cur = cn.cursor()
+        for line_num, r in enumerate(rows, start=2):  # row 1 es header
+            try:
+                driver_id = str(r[idx["driver_id"]]).strip()
+                if not driver_id:
+                    continue
+                name = str(r[idx["name"]] or "").strip()
+                phone = str(r[idx["phone"]] or "").strip() or None if "phone" in idx else None
+                lic = str(r[idx["license"]] or "").strip() or None if "license" in idx else None
+                vehicle_id = int(r[idx["vehicle_id"]])
+                vehicle_name = str(r[idx["vehicle_name"]] or "").strip()
+                active = bool(int(r[idx["active"]] or 1)) if "active" in idx else True
+                # Existe? -> update, sino insert
+                cur.execute("SELECT 1 FROM fpoc.drivers WHERE driver_id = ?", driver_id)
+                if cur.fetchone():
+                    cur.execute(
+                        """UPDATE fpoc.drivers SET name=?, phone=?, license=?, empresa_id=?,
+                                  vehicle_id=?, vehicle_name=?, active=?, updated_at=CURRENT_TIMESTAMP
+                                WHERE driver_id=?""",
+                        name, phone, lic, empresa_id, vehicle_id, vehicle_name,
+                        1 if active else 0, driver_id,
+                    )
+                    result.updated += 1
+                else:
+                    cur.execute(
+                        """INSERT INTO fpoc.drivers
+                            (driver_id, name, phone, license, empresa_id, vehicle_id, vehicle_name, active)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        driver_id, name, phone, lic, empresa_id, vehicle_id, vehicle_name,
+                        1 if active else 0,
+                    )
+                    result.created += 1
+            except Exception as e:  # noqa: BLE001
+                result.errors.append(f"fila {line_num}: {type(e).__name__}: {e}")
+        cn.commit()
+    _refresh_state_maestros()
+    return result
+
+
+# ----- Vehicles -----
+@router.get("/vehicles/template")
+def vehicles_template(empresa_id: int = Query(...),
+                       user: CurrentUser = Depends(require_fleet_access)) -> StreamingResponse:
+    _enforce_fleet_empresa(user, empresa_id)
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """SELECT vehicle_id, name, type, plate, capacity_m3, driver_id, driver_name,
+                       depot_lat, depot_lon, year, active
+                FROM fpoc.vehicles WHERE empresa_id = ? ORDER BY vehicle_id""",
+            empresa_id,
+        )
+        rows = [
+            [int(r.vehicle_id), r.name, r.type or "", r.plate or "",
+             int(r.capacity_m3 or 0), r.driver_id or "", r.driver_name or "",
+             float(r.depot_lat), float(r.depot_lon),
+             int(r.year) if r.year is not None else "",
+             1 if r.active else 0]
+            for r in cur.fetchall()
+        ]
+    headers = ["vehicle_id", "name", "type", "plate", "capacity_m3",
+               "driver_id", "driver_name", "depot_lat", "depot_lon", "year", "active"]
+    return _xlsx_response(f"vehicles_empresa_{empresa_id}.xlsx", headers, rows)
+
+
+@router.post("/vehicles/upload", response_model=BulkUploadResult)
+async def vehicles_upload(
+    empresa_id: int = Query(...),
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(require_fleet_access),
+) -> BulkUploadResult:
+    _enforce_fleet_empresa(user, empresa_id)
+    headers, rows = _read_xlsx_rows(await file.read())
+    required = ["vehicle_id", "name", "type", "plate", "capacity_m3"]
+    missing = [h for h in required if h not in headers]
+    if missing:
+        raise HTTPException(400, f"Faltan columnas requeridas: {missing}")
+    idx = {h: i for i, h in enumerate(headers)}
+    result = BulkUploadResult()
+    with get_conn() as cn:
+        cur = cn.cursor()
+        for line_num, r in enumerate(rows, start=2):
+            try:
+                vid = int(r[idx["vehicle_id"]])
+                name = str(r[idx["name"]] or "").strip()
+                vtype = str(r[idx["type"]] or "").strip()
+                plate = str(r[idx["plate"]] or "").strip()
+                cap = int(r[idx["capacity_m3"]] or 0)
+                drv_id = str(r[idx["driver_id"]] or "").strip() or None if "driver_id" in idx else None
+                drv_name = str(r[idx["driver_name"]] or "").strip() or None if "driver_name" in idx else None
+                lat = float(r[idx["depot_lat"]] or -33.45) if "depot_lat" in idx else -33.45
+                lon = float(r[idx["depot_lon"]] or -70.66) if "depot_lon" in idx else -70.66
+                year = int(r[idx["year"]]) if "year" in idx and r[idx["year"]] not in (None, "") else None
+                active = bool(int(r[idx["active"]] or 1)) if "active" in idx else True
+                cur.execute("SELECT 1 FROM fpoc.vehicles WHERE vehicle_id = ?", vid)
+                if cur.fetchone():
+                    cur.execute(
+                        """UPDATE fpoc.vehicles SET empresa_id=?, name=?, type=?, plate=?,
+                                  capacity_m3=?, driver_id=?, driver_name=?, depot_lat=?,
+                                  depot_lon=?, year=?, active=?, updated_at=CURRENT_TIMESTAMP
+                                WHERE vehicle_id=?""",
+                        empresa_id, name, vtype, plate, cap, drv_id, drv_name, lat, lon,
+                        year, 1 if active else 0, vid,
+                    )
+                    result.updated += 1
+                else:
+                    cur.execute(
+                        """INSERT INTO fpoc.vehicles
+                            (vehicle_id, empresa_id, name, type, plate, capacity_m3, driver_id,
+                             driver_name, depot_lat, depot_lon, year, active)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        vid, empresa_id, name, vtype, plate, cap, drv_id, drv_name, lat, lon,
+                        year, 1 if active else 0,
+                    )
+                    result.created += 1
+            except Exception as e:  # noqa: BLE001
+                result.errors.append(f"fila {line_num}: {type(e).__name__}: {e}")
+        cn.commit()
+    _refresh_state_maestros()
+    return result
+
+
+# ----- Dotación -----
+@router.get("/dotacion-diaria/template")
+def dotacion_template(
+    fecha: date = Query(...),
+    empresa_id: Optional[int] = Query(default=None),
+    user: CurrentUser = Depends(current_user),
+) -> StreamingResponse:
+    """Template pre-rellenado con drivers de la(s) empresa(s) y su estado actual."""
+    empresa_ids = _dotacion_empresa_ids(user, empresa_id)
+    for eid in empresa_ids:
+        _can_access_empresa(user, eid)
+    rows_data = _fetch_dotacion_rows(fecha, empresa_ids)
+    headers = ["empresa_id", "driver_id", "driver_name", "vehicle_id", "estado", "motivo"]
+    rows = [
+        [r.empresa_id, r.driver_id or "", r.driver_name or "",
+         r.vehicle_id if r.vehicle_id is not None else "",
+         r.estado, r.motivo or ""]
+        for r in rows_data
+    ]
+    suffix = f"empresa_{empresa_id}" if empresa_id else "todas"
+    return _xlsx_response(f"dotacion_{fecha.isoformat()}_{suffix}.xlsx", headers, rows)
+
+
+@router.post("/dotacion-diaria/upload", response_model=BulkUploadResult)
+async def dotacion_upload(
+    fecha: date = Query(...),
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(current_user),
+) -> BulkUploadResult:
+    headers, rows = _read_xlsx_rows(await file.read())
+    required = ["empresa_id", "driver_id", "estado"]
+    missing = [h for h in required if h not in headers]
+    if missing:
+        raise HTTPException(400, f"Faltan columnas requeridas: {missing}")
+    idx = {h: i for i, h in enumerate(headers)}
+    valid_estados = {"disponible", "ausente", "licencia", "mantencion", "baja", "reemplazo"}
+    result = BulkUploadResult()
+    with get_conn() as cn:
+        cur = cn.cursor()
+        for line_num, r in enumerate(rows, start=2):
+            try:
+                eid = int(r[idx["empresa_id"]])
+                _can_access_empresa(user, eid)
+                drv_id = str(r[idx["driver_id"]]).strip() or None
+                vid = (int(r[idx["vehicle_id"]])
+                        if "vehicle_id" in idx and r[idx["vehicle_id"]] not in (None, "") else None)
+                estado = str(r[idx["estado"]] or "disponible").strip().lower()
+                if estado not in valid_estados:
+                    raise ValueError(f"estado inválido: {estado}")
+                motivo = str(r[idx["motivo"]] or "").strip() or None if "motivo" in idx else None
+                if drv_id is None and vid is None:
+                    raise ValueError("driver_id o vehicle_id requerido")
+                # Buscar override existente
+                if drv_id:
+                    cur.execute(
+                        "SELECT dotacion_id FROM fpoc.dotacion_diaria WHERE fecha=? AND empresa_id=? AND driver_id=?",
+                        fecha.isoformat(), eid, drv_id,
+                    )
+                else:
+                    cur.execute(
+                        "SELECT dotacion_id FROM fpoc.dotacion_diaria WHERE fecha=? AND empresa_id=? AND vehicle_id=?",
+                        fecha.isoformat(), eid, vid,
+                    )
+                existing = cur.fetchone()
+                if existing:
+                    cur.execute(
+                        """UPDATE fpoc.dotacion_diaria
+                                SET vehicle_id=?, estado=?, motivo=?, updated_by_user_id=?, updated_at=CURRENT_TIMESTAMP
+                              WHERE dotacion_id=?""",
+                        vid, estado, motivo, user.user_id, int(existing.dotacion_id),
+                    )
+                    result.updated += 1
+                else:
+                    cur.execute(
+                        """INSERT INTO fpoc.dotacion_diaria
+                            (fecha, empresa_id, driver_id, vehicle_id, estado, motivo, updated_by_user_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        fecha.isoformat(), eid, drv_id, vid, estado, motivo, user.user_id,
+                    )
+                    result.created += 1
+            except HTTPException:
+                raise
+            except Exception as e:  # noqa: BLE001
+                result.errors.append(f"fila {line_num}: {type(e).__name__}: {e}")
+        cn.commit()
+    return result
