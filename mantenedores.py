@@ -257,27 +257,27 @@ def create_user(req: UserIn, user: CurrentUser = Depends(current_user)) -> UserO
                 raise HTTPException(400, f"driver_id {req.driver_id} no existe")
             if int(row.empresa_id) != req.empresa_id:
                 raise HTTPException(400, "driver_id no pertenece a la empresa indicada")
+    email_lower = req.email.lower()
     with get_conn() as cn:
         cur = cn.cursor()
         try:
+            # INSERT portable sqlite/sqlserver: sin RETURNING (T-SQL no lo soporta).
             cur.execute(
                 """
                 INSERT INTO fpoc.users
                   (email, password_hash, display_name, role, empresa_id, driver_id, activo,
                    phone_e164, notify_whatsapp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING user_id
                 """,
-                req.email.lower(), bcrypt.hash(req.password), req.display_name,
+                email_lower, bcrypt.hash(req.password), req.display_name,
                 req.role, req.empresa_id, req.driver_id, 1 if req.activo else 0,
                 req.phone_e164, 1 if req.notify_whatsapp else 0,
             )
-            new_id = int(cur.fetchone()[0])
             cn.commit()
         except Exception as e:  # noqa: BLE001
             cn.rollback()
             raise HTTPException(409, f"email duplicado o datos inválidos: {e}")
-        cur.execute(_USER_SELECT + " WHERE u.user_id = ?", new_id)
+        cur.execute(_USER_SELECT + " WHERE u.email = ?", email_lower)
         return _user_row(cur.fetchone())
 
 

@@ -173,6 +173,8 @@ def _log_notification(
     region: Optional[str] = None,
 ) -> int:
     cur = cn.cursor()
+    # INSERT portable sin RETURNING. Después tomamos last_insert_rowid()
+    # (db.py traduce a SCOPE_IDENTITY() en SQL Server).
     cur.execute(
         """
         INSERT INTO fpoc.notifications_log
@@ -180,7 +182,6 @@ def _log_notification(
            twilio_sid, status, error_msg, triggered_by,
            content_sid, content_variables, region)
         VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        RETURNING notification_id
         """,
         user_id, to_number, subject, body, tracking_id,
         twilio_sid, status, error, triggered_by,
@@ -188,6 +189,7 @@ def _log_notification(
         json.dumps(content_variables) if content_variables else None,
         region,
     )
+    cur.execute("SELECT last_insert_rowid()")
     new_id = int(cur.fetchone()[0])
     cn.commit()
     return new_id

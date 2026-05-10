@@ -405,21 +405,28 @@ def create_vip(req: VipClientCreate, user: CurrentUser = Depends(require_admin))
     with get_conn() as cn:
         cur = cn.cursor()
         try:
+            # INSERT portable sin RETURNING (T-SQL no soporta esa cláusula).
             cur.execute(
-                f"""
+                """
                 INSERT INTO fpoc.vip_clients
                   (match_type, match_value, empresa_id, tier, notes,
                    deadline_time, alert_minutes_before, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING {_SELECT_VIP_COLS}
                 """,
                 req.match_type, req.match_value, req.empresa_id,
                 req.tier, req.notes,
                 deadline, amb,
                 user.user_id,
             )
-            r = cur.fetchone()
             cn.commit()
+            cur.execute(
+                f"""SELECT {_SELECT_VIP_COLS}
+                    FROM fpoc.vip_clients
+                    WHERE match_type = ? AND match_value = ?
+                      AND ((? IS NULL AND empresa_id IS NULL) OR empresa_id = ?)""",
+                req.match_type, req.match_value, req.empresa_id, req.empresa_id,
+            )
+            r = cur.fetchone()
         except Exception as e:  # noqa: BLE001
             cn.rollback()
             msg = str(e)
