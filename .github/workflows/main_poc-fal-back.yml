@@ -77,4 +77,8 @@ jobs:
         with:
           app-name: 'poc-fal-back'
           slot-name: 'Production'
-          
+
+      - name: Restart Azure Web App
+        run: |
+          rg=$(az resource list --name poc-fal-back --resource-type Microsoft.Web/sites --query "[0].resourceGroup" -o tsv)
+          az webapp restart --name poc-fal-back --resource-group "$rg"
