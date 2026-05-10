@@ -108,6 +108,12 @@ _SELECT_VIP_COLS = (
 )
 
 
+def _snapshot_values(df, column: str) -> set[str]:
+    if column not in df.columns:
+        return set()
+    return {str(v) for v in df[column].dropna().tolist() if str(v)}
+
+
 # =============================================================================
 # LLM parser de notas VIP
 # =============================================================================
@@ -322,28 +328,19 @@ def list_vip(
             extra_where = " AND match_value LIKE ?"
             extra_params = [f"%{q_clean}%"]
 
+    day_values: dict[str, set[str]] | None = None
     if solo_del_dia:
         df = STATE.snapshot_df
         if df is None or df.empty:
             return []
-        titles = {str(t) for t in df.get("title", []).tolist() if t}
-        customers = {str(c) for c in df.get("customer_id", []).tolist() if c}
-        refs = {str(r) for r in df.get("reference", []).tolist() if r}
-        # Si no hay nada que cruzar, no devuelve VIPs
-        if not (titles or customers or refs):
+        day_values = {
+            "title": _snapshot_values(df, "title"),
+            "customer_id": _snapshot_values(df, "customer_id"),
+            "reference": _snapshot_values(df, "reference"),
+        }
+        # Si no hay nada que cruzar, no devuelve VIPs.
+        if not any(day_values.values()):
             return []
-        clauses = []
-        # Construimos placeholders por grupo. Si un grupo está vacío, lo omitimos.
-        if titles:
-            clauses.append(f"(match_type='title' AND match_value IN ({','.join('?' * len(titles))}))")
-            extra_params.extend(titles)
-        if customers:
-            clauses.append(f"(match_type='customer_id' AND match_value IN ({','.join('?' * len(customers))}))")
-            extra_params.extend(customers)
-        if refs:
-            clauses.append(f"(match_type='reference' AND match_value IN ({','.join('?' * len(refs))}))")
-            extra_params.extend(refs)
-        extra_where += " AND (" + " OR ".join(clauses) + ")"
 
     if empresa_id is not None:
         if empresa_id == -1:
@@ -384,6 +381,11 @@ def list_vip(
                 user.empresa_id, *extra_params,
             )
         rows = cur.fetchall()
+    if day_values is not None:
+        rows = [
+            r for r in rows
+            if str(r.match_value) in day_values.get(str(r.match_type), set())
+        ]
     return [_row_to_vip(r) for r in rows]
 
 
