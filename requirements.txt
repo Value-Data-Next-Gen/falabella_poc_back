@@ -12,6 +12,7 @@ pydantic>=2.5.0
 pyodbc>=5.1.0
 python-dotenv>=1.0.0
 openpyxl>=3.1.0
+azure-storage-blob>=12.19.0
 PyJWT>=2.8.0
 passlib[bcrypt]>=1.7.4
 bcrypt<4.1  # passlib 1.7.4 reads bcrypt.__about__, removed in bcrypt 4.1+
