@@ -433,17 +433,27 @@ def import_mock(
             cn.commit()
             inserted = _insert_batch(cn, target_date, n)
             cur = cn.cursor()
+            # Upsert portátil sqlite/sqlserver: chequear primero, INSERT o UPDATE.
+            # ON CONFLICT es sqlite-only; MERGE es T-SQL. Esta forma anda en ambos.
             cur.execute(
-                """
-                INSERT INTO fpoc_planificacion_imports (fecha, count, imported_by_user_id)
-                VALUES (?, ?, ?)
-                ON CONFLICT(fecha) DO UPDATE SET
-                    count = excluded.count,
-                    imported_at = CURRENT_TIMESTAMP,
-                    imported_by_user_id = excluded.imported_by_user_id
-                """,
-                (target_date.isoformat(), inserted, user.user_id),
+                "SELECT 1 FROM fpoc_planificacion_imports WHERE fecha = ?",
+                (target_date.isoformat(),),
             )
+            if cur.fetchone():
+                cur.execute(
+                    """UPDATE fpoc_planificacion_imports
+                          SET count = ?, imported_at = CURRENT_TIMESTAMP,
+                              imported_by_user_id = ?
+                        WHERE fecha = ?""",
+                    (inserted, user.user_id, target_date.isoformat()),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO fpoc_planificacion_imports
+                            (fecha, count, imported_by_user_id)
+                         VALUES (?, ?, ?)""",
+                    (target_date.isoformat(), inserted, user.user_id),
+                )
             cn.commit()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"Error importando: {e}")

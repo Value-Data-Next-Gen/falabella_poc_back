@@ -97,17 +97,23 @@ def _set_float(key: str, value: float, user_id: Optional[int]) -> float:
     with _LOCK:
         with get_conn() as cn:
             cur = cn.cursor()
-            cur.execute(
-                """
-                INSERT INTO fpoc_app_config (key, value, updated_at, updated_by_user_id)
-                VALUES (?, ?, CURRENT_TIMESTAMP, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    value = excluded.value,
-                    updated_at = CURRENT_TIMESTAMP,
-                    updated_by_user_id = excluded.updated_by_user_id
-                """,
-                (key, str(v), user_id),
-            )
+            # Upsert portátil sqlite/sqlserver (ON CONFLICT es sqlite-only).
+            cur.execute("SELECT 1 FROM fpoc_app_config WHERE key = ?", (key,))
+            if cur.fetchone():
+                cur.execute(
+                    """UPDATE fpoc_app_config
+                          SET value = ?, updated_at = CURRENT_TIMESTAMP,
+                              updated_by_user_id = ?
+                        WHERE key = ?""",
+                    (str(v), user_id, key),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO fpoc_app_config
+                          (key, value, updated_at, updated_by_user_id)
+                         VALUES (?, ?, CURRENT_TIMESTAMP, ?)""",
+                    (key, str(v), user_id),
+                )
             cn.commit()
         _CACHE[key] = v
     logger.info(f"[app_config] {key} = {v} (by user_id={user_id})")

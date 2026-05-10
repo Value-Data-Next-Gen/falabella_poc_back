@@ -80,18 +80,26 @@ def set_priority(
 ) -> PriorityOverride:
     with get_conn() as cn:
         cur = cn.cursor()
+        # Upsert portátil sqlite/sqlserver (ON CONFLICT es sqlite-only).
         cur.execute(
-            """
-            INSERT INTO fpoc.visit_priority_overrides (tracking_id, priority, reason, set_by)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(tracking_id) DO UPDATE SET
-                priority = excluded.priority,
-                reason   = excluded.reason,
-                set_by   = excluded.set_by,
-                set_at   = CURRENT_TIMESTAMP
-            """,
-            tracking_id, req.priority, req.reason, user.user_id,
+            "SELECT 1 FROM fpoc.visit_priority_overrides WHERE tracking_id = ?",
+            tracking_id,
         )
+        if cur.fetchone():
+            cur.execute(
+                """UPDATE fpoc.visit_priority_overrides
+                      SET priority = ?, reason = ?, set_by = ?,
+                          set_at = CURRENT_TIMESTAMP
+                    WHERE tracking_id = ?""",
+                req.priority, req.reason, user.user_id, tracking_id,
+            )
+        else:
+            cur.execute(
+                """INSERT INTO fpoc.visit_priority_overrides
+                        (tracking_id, priority, reason, set_by)
+                     VALUES (?, ?, ?, ?)""",
+                tracking_id, req.priority, req.reason, user.user_id,
+            )
         cn.commit()
 
         cur.execute(

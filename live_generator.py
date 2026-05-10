@@ -127,7 +127,11 @@ def _choose_from(rng: random.Random, pool: list) -> str:
 def _load_real_drivers() -> list[tuple[str, int]]:
     """Lee los drivers REALES (fpoc_drivers + onboardeados via WhatsApp) para
     que las visitas generadas/importadas matcheen con los conductores que el
-    cliente ve en mantenedores. Cae a DRIVER_NAMES si la tabla está vacía."""
+    cliente ve en mantenedores. Cae a DRIVER_NAMES si la tabla está vacía.
+
+    DEPRECATED uso interno: usar _load_drivers_by_empresa para preservar la
+    consistencia driver↔empresa.
+    """
     try:
         from db import get_conn
         with get_conn() as cn:
@@ -145,17 +149,80 @@ def _load_real_drivers() -> list[tuple[str, int]]:
     return [(n, i + 1) for i, n in enumerate(DRIVER_NAMES[:12])]
 
 
+def _load_drivers_by_empresa(target_date: Optional[date] = None) -> dict[int, list[tuple[str, int]]]:
+    """Devuelve {empresa_id: [(driver_name, vehicle_id), ...]} con drivers ACTIVOS
+    y NO bloqueados por dotacion_diaria para `target_date` (si se pasa).
+
+    Bloqueados = estado en (ausente, licencia, mantencion, baja). El generator
+    debe respetar la asignación driver→empresa y la disponibilidad del día.
+    """
+    out: dict[int, list[tuple[str, int]]] = {}
+    blocked_estados = ("ausente", "licencia", "mantencion", "baja")
+    try:
+        from db import get_conn
+        with get_conn() as cn:
+            cur = cn.cursor()
+            # Drivers activos con empresa
+            cur.execute(
+                "SELECT driver_id, name, empresa_id, vehicle_id "
+                "FROM fpoc_drivers "
+                "WHERE active = 1 AND empresa_id IS NOT NULL "
+                "AND name IS NOT NULL AND vehicle_id IS NOT NULL"
+            )
+            drivers = [(r[0], r[1], int(r[2]), int(r[3])) for r in cur.fetchall()]
+
+            # Drivers bloqueados por dotacion para la fecha
+            blocked_driver_ids: set[str] = set()
+            blocked_vehicle_ids: set[int] = set()
+            if target_date is not None and drivers:
+                placeholders = ",".join("?" * len(blocked_estados))
+                cur.execute(
+                    f"SELECT driver_id, vehicle_id FROM fpoc_dotacion_diaria "
+                    f"WHERE fecha = ? AND estado IN ({placeholders})",
+                    target_date.isoformat(), *blocked_estados,
+                )
+                for r in cur.fetchall():
+                    if r[0]:
+                        blocked_driver_ids.add(str(r[0]))
+                    if r[1] is not None:
+                        blocked_vehicle_ids.add(int(r[1]))
+
+        for drv_id, name, empresa_id, vehicle_id in drivers:
+            if str(drv_id) in blocked_driver_ids:
+                continue
+            if vehicle_id in blocked_vehicle_ids:
+                continue
+            out.setdefault(empresa_id, []).append((str(name), vehicle_id))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[live-gen] _load_drivers_by_empresa falló: {e}")
+    return out
+
+
 def _gen_row(rng: random.Random, empresas: list[tuple[int, str]], today: date,
-              id_counter: int = 0) -> dict:
+              id_counter: int = 0,
+              drivers_by_empresa: Optional[dict[int, list[tuple[str, int]]]] = None) -> dict:
     """Construye un dict con todas las columnas requeridas por fpoc.simpli_visits.
-    Usa los drivers reales de fpoc_drivers para que las visitas importadas
-    coincidan con los conductores del CRUD (Jessica, Manuel, etc.)."""
-    empresa_id, _ = empresas[rng.randrange(len(empresas))]
-    drivers = _load_real_drivers()
-    driver_name, driver_vid = drivers[rng.randrange(len(drivers))]
+    Usa los drivers reales de fpoc_drivers respetando la asignación driver→empresa
+    y filtrando los bloqueados en dotacion_diaria para `today`.
+
+    Si la empresa elegida no tiene drivers disponibles, busca otra empresa que sí
+    tenga. Si no hay ninguna, cae al modo legacy (random global) para no romper.
+    """
+    if drivers_by_empresa is None:
+        drivers_by_empresa = _load_drivers_by_empresa(today)
+
+    valid_empresas = [e for e in empresas if e[0] in drivers_by_empresa and drivers_by_empresa[e[0]]]
+    if valid_empresas:
+        empresa_id, _ = valid_empresas[rng.randrange(len(valid_empresas))]
+        choices = drivers_by_empresa[empresa_id]
+        driver_name, driver_vid = choices[rng.randrange(len(choices))]
+    else:
+        # Fallback legacy: empresa random + driver random global. Loggea una vez
+        # para no inundar el log si la DB está semi-vacía.
+        empresa_id, _ = empresas[rng.randrange(len(empresas))]
+        legacy = _load_real_drivers()
+        driver_name, driver_vid = legacy[rng.randrange(len(legacy))]
     driver = driver_name
-    # Patente: usar el vehicle_id del driver real (1..12) en vez de un random 1..40,
-    # así Patente_falsa matchea con FAL-1{vid:03d} y el join driver↔vehicle queda coherente.
     patente_falsa = driver_vid
     ct = rng.choice(["CD OMNICANAL LOF2", "CD NORTE", "CD SUR"])
 
@@ -270,9 +337,19 @@ def _insert_batch(cn, target_date: date, n_rows: int) -> int:
     if not empresas:
         return 0
 
+    # Precargar drivers agrupados por empresa (1 query) y respetar dotación del día
+    drivers_by_empresa = _load_drivers_by_empresa(target_date)
+    if drivers_by_empresa:
+        empresas_con_drivers = sum(1 for e in empresas if e[0] in drivers_by_empresa and drivers_by_empresa[e[0]])
+        if empresas_con_drivers < len(empresas):
+            logger.info(
+                f"[live-gen] {empresas_con_drivers}/{len(empresas)} empresas con drivers operables para {target_date}"
+            )
+
     # Usar un rng por batch para variedad pero reproducible dentro de la misma fecha
     rng = random.Random(target_date.toordinal() + int(time.time()) % 1000)
-    rows = [_gen_row(rng, empresas, target_date, id_counter=i) for i in range(n_rows)]
+    rows = [_gen_row(rng, empresas, target_date, id_counter=i, drivers_by_empresa=drivers_by_empresa)
+            for i in range(n_rows)]
     data = [tuple(r[c] for c in SIMPLI_COLS) for r in rows]
 
     cur.fast_executemany = True
