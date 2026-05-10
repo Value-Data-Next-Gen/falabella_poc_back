@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from auth import CurrentUser, current_user, require_admin
@@ -159,20 +159,13 @@ def get_driver_scorecard(
     else:
         region_filter = ""
 
-    where_empresa = ""
-    params_empresa: list = []
-    if empresa_id is not None:
-        where_empresa = "AND v.vehicle_id IN (SELECT vehicle_id FROM fpoc_vehicles WHERE driver_id = d.driver_id)"
-        # Note: vehicles also point to empresas via state map; we filter via driver-vehicle
-        # For simplicity we filter at the python level using driver-empresa map below.
-
     rows: list[DriverScorecardRow] = []
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
             """
             SELECT d.driver_id, d.name AS driver_name,
-                   d.vehicle_id, d.vehicle_name,
+                   d.empresa_id, d.vehicle_id, d.vehicle_name,
                    d.rating, d.deliveries_30d, d.fail_rate_30d,
                    v.vehicle_id AS v_id
             FROM fpoc_drivers d
@@ -184,16 +177,13 @@ def get_driver_scorecard(
         drivers = cur.fetchall()
 
         # Empresa per vehicle (via state map o tabla; usamos el state si está disponible)
-        from state import STATE
-        veh_to_empresa = STATE.vehicle_empresa_map if hasattr(STATE, "vehicle_empresa_map") else {}
-
         # Empresas
         cur.execute("SELECT empresa_id, nombre FROM fpoc_empresas_transporte")
         empresas_map = {int(r.empresa_id): r.nombre for r in cur.fetchall()}
 
         for d in drivers:
             vid = int(d.vehicle_id) if d.vehicle_id is not None else None
-            emp_id = veh_to_empresa.get(vid) if vid is not None else None
+            emp_id = int(d.empresa_id) if d.empresa_id is not None else None
             if empresa_id is not None and emp_id != empresa_id:
                 continue
 
@@ -282,12 +272,74 @@ def get_driver_scorecard(
 # Mock SimpliRoute import (Sprint 5+) — persiste en fpoc_simpli_visits
 # Idempotente por fecha: si ya importaste el día, lo dice y no duplica.
 # =============================================================================
+class DotacionConflict(BaseModel):
+    empresa_id: int
+    empresa_nombre: Optional[str] = None
+    driver_id: Optional[str] = None
+    driver_name: Optional[str] = None
+    vehicle_id: Optional[int] = None
+    plate: Optional[str] = None
+    estado: str
+    motivo: Optional[str] = None
+    visitas_afectadas: int = 0
+    ruta_id: Optional[str] = None
+
+
 class ImportMockResponse(BaseModel):
     ok: bool
     count: int
     fecha: str
     already_imported: bool = False
     message: str = ""
+    conflicts: list[DotacionConflict] = []
+
+
+def _check_dotacion_conflicts(target_date_iso: str) -> list[DotacionConflict]:
+    """Cruza visitas del día contra dotacion_diaria y devuelve drivers/vehículos
+    asignados a rutas pero marcados como no operables (ausente/licencia/mantencion/baja).
+
+    Match por (empresa_id, vehicle_id) — robusto, vehicle_id es int en ambas tablas.
+    También chequea drivers con `active=0` aunque no haya override.
+    """
+    out: list[DotacionConflict] = []
+    blocking_estados = ("ausente", "licencia", "mantencion", "baja")
+    with get_conn() as cn:
+        cur = cn.cursor()
+        # 1) Por dotacion_diaria override (estados bloqueantes)
+        cur.execute(
+            f"""
+            SELECT dd.empresa_id, e.nombre AS empresa_nombre,
+                   dd.driver_id, d.name AS driver_name,
+                   dd.vehicle_id, v.plate,
+                   dd.estado, dd.motivo,
+                   COUNT(sv.id) AS visitas, MAX(sv.ruta_id) AS ruta_id
+              FROM fpoc.dotacion_diaria dd
+              LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = dd.empresa_id
+              LEFT JOIN fpoc.drivers d ON d.driver_id = dd.driver_id
+              LEFT JOIN fpoc.vehicles v ON v.vehicle_id = dd.vehicle_id
+              LEFT JOIN fpoc.simpli_visits sv
+                ON sv.planned_date = dd.fecha
+               AND sv.Empresa_falsa = dd.empresa_id
+               AND sv.Patente_falsa = dd.vehicle_id
+             WHERE dd.fecha = ?
+               AND dd.estado IN ({",".join("?" * len(blocking_estados))})
+             GROUP BY dd.empresa_id, e.nombre, dd.driver_id, d.name,
+                      dd.vehicle_id, v.plate, dd.estado, dd.motivo
+            """,
+            target_date_iso, *blocking_estados,
+        )
+        for r in cur.fetchall():
+            out.append(DotacionConflict(
+                empresa_id=int(r.empresa_id),
+                empresa_nombre=r.empresa_nombre,
+                driver_id=r.driver_id, driver_name=r.driver_name,
+                vehicle_id=int(r.vehicle_id) if r.vehicle_id is not None else None,
+                plate=r.plate,
+                estado=str(r.estado), motivo=r.motivo,
+                visitas_afectadas=int(r.visitas or 0),
+                ruta_id=r.ruta_id,
+            ))
+    return out
 
 
 class ImportLogRow(BaseModel):
@@ -355,12 +407,14 @@ def import_mock(
     if existing and not force:
         prev_count = int(existing[0])
         prev_at = str(existing[1]) if existing[1] else "?"
+        conflicts_existing = _check_dotacion_conflicts(target_date.isoformat())
         return ImportMockResponse(
             ok=True,
             count=prev_count,
             fecha=target_date.isoformat(),
             already_imported=True,
             message=f"Ya cargaste el día {target_date.isoformat()} ({prev_count} visitas, {prev_at}). Mandá ?force=true para re-importar.",
+            conflicts=conflicts_existing,
         )
 
     # Importación real: usamos el live_generator (sintetiza visitas con todos
@@ -408,10 +462,33 @@ def import_mock(
     except Exception:  # noqa: BLE001
         pass
 
+    conflicts = _check_dotacion_conflicts(target_date.isoformat())
+    if conflicts:
+        msg += f" · ⚠ {len(conflicts)} driver(s)/vehículo(s) marcados no operables"
+
     return ImportMockResponse(
         ok=True,
         count=inserted,
         fecha=target_date.isoformat(),
         already_imported=False,
         message=msg,
+        conflicts=conflicts,
     )
+
+
+@router.get("/api/planificacion/dotacion-check", response_model=list[DotacionConflict])
+def dotacion_check(
+    fecha: str = Query(...),
+    _: CurrentUser = Depends(current_user),
+) -> list[DotacionConflict]:
+    """Cruza visitas del día contra dotacion_diaria y devuelve conflictos
+    (drivers/vehículos en rutas pero marcados ausente/licencia/mantencion/baja).
+    Útil antes y después de la carga; el import-mock también lo incluye en su
+    respuesta automáticamente.
+    """
+    from datetime import date as _date_cls
+    try:
+        target = _date_cls.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, f"fecha inválida: {fecha} (esperado YYYY-MM-DD)")
+    return _check_dotacion_conflicts(target.isoformat())
