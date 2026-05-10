@@ -276,6 +276,10 @@ def parse_notes(req: ParseNotesRequest, user: CurrentUser = Depends(current_user
 @router.get("", response_model=list[VipClient])
 def list_vip(
     q: Optional[str] = Query(default=None, description="Búsqueda libre por match_value o tracking_id (TRK...)"),
+    solo_del_dia: bool = Query(default=False, description="Si true, solo VIPs cuyo match_value matchea el plan vivo"),
+    empresa_id: Optional[int] = Query(default=None, description="Filtra por empresa_id; -1 = solo globales (NULL)"),
+    tier: Optional[str] = Query(default=None, description="Filtra por tier exacto"),
+    active: Optional[bool] = Query(default=None, description="Filtra por estado activo/inactivo"),
     user: CurrentUser = Depends(current_user),
 ) -> list[VipClient]:
     """Lista VIPs accesibles por el usuario.
@@ -284,6 +288,11 @@ def list_vip(
       - Si q empieza con 'TRK', se busca el tracking_id en el snapshot vivo y, si
         matchea, se filtra por title/customer_id/reference de esa visita.
       - Caso contrario, se aplica LIKE %q% sobre `match_value`.
+
+    `solo_del_dia=true` cruza match_value contra title/customer_id/reference
+    del snapshot vivo (STATE.snapshot_df). Si no hay snapshot, devuelve [].
+
+    `empresa_id`: número filtra por esa empresa; -1 fuerza solo globales (NULL).
     """
     extra_where = ""
     extra_params: list = []
@@ -312,6 +321,44 @@ def list_vip(
         else:
             extra_where = " AND match_value LIKE ?"
             extra_params = [f"%{q_clean}%"]
+
+    if solo_del_dia:
+        df = STATE.snapshot_df
+        if df is None or df.empty:
+            return []
+        titles = {str(t) for t in df.get("title", []).tolist() if t}
+        customers = {str(c) for c in df.get("customer_id", []).tolist() if c}
+        refs = {str(r) for r in df.get("reference", []).tolist() if r}
+        # Si no hay nada que cruzar, no devuelve VIPs
+        if not (titles or customers or refs):
+            return []
+        clauses = []
+        # Construimos placeholders por grupo. Si un grupo está vacío, lo omitimos.
+        if titles:
+            clauses.append(f"(match_type='title' AND match_value IN ({','.join('?' * len(titles))}))")
+            extra_params.extend(titles)
+        if customers:
+            clauses.append(f"(match_type='customer_id' AND match_value IN ({','.join('?' * len(customers))}))")
+            extra_params.extend(customers)
+        if refs:
+            clauses.append(f"(match_type='reference' AND match_value IN ({','.join('?' * len(refs))}))")
+            extra_params.extend(refs)
+        extra_where += " AND (" + " OR ".join(clauses) + ")"
+
+    if empresa_id is not None:
+        if empresa_id == -1:
+            extra_where += " AND empresa_id IS NULL"
+        else:
+            extra_where += " AND empresa_id = ?"
+            extra_params.append(empresa_id)
+
+    if tier:
+        extra_where += " AND tier = ?"
+        extra_params.append(tier)
+
+    if active is not None:
+        extra_where += " AND active = ?"
+        extra_params.append(1 if active else 0)
 
     with get_conn() as cn:
         cur = cn.cursor()

@@ -469,7 +469,7 @@ def _build_new_from_real(
         d = {
             "id": tid,
             "tracking_id": tid,
-            "order": int(r.__getattr__("order")) if hasattr(r, "order") else int(r["order"]),
+            "order": int(getattr(r, "order")) if hasattr(r, "order") else int(r["order"]),
             "title": title,
             "address": str(r.address) if r.address else "",
             "comuna": str(r.comuna) if r.comuna else None,

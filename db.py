@@ -66,8 +66,15 @@ _DATETIME_NOW_RE = re.compile(
     re.IGNORECASE,
 )
 _CURRENT_TS_RE = re.compile(r"\bCURRENT_TIMESTAMP\b", re.IGNORECASE)
-# LIMIT N al final del query (no maneja OFFSET — para eso hay que reescribir manualmente).
+# LIMIT N al final del query (literal). Se traduce a SELECT TOP N en el primer SELECT.
 _LIMIT_TAIL_RE = re.compile(r"\s+LIMIT\s+(\d+)\s*;?\s*$", re.IGNORECASE)
+# LIMIT ? al final (placeholder). El último param se mueve al principio como TOP (?).
+_LIMIT_PLACEHOLDER_TAIL_RE = re.compile(r"\s+LIMIT\s+\?\s*;?\s*$", re.IGNORECASE)
+# LIMIT ? OFFSET ?  ó  LIMIT N OFFSET ? — se traduce a OFFSET ? ROWS FETCH NEXT ? ROWS ONLY.
+# Requiere que el query ya tenga ORDER BY (sino MSSQL rechaza OFFSET).
+_LIMIT_OFFSET_PLACEHOLDER_RE = re.compile(
+    r"\s+LIMIT\s+(\?|\d+)\s+OFFSET\s+\?\s*;?\s*$", re.IGNORECASE
+)
 _SELECT_TOKEN_RE = re.compile(r"\bSELECT\b", re.IGNORECASE)
 # INSERT OR IGNORE no tiene equivalente directo en T-SQL; lo neutralizamos a INSERT
 # y dejamos al caller manejar duplicados (idealmente con MERGE o IF NOT EXISTS).
@@ -77,12 +84,18 @@ _INSERT_OR_IGNORE_RE = re.compile(r"\bINSERT\s+OR\s+IGNORE\b", re.IGNORECASE)
 _LAST_INSERT_ROWID_RE = re.compile(r"\blast_insert_rowid\s*\(\s*\)", re.IGNORECASE)
 
 
-def _rewrite_sql_for_mssql(sql: str) -> str:
+def _rewrite_sql_for_mssql(sql: str, params: tuple = ()) -> tuple[str, tuple]:
     """Convierte SQL escrito en estilo SQLite a sintaxis SQL Server.
 
+    Devuelve (sql_reescrito, params_reordenados). La función puede mover params
+    cuando los placeholders cambian de posición (ej: LIMIT ? -> SELECT TOP (?)).
+
+    Reglas:
     - fpoc_<tabla>                  -> fpoc.<tabla>      (schema dot notation)
     - datetime('now', '-N days')    -> DATEADD(day, -N, SYSUTCDATETIME())
-    - ... LIMIT N (al final)        -> SELECT TOP N ...
+    - ... LIMIT N                   -> SELECT TOP N ...           (literal)
+    - ... LIMIT ?                   -> SELECT TOP (?) ...         (placeholder; reordena params)
+    - ... LIMIT ?/N OFFSET ?        -> ... OFFSET ? ROWS FETCH NEXT ?/N ROWS ONLY
     - INSERT OR IGNORE              -> INSERT (caller maneja duplicado)
     """
     sql = _FPOC_TABLE_RE.sub(r"fpoc.\1", sql)
@@ -100,15 +113,42 @@ def _rewrite_sql_for_mssql(sql: str) -> str:
 
     sql = _DATETIME_NOW_RE.sub(_datetime_repl, sql)
 
-    m = _LIMIT_TAIL_RE.search(sql)
-    if m:
-        n = m.group(1)
-        sql = _LIMIT_TAIL_RE.sub("", sql)
-        sql = _SELECT_TOKEN_RE.sub(f"SELECT TOP {n}", sql, count=1)
+    # Caso compuesto: LIMIT ? OFFSET ? o LIMIT N OFFSET ?
+    m_off = _LIMIT_OFFSET_PLACEHOLDER_RE.search(sql)
+    if m_off:
+        limit_token = m_off.group(1)  # '?' o número literal
+        sql = _LIMIT_OFFSET_PLACEHOLDER_RE.sub("", sql)
+        if limit_token == "?":
+            # params: [..., limit, offset]. MSSQL espera OFFSET ? FETCH NEXT ?
+            # con ese mismo orden (offset va primero en el SQL).
+            params = list(params)
+            limit_p, offset_p = params[-2], params[-1]
+            params = tuple(params[:-2] + [offset_p, limit_p])
+            sql = sql + " OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
+        else:
+            # LIMIT N (literal) OFFSET ?  →  OFFSET ? ROWS FETCH NEXT N ROWS ONLY
+            sql = sql + f" OFFSET ? ROWS FETCH NEXT {limit_token} ROWS ONLY"
+    else:
+        # LIMIT ? (placeholder, sin OFFSET)
+        m_p = _LIMIT_PLACEHOLDER_TAIL_RE.search(sql)
+        if m_p:
+            sql = _LIMIT_PLACEHOLDER_TAIL_RE.sub("", sql)
+            # Mover el último param (limit) al principio, en SELECT TOP (?).
+            params = list(params)
+            limit_p = params.pop()
+            params = tuple([limit_p] + params)
+            sql = _SELECT_TOKEN_RE.sub("SELECT TOP (?)", sql, count=1)
+        else:
+            # LIMIT N literal (mantengo comportamiento original).
+            m = _LIMIT_TAIL_RE.search(sql)
+            if m:
+                n = m.group(1)
+                sql = _LIMIT_TAIL_RE.sub("", sql)
+                sql = _SELECT_TOKEN_RE.sub(f"SELECT TOP {n}", sql, count=1)
 
     sql = _INSERT_OR_IGNORE_RE.sub("INSERT", sql)
     sql = _LAST_INSERT_ROWID_RE.sub("SCOPE_IDENTITY()", sql)
-    return sql
+    return sql, tuple(params) if not isinstance(params, tuple) else params
 
 
 # -------- Row con acceso por atributo (case-insensitive) --------
@@ -256,17 +296,19 @@ class MssqlCursor:
         self._cur = cur
 
     def execute(self, sql, *params):
-        sql = _rewrite_sql_for_mssql(sql)
-        if len(params) == 1 and isinstance(params[0], (tuple, list)):
-            self._cur.execute(sql, params[0])
-        elif params:
-            self._cur.execute(sql, params)
+        # Normalizar params a tupla plana (algunos callers pasan lista/tupla single).
+        flat = tuple(params[0]) if (len(params) == 1 and isinstance(params[0], (tuple, list))) else tuple(params)
+        sql, flat = _rewrite_sql_for_mssql(sql, flat)
+        if flat:
+            self._cur.execute(sql, flat)
         else:
             self._cur.execute(sql)
         return self
 
     def executemany(self, sql, seq):
-        sql = _rewrite_sql_for_mssql(sql)
+        # executemany no entra en reordering de LIMIT — sería ambiguo. Solo
+        # aplica las reescrituras de strings (sin tocar params).
+        sql, _ = _rewrite_sql_for_mssql(sql, ())
         self._cur.executemany(sql, seq)
         return self
 

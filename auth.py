@@ -312,7 +312,9 @@ def get_access_log(
     if event_type:
         where = " WHERE l.event_type = ?"
         params.append(event_type)
-    params.append(limit)
+    # `limit` viene de Pydantic Query(ge=1, le=500) → safe to inline.
+    # db.py traduce "LIMIT N" → "SELECT TOP N" en sqlserver, pero el regex sólo
+    # matchea literales, no placeholders.
     with _db() as cn:
         cur = cn.cursor()
         cur.execute(
@@ -325,7 +327,7 @@ def get_access_log(
             LEFT JOIN fpoc.users u ON u.user_id = l.user_id
             {where}
             ORDER BY l.created_at DESC
-            LIMIT ?
+            LIMIT {int(limit)}
             """,
             *params,
         )
