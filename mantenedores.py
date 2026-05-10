@@ -213,10 +213,20 @@ _USER_SELECT = """
 
 
 @router.get("/users", response_model=list[UserOut])
-def list_users(_: CurrentUser = Depends(require_admin)) -> list[UserOut]:
+def list_users(user: CurrentUser = Depends(current_user)) -> list[UserOut]:
+    """admin: todos. transport_manager: solo users de su empresa
+    (típicamente él mismo + drivers de su empresa con cuenta)."""
+    if user.is_admin or user.role == "falabella_ops":
+        where = ""
+        params: list = []
+    elif user.role == "transport_manager" and user.empresa_id is not None:
+        where = " WHERE u.empresa_id = ?"
+        params = [user.empresa_id]
+    else:
+        raise HTTPException(403, "Sin permisos para listar usuarios")
     with get_conn() as cn:
         cur = cn.cursor()
-        cur.execute(_USER_SELECT + " ORDER BY u.user_id")
+        cur.execute(_USER_SELECT + where + " ORDER BY u.user_id", *params)
         return [_user_row(r) for r in cur.fetchall()]
 
 
