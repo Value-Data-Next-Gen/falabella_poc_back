@@ -107,6 +107,12 @@ async def lifespan(_: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[migrate-driver-docs] fallo (se intenta seguir): {e}")
 
+    try:
+        from fpoc_loader.migrate_capacitaciones import main as migrate_capacitaciones
+        migrate_capacitaciones(quiet=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[migrate-capacitaciones] fallo (se intenta seguir): {e}")
+
     logger.info("Bootstrapping ValueData backend (training model, may take 30-40s)...")
     STATE.init()
     logger.info(
