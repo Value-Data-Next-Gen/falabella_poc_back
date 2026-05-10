@@ -113,6 +113,12 @@ async def lifespan(_: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[migrate-capacitaciones] fallo (se intenta seguir): {e}")
 
+    try:
+        from fpoc_loader.migrate_driver_role import main as migrate_driver_role
+        migrate_driver_role(quiet=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[migrate-driver-role] fallo (se intenta seguir): {e}")
+
     logger.info("Bootstrapping ValueData backend (training model, may take 30-40s)...")
     STATE.init()
     logger.info(
@@ -176,6 +182,7 @@ from live_generator import (
     stop_scheduler as live_gen_stop,
 )
 from mantenedores import router as mantenedores_router
+from me import router as me_router
 from comments import router as comments_router
 from empresa_contactos import router as empresa_contactos_router
 from motivo_classifier import router as motivo_classifier_router
@@ -201,6 +208,7 @@ app.include_router(plan_diario_router)
 app.include_router(watchlist_router)
 app.include_router(live_gen_router)
 app.include_router(mantenedores_router)
+app.include_router(me_router)
 app.include_router(comments_router)
 app.include_router(empresa_contactos_router)
 app.include_router(comment_sim_router)

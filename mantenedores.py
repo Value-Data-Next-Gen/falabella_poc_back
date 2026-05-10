@@ -142,8 +142,9 @@ class UserIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=4, max_length=128)
     display_name: str = Field(min_length=1, max_length=200)
-    role: str = Field(pattern="^(falabella_admin|falabella_ops|transport_manager)$")
+    role: str = Field(pattern="^(falabella_admin|falabella_ops|transport_manager|driver)$")
     empresa_id: Optional[int] = None
+    driver_id: Optional[str] = Field(default=None, max_length=20)
     activo: bool = True
     phone_e164: Optional[str] = Field(default=None, max_length=20)
     notify_whatsapp: bool = False
@@ -152,8 +153,9 @@ class UserIn(BaseModel):
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    role: Optional[str] = Field(default=None, pattern="^(falabella_admin|falabella_ops|transport_manager)$")
+    role: Optional[str] = Field(default=None, pattern="^(falabella_admin|falabella_ops|transport_manager|driver)$")
     empresa_id: Optional[int] = None
+    driver_id: Optional[str] = Field(default=None, max_length=20)
     activo: Optional[bool] = None
     phone_e164: Optional[str] = Field(default=None, max_length=20)
     notify_whatsapp: Optional[bool] = None
@@ -170,6 +172,8 @@ class UserOut(BaseModel):
     role: str
     empresa_id: Optional[int] = None
     empresa_nombre: Optional[str] = None
+    driver_id: Optional[str] = None
+    driver_name: Optional[str] = None
     activo: bool
     phone_e164: Optional[str] = None
     notify_whatsapp: bool
@@ -186,6 +190,8 @@ def _user_row(r) -> UserOut:
         role=r.role,
         empresa_id=int(r.empresa_id) if r.empresa_id is not None else None,
         empresa_nombre=r.empresa_nombre,
+        driver_id=str(r.driver_id) if r.driver_id is not None else None,
+        driver_name=getattr(r, "driver_name", None),
         activo=bool(r.activo),
         phone_e164=r.phone_e164,
         notify_whatsapp=bool(r.notify_whatsapp),
@@ -196,11 +202,13 @@ def _user_row(r) -> UserOut:
 
 _USER_SELECT = """
     SELECT u.user_id, u.email, u.display_name, u.role, u.empresa_id,
-           u.activo, u.phone_e164, u.notify_whatsapp,
+           u.driver_id, u.activo, u.phone_e164, u.notify_whatsapp,
            u.created_at, u.last_login,
-           e.nombre AS empresa_nombre
+           e.nombre AS empresa_nombre,
+           d.name AS driver_name
     FROM fpoc.users u
     LEFT JOIN fpoc.empresas_transporte e ON u.empresa_id = e.empresa_id
+    LEFT JOIN fpoc.drivers d ON u.driver_id = d.driver_id
 """
 
 
@@ -212,23 +220,46 @@ def list_users(_: CurrentUser = Depends(require_admin)) -> list[UserOut]:
         return [_user_row(r) for r in cur.fetchall()]
 
 
+def _can_manage_user(actor: CurrentUser, target_role: str, target_empresa_id: Optional[int]) -> bool:
+    """admin: todos. transport_manager: solo crear/editar drivers de su empresa."""
+    if actor.is_admin:
+        return True
+    if actor.role == "transport_manager" and target_role == "driver":
+        return target_empresa_id == actor.empresa_id
+    return False
+
+
 @router.post("/users", response_model=UserOut)
-def create_user(req: UserIn, _: CurrentUser = Depends(require_admin)) -> UserOut:
+def create_user(req: UserIn, user: CurrentUser = Depends(current_user)) -> UserOut:
+    if not _can_manage_user(user, req.role, req.empresa_id):
+        raise HTTPException(403, "Sin permisos para crear este usuario")
     if req.role == "transport_manager" and req.empresa_id is None:
         raise HTTPException(400, "transport_manager requiere empresa_id")
+    if req.role == "driver":
+        if req.driver_id is None or req.empresa_id is None:
+            raise HTTPException(400, "rol driver requiere driver_id y empresa_id")
+        # Validar que el driver existe y es de esa empresa
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute("SELECT empresa_id FROM fpoc.drivers WHERE driver_id = ?", req.driver_id)
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(400, f"driver_id {req.driver_id} no existe")
+            if int(row.empresa_id) != req.empresa_id:
+                raise HTTPException(400, "driver_id no pertenece a la empresa indicada")
     with get_conn() as cn:
         cur = cn.cursor()
         try:
             cur.execute(
                 """
                 INSERT INTO fpoc.users
-                  (email, password_hash, display_name, role, empresa_id, activo,
+                  (email, password_hash, display_name, role, empresa_id, driver_id, activo,
                    phone_e164, notify_whatsapp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING user_id
                 """,
                 req.email.lower(), bcrypt.hash(req.password), req.display_name,
-                req.role, req.empresa_id, 1 if req.activo else 0,
+                req.role, req.empresa_id, req.driver_id, 1 if req.activo else 0,
                 req.phone_e164, 1 if req.notify_whatsapp else 0,
             )
             new_id = int(cur.fetchone()[0])

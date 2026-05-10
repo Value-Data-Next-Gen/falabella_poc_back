@@ -49,6 +49,7 @@ class CurrentUser:
     role: str
     empresa_id: Optional[int]
     empresa_nombre: Optional[str]
+    driver_id: Optional[str] = None
 
     @property
     def is_admin(self) -> bool:
@@ -57,6 +58,10 @@ class CurrentUser:
     @property
     def is_falabella(self) -> bool:
         return self.role in ("falabella_admin", "falabella_ops")
+
+    @property
+    def is_driver(self) -> bool:
+        return self.role == "driver"
 
 
 class LoginRequest(BaseModel):
@@ -77,6 +82,7 @@ class MeResponse(BaseModel):
     role: str
     empresa_id: Optional[int] = None
     empresa_nombre: Optional[str] = None
+    driver_id: Optional[str] = None
 
 
 class EmpresaResponse(BaseModel):
@@ -118,7 +124,7 @@ def _load_user_by_email(email: str) -> Optional[dict]:
         cur.execute(
             """
             SELECT u.user_id, u.email, u.password_hash, u.display_name, u.role,
-                   u.empresa_id, u.activo, e.nombre AS empresa_nombre
+                   u.empresa_id, u.driver_id, u.activo, e.nombre AS empresa_nombre
             FROM fpoc.users u
             LEFT JOIN fpoc.empresas_transporte e ON u.empresa_id = e.empresa_id
             WHERE u.email = ?
@@ -136,6 +142,7 @@ def _load_user_by_email(email: str) -> Optional[dict]:
             "role": row.role,
             "empresa_id": int(row.empresa_id) if row.empresa_id is not None else None,
             "empresa_nombre": row.empresa_nombre,
+            "driver_id": str(row.driver_id) if row.driver_id is not None else None,
             "activo": bool(row.activo),
         }
 
@@ -146,7 +153,7 @@ def _load_user_by_id(user_id: int) -> Optional[dict]:
         cur.execute(
             """
             SELECT u.user_id, u.email, u.display_name, u.role,
-                   u.empresa_id, u.activo, e.nombre AS empresa_nombre
+                   u.empresa_id, u.driver_id, u.activo, e.nombre AS empresa_nombre
             FROM fpoc.users u
             LEFT JOIN fpoc.empresas_transporte e ON u.empresa_id = e.empresa_id
             WHERE u.user_id = ?
@@ -163,6 +170,7 @@ def _load_user_by_id(user_id: int) -> Optional[dict]:
             "role": row.role,
             "empresa_id": int(row.empresa_id) if row.empresa_id is not None else None,
             "empresa_nombre": row.empresa_nombre,
+            "driver_id": str(row.driver_id) if row.driver_id is not None else None,
             "activo": bool(row.activo),
         }
 
@@ -224,6 +232,7 @@ def current_user(
     return CurrentUser(
         user_id=u["user_id"], email=u["email"], display_name=u["display_name"],
         role=u["role"], empresa_id=u["empresa_id"], empresa_nombre=u["empresa_nombre"],
+        driver_id=u.get("driver_id"),
     )
 
 
@@ -275,6 +284,7 @@ def login(req: LoginRequest, request: Request) -> LoginResponse:
     me = MeResponse(
         user_id=u["user_id"], email=u["email"], display_name=u["display_name"],
         role=u["role"], empresa_id=u["empresa_id"], empresa_nombre=u["empresa_nombre"],
+        driver_id=u.get("driver_id"),
     )
     return LoginResponse(access_token=token, user=me)
 
