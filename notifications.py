@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 
-from auth import CurrentUser, current_user
+from auth import CurrentUser, current_user, require_admin
 from db import get_conn
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
@@ -563,4 +563,31 @@ def get_config(user: CurrentUser = Depends(current_user)) -> dict:
         "auth_mode": "api_key" if (cfg.api_key_sid and cfg.api_key_secret) else ("auth_token" if cfg.auth_token else "none"),
         "default_content_sid": cfg.default_content_sid if user.is_falabella else None,
         "mode": "template" if cfg.default_content_sid else "freeform",
+    }
+
+
+@router.post("/toggle")
+def toggle_notifications(
+    enabled: Optional[bool] = None,
+    dry_run: Optional[bool] = None,
+    user: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Toggle runtime (admin only). Sobreescribe env vars NOTIFICATIONS_ENABLED
+    y NOTIFICATIONS_DRY_RUN para esta instancia del proceso. Útil cuando no
+    se quiere tocar Azure App Service settings + restart.
+
+    Nota: el cambio se pierde al reiniciar el proceso. Para persistir, hay que
+    actualizar las Application Settings.
+    """
+    if enabled is not None:
+        os.environ["NOTIFICATIONS_ENABLED"] = "true" if enabled else "false"
+    if dry_run is not None:
+        os.environ["NOTIFICATIONS_DRY_RUN"] = "true" if dry_run else "false"
+    cfg = TwilioConfig.from_env()
+    logger.info(f"[notifications] runtime toggle by {user.email}: enabled={cfg.enabled} dry_run={cfg.dry_run}")
+    return {
+        "ok": True,
+        "enabled": cfg.enabled,
+        "dry_run": cfg.dry_run,
+        "note": "Cambio aplicado al proceso actual. Para persistir entre reinicios, actualizá las Application Settings en Azure.",
     }
