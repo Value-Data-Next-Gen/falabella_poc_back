@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from auth import CurrentUser, current_user, require_admin
@@ -697,6 +698,7 @@ class StartDayResponse(BaseModel):
     ok: bool
     fecha: str
     visitas_en_db: int
+    visitas_reset: int = 0
     live_gen_paused: bool
     state_today: Optional[str] = None
     snapshot_size: int = 0
@@ -707,11 +709,17 @@ class StartDayResponse(BaseModel):
 @router.post("/api/planificacion/start-day", response_model=StartDayResponse)
 def start_day(
     fecha: str = Query(...),
+    reset_status: bool = Query(default=True,
+        description="Si true, fuerza status='pending' y limpia checkouts. Default true."),
     user: CurrentUser = Depends(current_user),
 ) -> StartDayResponse:
     """Marca el comienzo del día operativo en la fecha indicada.
 
     - Detiene el live_generator (deja de inyectar visitas al planned_date).
+    - Si reset_status=true (default): resetea status='pending' + limpia checkouts
+      en todas las visitas del día. Crucial porque el import-mock las trae con
+      status=completed/failed (datos sintéticos para ML); para operar el día
+      tienen que arrancar como pending.
     - Setea STATE.today = fecha y refresca el snapshot ML/in-memory.
     - Cuenta visitas reales en fpoc.simpli_visits para esa fecha (cuadratura).
     - Devuelve conflictos de dotación pendientes.
@@ -733,6 +741,28 @@ def start_day(
             paused = True
     except Exception:  # noqa: BLE001
         pass
+
+    # Reset status del día a pending (para arrancar limpio).
+    # checkout_cl es NOT NULL en el schema; solo limpiamos los nullable
+    # (comment, observation). El status es la fuente de verdad operativa.
+    visitas_reset = 0
+    if reset_status:
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    """UPDATE fpoc.simpli_visits
+                          SET status = 'pending',
+                              checkout_comment = NULL,
+                              checkout_observation = NULL
+                        WHERE planned_date = ?
+                          AND status <> 'pending'""",
+                    target.isoformat(),
+                )
+                visitas_reset = int(cur.rowcount or 0)
+                cn.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[start-day] reset status fallo: {e}")
 
     # Setear STATE.today + refrescar snapshot
     snapshot_size = 0
@@ -761,6 +791,8 @@ def start_day(
     conflicts = _check_dotacion_conflicts(target.isoformat())
 
     msg_parts = [f"Día {fecha} iniciado", f"{visitas} visitas en DB"]
+    if visitas_reset:
+        msg_parts.append(f"{visitas_reset} reseteadas a pending")
     if paused:
         msg_parts.append("live_gen pausado")
     if conflicts:
@@ -770,6 +802,7 @@ def start_day(
         ok=True,
         fecha=target.isoformat(),
         visitas_en_db=visitas,
+        visitas_reset=visitas_reset,
         live_gen_paused=paused,
         state_today=state_today_iso,
         snapshot_size=snapshot_size,
