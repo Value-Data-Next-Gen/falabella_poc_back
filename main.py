@@ -137,6 +137,12 @@ async def lifespan(_: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[migrate-entity-documents] fallo (se intenta seguir): {e}")
 
+    try:
+        from fpoc_loader.migrate_cap_validation import main as migrate_cap_validation
+        migrate_cap_validation(quiet=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[migrate-cap-validation] fallo (se intenta seguir): {e}")
+
     logger.info("Bootstrapping ValueData backend (training model, may take 30-40s)...")
     STATE.init()
     logger.info(

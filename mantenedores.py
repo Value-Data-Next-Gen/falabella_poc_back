@@ -1766,6 +1766,9 @@ class DriverCapacitacionOut(BaseModel):
     doc_id: Optional[int] = None
     created_by: Optional[int] = None
     created_at: str
+    validated_by_user_id: Optional[int] = None
+    validated_at: Optional[str] = None
+    validated_by_name: Optional[str] = None
 
 
 def _cap_row(r) -> DriverCapacitacionOut:
@@ -1785,6 +1788,9 @@ def _cap_row(r) -> DriverCapacitacionOut:
         doc_id=int(r.doc_id) if r.doc_id is not None else None,
         created_by=int(r.created_by) if r.created_by is not None else None,
         created_at=_iso(r.created_at) or "",
+        validated_by_user_id=int(r.validated_by_user_id) if getattr(r, "validated_by_user_id", None) is not None else None,
+        validated_at=_iso(getattr(r, "validated_at", None)),
+        validated_by_name=getattr(r, "validated_by_name", None),
     )
 
 
@@ -1813,9 +1819,12 @@ def list_driver_capacitaciones(
             """SELECT c.cap_id, c.driver_id, c.modulo_id,
                        m.codigo AS modulo_codigo, m.nombre AS modulo_nombre,
                        c.fecha_completado, c.vence_at, c.notas, c.doc_id,
-                       c.created_by, c.created_at
+                       c.created_by, c.created_at,
+                       c.validated_by_user_id, c.validated_at,
+                       vu.display_name AS validated_by_name
                 FROM fpoc.driver_capacitaciones c
                 INNER JOIN fpoc.capacitacion_modulos m ON m.modulo_id = c.modulo_id
+                LEFT JOIN fpoc.users vu ON vu.user_id = c.validated_by_user_id
                 WHERE c.driver_id = ?
                 ORDER BY c.fecha_completado DESC""",
             driver_id,
@@ -1863,9 +1872,12 @@ def create_driver_capacitacion(
             """SELECT TOP 1 c.cap_id, c.driver_id, c.modulo_id,
                        m.codigo AS modulo_codigo, m.nombre AS modulo_nombre,
                        c.fecha_completado, c.vence_at, c.notas, c.doc_id,
-                       c.created_by, c.created_at
+                       c.created_by, c.created_at,
+                       c.validated_by_user_id, c.validated_at,
+                       vu.display_name AS validated_by_name
                 FROM fpoc.driver_capacitaciones c
                 INNER JOIN fpoc.capacitacion_modulos m ON m.modulo_id = c.modulo_id
+                LEFT JOIN fpoc.users vu ON vu.user_id = c.validated_by_user_id
                 WHERE c.driver_id = ? AND c.modulo_id = ?
                 ORDER BY c.cap_id DESC""",
             driver_id, req.modulo_id,
@@ -1907,9 +1919,12 @@ def update_driver_capacitacion(
             """SELECT c.cap_id, c.driver_id, c.modulo_id,
                        m.codigo AS modulo_codigo, m.nombre AS modulo_nombre,
                        c.fecha_completado, c.vence_at, c.notas, c.doc_id,
-                       c.created_by, c.created_at
+                       c.created_by, c.created_at,
+                       c.validated_by_user_id, c.validated_at,
+                       vu.display_name AS validated_by_name
                 FROM fpoc.driver_capacitaciones c
                 INNER JOIN fpoc.capacitacion_modulos m ON m.modulo_id = c.modulo_id
+                LEFT JOIN fpoc.users vu ON vu.user_id = c.validated_by_user_id
                 WHERE c.cap_id = ?""",
             cap_id,
         )
@@ -1933,6 +1948,80 @@ def delete_driver_capacitacion(
             raise HTTPException(404, "capacitación no encontrada")
         cn.commit()
     return {"deleted": cap_id}
+
+
+@router.post("/drivers/{driver_id}/capacitaciones/{cap_id}/validate",
+              response_model=DriverCapacitacionOut)
+def validate_driver_capacitacion(
+    driver_id: str,
+    cap_id: int,
+    user: CurrentUser = Depends(current_user),
+) -> DriverCapacitacionOut:
+    """Marca la capacitación como VALIDADA por Falabella.
+    Solo admin/ops puede validar (manager carga el comprobante, Falabella confirma)."""
+    if not user.is_falabella:
+        raise HTTPException(403, "Solo Falabella (admin/ops) puede validar capacitaciones")
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """UPDATE fpoc.driver_capacitaciones
+                SET validated_by_user_id = ?, validated_at = CURRENT_TIMESTAMP
+              WHERE cap_id = ? AND driver_id = ?""",
+            user.user_id, cap_id, driver_id,
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "capacitación no encontrada")
+        cn.commit()
+        cur.execute(
+            """SELECT c.cap_id, c.driver_id, c.modulo_id,
+                       m.codigo AS modulo_codigo, m.nombre AS modulo_nombre,
+                       c.fecha_completado, c.vence_at, c.notas, c.doc_id,
+                       c.created_by, c.created_at,
+                       c.validated_by_user_id, c.validated_at,
+                       vu.display_name AS validated_by_name
+                FROM fpoc.driver_capacitaciones c
+                INNER JOIN fpoc.capacitacion_modulos m ON m.modulo_id = c.modulo_id
+                LEFT JOIN fpoc.users vu ON vu.user_id = c.validated_by_user_id
+                WHERE c.cap_id = ?""",
+            cap_id,
+        )
+        return _cap_row(cur.fetchone())
+
+
+@router.post("/drivers/{driver_id}/capacitaciones/{cap_id}/unvalidate",
+              response_model=DriverCapacitacionOut)
+def unvalidate_driver_capacitacion(
+    driver_id: str,
+    cap_id: int,
+    user: CurrentUser = Depends(current_user),
+) -> DriverCapacitacionOut:
+    if not user.is_falabella:
+        raise HTTPException(403, "Solo Falabella puede des-validar")
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """UPDATE fpoc.driver_capacitaciones
+                SET validated_by_user_id = NULL, validated_at = NULL
+              WHERE cap_id = ? AND driver_id = ?""",
+            cap_id, driver_id,
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "capacitación no encontrada")
+        cn.commit()
+        cur.execute(
+            """SELECT c.cap_id, c.driver_id, c.modulo_id,
+                       m.codigo AS modulo_codigo, m.nombre AS modulo_nombre,
+                       c.fecha_completado, c.vence_at, c.notas, c.doc_id,
+                       c.created_by, c.created_at,
+                       c.validated_by_user_id, c.validated_at,
+                       vu.display_name AS validated_by_name
+                FROM fpoc.driver_capacitaciones c
+                INNER JOIN fpoc.capacitacion_modulos m ON m.modulo_id = c.modulo_id
+                LEFT JOIN fpoc.users vu ON vu.user_id = c.validated_by_user_id
+                WHERE c.cap_id = ?""",
+            cap_id,
+        )
+        return _cap_row(cur.fetchone())
 
 
 # ============================================================================
