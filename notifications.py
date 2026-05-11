@@ -31,7 +31,7 @@ from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 
 from auth import CurrentUser, current_user, require_admin
-from db import get_conn
+from db import backend as db_backend, get_conn
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
@@ -173,24 +173,41 @@ def _log_notification(
     region: Optional[str] = None,
 ) -> int:
     cur = cn.cursor()
-    # INSERT portable sin RETURNING. Después tomamos last_insert_rowid()
-    # (db.py traduce a SCOPE_IDENTITY() en SQL Server).
-    cur.execute(
-        """
-        INSERT INTO fpoc.notifications_log
-          (user_id, to_number, channel, subject, body, tracking_id,
-           twilio_sid, status, error_msg, triggered_by,
-           content_sid, content_variables, region)
-        VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        user_id, to_number, subject, body, tracking_id,
-        twilio_sid, status, error, triggered_by,
-        content_sid,
-        json.dumps(content_variables) if content_variables else None,
-        region,
-    )
-    cur.execute("SELECT last_insert_rowid()")
-    new_id = int(cur.fetchone()[0])
+    cv_json = json.dumps(content_variables) if content_variables else None
+    if db_backend() == "sqlserver":
+        # OUTPUT INSERTED.notification_id es 100% confiable con pyodbc;
+        # SCOPE_IDENTITY() en cur.execute separado a veces devuelve NULL.
+        cur.execute(
+            """
+            INSERT INTO fpoc.notifications_log
+              (user_id, to_number, channel, subject, body, tracking_id,
+               twilio_sid, status, error_msg, triggered_by,
+               content_sid, content_variables, region)
+            OUTPUT INSERTED.notification_id
+            VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            user_id, to_number, subject, body, tracking_id,
+            twilio_sid, status, error, triggered_by,
+            content_sid, cv_json, region,
+        )
+        row = cur.fetchone()
+        new_id = int(row[0]) if row and row[0] is not None else 0
+    else:
+        cur.execute(
+            """
+            INSERT INTO fpoc.notifications_log
+              (user_id, to_number, channel, subject, body, tracking_id,
+               twilio_sid, status, error_msg, triggered_by,
+               content_sid, content_variables, region)
+            VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            user_id, to_number, subject, body, tracking_id,
+            twilio_sid, status, error, triggered_by,
+            content_sid, cv_json, region,
+        )
+        cur.execute("SELECT last_insert_rowid()")
+        row = cur.fetchone()
+        new_id = int(row[0]) if row and row[0] is not None else 0
     cn.commit()
     return new_id
 
