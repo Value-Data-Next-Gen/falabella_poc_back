@@ -105,7 +105,7 @@ class AppState:
                 cur = cn.cursor()
                 cur.execute(
                     """
-                    SELECT driver_id, name, phone, license, vehicle_id, vehicle_name,
+                    SELECT driver_id, name, phone, license, empresa_id, vehicle_id, vehicle_name,
                            rating, deliveries_30d, fail_rate_30d, joined_at, active,
                            is_problem_hidden
                     FROM fpoc.drivers
@@ -118,6 +118,7 @@ class AppState:
                         "name": r.name,
                         "phone": r.phone,
                         "license": r.license,
+                        "empresa_id": int(r.empresa_id) if r.empresa_id is not None else None,
                         "vehicle_id": int(r.vehicle_id),
                         "vehicle_name": r.vehicle_name,
                         "rating": float(r.rating),
@@ -131,7 +132,7 @@ class AppState:
                 ]
                 cur.execute(
                     """
-                    SELECT vehicle_id, name, type, plate, capacity_m3, driver_id, driver_name,
+                    SELECT vehicle_id, empresa_id, name, type, plate, capacity_m3, driver_id, driver_name,
                            depot_lat, depot_lon, year, active, is_problem_hidden
                     FROM fpoc.vehicles
                     ORDER BY vehicle_id
@@ -140,6 +141,7 @@ class AppState:
                 vehicles = [
                     {
                         "vehicle_id": int(r.vehicle_id),
+                        "empresa_id": int(r.empresa_id) if r.empresa_id is not None else None,
                         "name": r.name,
                         "type": r.type,
                         "plate": r.plate,
@@ -210,10 +212,10 @@ class AppState:
         self._refresh_snapshot(emit_events=False)
 
     def _load_empresas_and_assign(self) -> None:
-        """Carga empresas desde fpoc_empresas_transporte y asigna cada vehicle_id a
-        una empresa (round-robin).
+        """Carga empresas y arma vehicle_id -> empresa_id.
 
-        Si la DB no está disponible o no hay empresas seeded, cae a empresa 0.
+        Preferimos el ownership persistente de fpoc.vehicles.empresa_id. El
+        round-robin queda solo como fallback para datos antiguos sin migrar.
         """
         try:
             from db import get_conn
@@ -235,10 +237,15 @@ class AppState:
 
         vehicle_ids = sorted(int(v["vehicle_id"]) for v in self.vehicles_ext)
         n_empresas = len(self.empresas)
-        self.vehicle_empresa_map = {
+        fallback = {
             vid: self.empresas[i % n_empresas]["empresa_id"]
             for i, vid in enumerate(vehicle_ids)
         }
+        self.vehicle_empresa_map = {}
+        for v in self.vehicles_ext:
+            vid = int(v["vehicle_id"])
+            eid = v.get("empresa_id")
+            self.vehicle_empresa_map[vid] = int(eid) if eid is not None else fallback[vid]
 
     def vehicle_ids_for_empresa(self, empresa_id: int | None) -> list[int]:
         if empresa_id is None:

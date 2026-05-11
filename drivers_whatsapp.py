@@ -827,6 +827,10 @@ class DayStatus(BaseModel):
     dotacion_checked: bool = False       # se cruzó con dotacion (siempre true si hay backend)
     no_conflicts: bool = False           # conflicts_count == 0
     started: bool = False                # is_state_today + live_gen_paused
+    config_issues_count: int = 0         # visitas con config faltante
+    driver_issues_count: int = 0         # drivers/vehículos sin contacto, licencia, etc.
+    vip_count: int = 0                   # cantidad de VIPs del día (informativo)
+    prep_ok: bool = False                # listo para iniciar (no_conflicts + 0 issues)
 
 
 @router.get("/api/planificacion/day-status", response_model=DayStatus)
@@ -900,6 +904,13 @@ def day_status(
     no_conflicts = len(conflicts) == 0
     started = is_state_today and not live_gen_running
 
+    # Sprint H: contadores accionables (Plan del día simplificado).
+    prep = _compute_day_prep(fecha, user) if loaded else _empty_day_prep(fecha)
+    config_issues_count = len(prep["config_issues"])
+    driver_issues_count = len(prep["driver_issues"])
+    vip_count = len(prep["vips"])
+    prep_ok = no_conflicts and config_issues_count == 0 and driver_issues_count == 0
+
     return DayStatus(
         fecha=fecha,
         visitas=total,
@@ -915,6 +926,247 @@ def day_status(
         dotacion_checked=user.is_falabella,
         no_conflicts=no_conflicts,
         started=started,
+        config_issues_count=config_issues_count,
+        driver_issues_count=driver_issues_count,
+        vip_count=vip_count,
+        prep_ok=prep_ok,
+    )
+
+
+# ============================================================================
+# Plan del día simplificado: VIPs / Config pendiente / Drivers con problemas
+# ============================================================================
+class PrepVip(BaseModel):
+    tracking_id: str
+    cliente: str
+    comuna: Optional[str] = None
+    folio: Optional[str] = None
+    deadline: Optional[str] = None
+    ruta_id: Optional[str] = None
+    driver_name: Optional[str] = None
+    priority_set: bool = False
+
+
+class PrepConfigIssue(BaseModel):
+    tracking_id: str
+    cliente: str
+    issue_type: str   # 'no_region' | 'no_comuna' | 'no_ruta' | 'no_ct' | 'vip_sin_prioridad'
+    issue_label: str
+
+
+class PrepDriverIssue(BaseModel):
+    driver_id: Optional[str] = None
+    driver_name: Optional[str] = None
+    ruta_id: Optional[str] = None
+    issue_type: str   # 'dotacion' | 'sin_telefono' | 'sin_licencia' | 'driver_inactivo' | 'vehiculo_no_operable'
+    issue_label: str
+    affects_visits: int = 0
+
+
+class DayPrep(BaseModel):
+    fecha: str
+    vips: list[PrepVip] = []
+    config_issues: list[PrepConfigIssue] = []
+    driver_issues: list[PrepDriverIssue] = []
+    all_ok: bool = False
+
+
+def _empty_day_prep(fecha: str) -> dict:
+    return {"fecha": fecha, "vips": [], "config_issues": [], "driver_issues": []}
+
+
+def _compute_day_prep(fecha: str, user: CurrentUser) -> dict:
+    """Calcula las 3 secciones del Plan del día. Retorna dict (no Pydantic)
+    para que sea reutilizable desde /day-status."""
+    scope_where = ""
+    scope_params: list = []
+    if not user.is_falabella:
+        scope_where = " AND s.Empresa_falsa = ?"
+        scope_params.append(user.empresa_id)
+
+    vips: list[dict] = []
+    config_issues: list[dict] = []
+    driver_issues: list[dict] = []
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        # ---- VIPs del día (match por title contra fpoc.vip_clients activos) ----
+        cur.execute(
+            f"""SELECT s.id, s.title, s.comuna, s.reference, s.ruta_id, s.Drivername,
+                       s.sla_hour_checkout_eta
+                FROM fpoc.simpli_visits s
+                INNER JOIN fpoc.vip_clients v
+                    ON v.active = 1 AND v.match_type = 'title' AND v.match_value = s.title
+                WHERE s.planned_date = ?{scope_where}""",
+            fecha, *scope_params,
+        )
+        vip_rows = cur.fetchall()
+        vip_tids = [str(r.id) for r in vip_rows]
+
+        # Priorities ya seteadas para esos tids
+        priority_tids: set[str] = set()
+        if vip_tids:
+            marks = ",".join(["?"] * len(vip_tids))
+            cur.execute(
+                f"SELECT tracking_id FROM fpoc.visit_priority_overrides "
+                f"WHERE tracking_id IN ({marks})",
+                *vip_tids,
+            )
+            priority_tids = {str(r.tracking_id) for r in cur.fetchall()}
+
+        for r in vip_rows:
+            tid = str(r.id)
+            vips.append({
+                "tracking_id": tid,
+                "cliente": str(r.title or ""),
+                "comuna": str(r.comuna) if r.comuna else None,
+                "folio": str(r.reference) if r.reference else None,
+                "deadline": None,
+                "ruta_id": str(r.ruta_id) if r.ruta_id else None,
+                "driver_name": str(r.Drivername) if r.Drivername else None,
+                "priority_set": tid in priority_tids,
+            })
+
+        # ---- Config issues (region/comuna/ruta/ct faltantes, VIP sin priority) ----
+        cur.execute(
+            f"""SELECT s.id, s.title, s.region, s.comuna, s.ruta_id, s.ct
+                FROM fpoc.simpli_visits s
+                WHERE s.planned_date = ?
+                  AND (s.region IS NULL OR s.comuna IS NULL
+                       OR s.ruta_id IS NULL OR s.ruta_id = ''
+                       OR s.ct IS NULL OR s.ct = '')
+                {scope_where}""",
+            fecha, *scope_params,
+        )
+        for r in cur.fetchall():
+            tid = str(r.id)
+            cliente = str(r.title or "")
+            if not r.ruta_id:
+                config_issues.append({"tracking_id": tid, "cliente": cliente,
+                                      "issue_type": "no_ruta",
+                                      "issue_label": "Sin ruta asignada"})
+            elif not r.region:
+                config_issues.append({"tracking_id": tid, "cliente": cliente,
+                                      "issue_type": "no_region",
+                                      "issue_label": "Sin región"})
+            elif not r.comuna:
+                config_issues.append({"tracking_id": tid, "cliente": cliente,
+                                      "issue_type": "no_comuna",
+                                      "issue_label": "Sin comuna"})
+            elif not r.ct:
+                config_issues.append({"tracking_id": tid, "cliente": cliente,
+                                      "issue_type": "no_ct",
+                                      "issue_label": "Sin centro de distribución"})
+
+        for v in vips:
+            if not v["priority_set"]:
+                config_issues.append({
+                    "tracking_id": v["tracking_id"], "cliente": v["cliente"],
+                    "issue_type": "vip_sin_prioridad",
+                    "issue_label": "VIP sin prioridad explícita seteada",
+                })
+
+        # ---- Driver/dotación issues ----
+        # 1) Conflictos de dotación del día (ausentes, licencia, mantención, etc.)
+        for c in _check_dotacion_conflicts(fecha):
+            driver_issues.append({
+                "driver_id": str(c.driver_id) if c.driver_id is not None else None,
+                "driver_name": c.driver_name,
+                "ruta_id": c.ruta_id,
+                "issue_type": "dotacion",
+                "issue_label": f"{c.estado} — {c.motivo or 'sin motivo'}",
+                "affects_visits": int(c.visitas_afectadas or 0),
+            })
+
+        # 2) Drivers de las rutas del día sin phone_e164 o sin licencia
+        cur.execute(
+            f"""SELECT DISTINCT s.Drivername, s.ruta_id, COUNT(s.id) AS n
+                FROM fpoc.simpli_visits s
+                WHERE s.planned_date = ?{scope_where}
+                  AND s.Drivername IS NOT NULL AND s.Drivername <> ''
+                GROUP BY s.Drivername, s.ruta_id""",
+            fecha, *scope_params,
+        )
+        ruta_drivers = cur.fetchall()
+        names = list({r.Drivername for r in ruta_drivers if r.Drivername})
+        driver_meta: dict[str, dict] = {}
+        if names:
+            marks = ",".join(["?"] * len(names))
+            cur.execute(
+                f"""SELECT driver_id, name, phone_e164, license, active
+                    FROM fpoc.drivers WHERE name IN ({marks})""",
+                *names,
+            )
+            for r in cur.fetchall():
+                driver_meta[str(r.name)] = {
+                    "driver_id": str(r.driver_id) if r.driver_id is not None else None,
+                    "phone_e164": r.phone_e164,
+                    "license": r.license,
+                    "active": bool(r.active),
+                }
+
+        for r in ruta_drivers:
+            dn = str(r.Drivername)
+            meta = driver_meta.get(dn)
+            ruta = str(r.ruta_id) if r.ruta_id else None
+            affects = int(r.n or 0)
+            if not meta:
+                driver_issues.append({
+                    "driver_id": None, "driver_name": dn, "ruta_id": ruta,
+                    "issue_type": "driver_inactivo",
+                    "issue_label": "Driver no existe en maestro",
+                    "affects_visits": affects,
+                })
+                continue
+            if not meta["active"]:
+                driver_issues.append({
+                    "driver_id": meta["driver_id"], "driver_name": dn, "ruta_id": ruta,
+                    "issue_type": "driver_inactivo",
+                    "issue_label": "Driver marcado inactivo",
+                    "affects_visits": affects,
+                })
+            if not meta["phone_e164"]:
+                driver_issues.append({
+                    "driver_id": meta["driver_id"], "driver_name": dn, "ruta_id": ruta,
+                    "issue_type": "sin_telefono",
+                    "issue_label": "Sin teléfono E.164 para WhatsApp",
+                    "affects_visits": affects,
+                })
+            if not meta["license"]:
+                driver_issues.append({
+                    "driver_id": meta["driver_id"], "driver_name": dn, "ruta_id": ruta,
+                    "issue_type": "sin_licencia",
+                    "issue_label": "Sin licencia registrada",
+                    "affects_visits": affects,
+                })
+
+    return {
+        "fecha": fecha,
+        "vips": vips,
+        "config_issues": config_issues,
+        "driver_issues": driver_issues,
+    }
+
+
+@router.get("/api/planificacion/day-prep", response_model=DayPrep)
+def day_prep(
+    fecha: str = Query(...),
+    user: CurrentUser = Depends(current_user),
+) -> DayPrep:
+    """Plan del día simplificado: 3 listas accionables."""
+    from datetime import date as _date_cls
+    try:
+        _date_cls.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, f"fecha inválida: {fecha}")
+    p = _compute_day_prep(fecha, user)
+    all_ok = (not p["config_issues"]) and (not p["driver_issues"])
+    return DayPrep(
+        fecha=fecha,
+        vips=[PrepVip(**v) for v in p["vips"]],
+        config_issues=[PrepConfigIssue(**c) for c in p["config_issues"]],
+        driver_issues=[PrepDriverIssue(**d) for d in p["driver_issues"]],
+        all_ok=all_ok,
     )
 
 

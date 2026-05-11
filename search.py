@@ -193,17 +193,8 @@ def _search_drivers(cn, q: str, user: CurrentUser) -> list[SearchHit]:
     params: list = [like, like, like, like]
 
     if not user.is_falabella:
-        # Filtrar por vehicle_ids de la empresa
-        try:
-            from state import STATE
-            allowed = STATE.vehicle_ids_for_empresa(user.empresa_id)
-        except Exception:
-            allowed = []
-        if not allowed:
-            return []
-        marks = ",".join(["?"] * len(allowed))
-        base += f" AND vehicle_id IN ({marks})"
-        params += list(allowed)
+        base += " AND empresa_id = ?"
+        params.append(user.empresa_id)
 
     base += " ORDER BY name LIMIT ?"
     params.append(MAX_PER_CATEGORY)

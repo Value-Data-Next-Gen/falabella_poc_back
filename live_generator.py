@@ -384,6 +384,11 @@ def _insert_tick() -> None:
     sino cae a date.today() del wall-clock."""
     if not STATE.enabled:
         return
+    # Insertar visitas sintéticas está desactivado por default — live_gen
+    # solo simula movimiento de drivers (otra historia), no genera demanda.
+    # Para reactivar la generación de demo, setear LIVE_GEN_CREATE_VISITS=true.
+    if os.environ.get("LIVE_GEN_CREATE_VISITS", "false").lower() != "true":
+        return
     try:
         # Importar acá para evitar ciclo en el import inicial
         from state import STATE as APP_STATE

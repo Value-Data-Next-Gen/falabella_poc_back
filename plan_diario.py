@@ -84,6 +84,9 @@ class PlanRuta(BaseModel):
     plate: Optional[str] = None
     patente: Optional[str] = None  # NEW alias
     driver_name: str
+    dotacion_estado: Optional[str] = None
+    dotacion_motivo: Optional[str] = None
+    operable: bool = True
     region: str = "RM"           # NEW Sprint 6: region dominante de la ruta
     ct: Optional[str] = None     # NEW Sprint 6: centro de despacho
     next_stop_order: Optional[int] = None  # NEW alias de orden_actual
@@ -259,6 +262,37 @@ def _load_last_motivo(tids: list[str]) -> dict[str, tuple[str, str]]:
     except Exception:  # noqa: BLE001
         pass
     return out
+
+
+def _load_dotacion(planned_date: str) -> tuple[dict[int, dict], dict[str, dict]]:
+    """Daily availability by vehicle_id and by normalized driver_name."""
+    by_vehicle: dict[int, dict] = {}
+    by_driver_name: dict[str, dict] = {}
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """
+                SELECT dd.vehicle_id, dd.driver_id, dd.estado, dd.motivo, d.name AS driver_name
+                FROM fpoc.dotacion_diaria dd
+                LEFT JOIN fpoc.drivers d ON d.driver_id = dd.driver_id
+                WHERE dd.fecha = ?
+                """,
+                planned_date,
+            )
+            for r in cur.fetchall():
+                item = {
+                    "estado": str(r.estado),
+                    "motivo": str(r.motivo) if r.motivo else None,
+                    "driver_id": str(r.driver_id) if r.driver_id else None,
+                }
+                if r.vehicle_id is not None:
+                    by_vehicle[int(r.vehicle_id)] = item
+                if r.driver_name:
+                    by_driver_name[str(r.driver_name).strip().lower()] = item
+    except Exception:  # noqa: BLE001
+        pass
+    return by_vehicle, by_driver_name
 
 
 def _resolve_planned_date(requested: Optional[str]) -> str:
@@ -499,6 +533,7 @@ def _build_new_from_real(
     vip_map = _load_vip_match(list(set(titles)))
     priority_map = _load_priority_overrides(tids)
     motivo_map = _load_last_motivo(tids)
+    dotacion_by_vehicle, dotacion_by_driver = _load_dotacion(pd_iso)
 
     # Filtro only_vip
     if only_vip:
@@ -589,6 +624,13 @@ def _build_new_from_real(
             patente_str = f"PAT-{sample['patente']:03d}"
             ct_dom = next(iter(ct_set - {""}), None) or sample["ct"]
             region_dom = next(iter(region_set - {""}), "RM") or "RM"
+            dotacion = (
+                dotacion_by_vehicle.get(int(sample["patente"]))
+                or dotacion_by_driver.get(str(sample["drivername"]).strip().lower())
+            )
+            dotacion_estado = dotacion.get("estado") if dotacion else None
+            dotacion_motivo = dotacion.get("motivo") if dotacion else None
+            operable = dotacion_estado in (None, "disponible", "reemplazo")
 
             rutas_out.append(PlanRuta(
                 ruta_id=rid,
@@ -597,6 +639,9 @@ def _build_new_from_real(
                 plate=patente_str,
                 patente=patente_str,
                 driver_name=sample["drivername"] or f"Driver {sample['patente']}",
+                dotacion_estado=dotacion_estado,
+                dotacion_motivo=dotacion_motivo,
+                operable=operable,
                 region=region_dom,
                 ct=ct_dom,
                 next_stop_order=orden_actual,

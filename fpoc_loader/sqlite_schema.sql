@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS fpoc_drivers (
     name             TEXT     NOT NULL,
     phone            TEXT,
     license          TEXT,
+    empresa_id       INTEGER,
     vehicle_id       INTEGER  NOT NULL,
     vehicle_name     TEXT     NOT NULL,
     rating           REAL     NOT NULL DEFAULT 4.5,
@@ -228,6 +229,8 @@ CREATE TABLE IF NOT EXISTS fpoc_drivers (
     opted_in_at      TIMESTAMP,
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS IX_drivers_empresa ON fpoc_drivers(empresa_id);
 
 -- Sprint 4.A2: Tabla de correcciones de motivo (LLM auto-validation)
 CREATE TABLE IF NOT EXISTS fpoc_motivo_corrections (
@@ -253,6 +256,7 @@ CREATE INDEX IF NOT EXISTS idx_corrections_tracking ON fpoc_motivo_corrections(t
 
 CREATE TABLE IF NOT EXISTS fpoc_vehicles (
     vehicle_id     INTEGER  PRIMARY KEY,
+    empresa_id     INTEGER,
     name           TEXT     NOT NULL,
     type           TEXT     NOT NULL,
     plate          TEXT     NOT NULL,
@@ -266,6 +270,35 @@ CREATE TABLE IF NOT EXISTS fpoc_vehicles (
     is_problem_hidden INTEGER NOT NULL DEFAULT 0,
     updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS IX_vehicles_empresa ON fpoc_vehicles(empresa_id);
+
+CREATE TABLE IF NOT EXISTS fpoc_dotacion_diaria (
+    dotacion_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    fecha              DATE     NOT NULL,
+    empresa_id         INTEGER  NOT NULL,
+    driver_id          TEXT,
+    vehicle_id         INTEGER,
+    estado             TEXT     NOT NULL DEFAULT 'disponible',
+    motivo             TEXT,
+    updated_by_user_id INTEGER,
+    created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (empresa_id) REFERENCES fpoc_empresas_transporte(empresa_id),
+    FOREIGN KEY (driver_id) REFERENCES fpoc_drivers(driver_id),
+    FOREIGN KEY (vehicle_id) REFERENCES fpoc_vehicles(vehicle_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS UX_dotacion_diaria_driver
+ON fpoc_dotacion_diaria(fecha, empresa_id, driver_id)
+WHERE driver_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS UX_dotacion_diaria_vehicle
+ON fpoc_dotacion_diaria(fecha, empresa_id, vehicle_id)
+WHERE vehicle_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS IX_dotacion_diaria_scope
+ON fpoc_dotacion_diaria(fecha, empresa_id, estado);
 
 CREATE TABLE IF NOT EXISTS fpoc_clients (
     customer_id      TEXT     PRIMARY KEY,
