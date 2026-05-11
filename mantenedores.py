@@ -1950,6 +1950,126 @@ def delete_driver_capacitacion(
     return {"deleted": cap_id}
 
 
+class WhatsAppInviteRequest(BaseModel):
+    phone_e164: str = Field(min_length=8, max_length=20)
+    name: Optional[str] = Field(default=None, max_length=200)
+    role_hint: Optional[str] = Field(
+        default=None,
+        pattern="^(driver|manager|contacto)$",
+        description="Pista del rol para el mensaje de bienvenida",
+    )
+    # Opcionales para registrar opt-in en la entidad correcta una vez confirmen:
+    driver_id: Optional[str] = Field(default=None, max_length=20)
+    user_id: Optional[int] = Field(default=None, ge=1)
+    contact_id: Optional[int] = Field(default=None, ge=1)
+    custom_message: Optional[str] = Field(default=None, max_length=500)
+
+
+class WhatsAppInviteResponse(BaseModel):
+    ok: bool
+    status: str         # 'sent' | 'dry_run' | 'error'
+    twilio_sid: Optional[str] = None
+    error: Optional[str] = None
+    sandbox_warning: Optional[str] = None
+    target_phone: str
+    body_preview: str
+
+
+@router.post("/whatsapp/invite", response_model=WhatsAppInviteResponse)
+def whatsapp_invite(
+    req: WhatsAppInviteRequest,
+    user: CurrentUser = Depends(current_user),
+) -> WhatsAppInviteResponse:
+    """Envía un mensaje proactivo de WhatsApp invitando al usuario a opt-in.
+
+    Permisos:
+    - admin/ops: cualquier número.
+    - transport_manager: solo números de drivers/contactos de SU empresa.
+    """
+    from notifications import send_whatsapp, TwilioConfig
+    if not user.is_falabella and user.role != "transport_manager":
+        raise HTTPException(403, "Sin permisos para invitar")
+
+    phone = req.phone_e164.strip()
+    if not phone.startswith("+"):
+        raise HTTPException(400, "phone_e164 debe empezar con + (formato E.164)")
+
+    # Scope para transport_manager: validar que phone pertenezca a SU empresa
+    if user.role == "transport_manager":
+        with get_conn() as cn:
+            cur = cn.cursor()
+            # Driver de su empresa?
+            cur.execute(
+                "SELECT 1 FROM fpoc.drivers WHERE phone = ? AND empresa_id = ?",
+                phone, user.empresa_id,
+            )
+            ok_driver = cur.fetchone() is not None
+            # Contacto de su empresa?
+            cur.execute(
+                "SELECT 1 FROM fpoc.empresa_contactos WHERE phone_e164 = ? AND empresa_id = ?",
+                phone, user.empresa_id,
+            )
+            ok_contact = cur.fetchone() is not None
+            if not (ok_driver or ok_contact):
+                raise HTTPException(403, "Ese número no pertenece a tu empresa")
+
+    nombre = req.name or "Usuario"
+    role = req.role_hint or "contacto"
+    role_label = {
+        "driver": "conductor",
+        "manager": "responsable de transporte",
+        "contacto": "contacto",
+    }.get(role, "contacto")
+
+    if req.custom_message:
+        body = req.custom_message
+    else:
+        body = (
+            f"Hola {nombre}, te están invitando como *{role_label}* a la Torre de "
+            f"Control ValueData × Falabella.\n\n"
+            f"Para activar las alertas y poder reportar entregas por WhatsApp, "
+            f"respondé *SI* a este mensaje.\n\n"
+            f"Si fue un error, ignorá y te damos de baja."
+        )
+
+    res = send_whatsapp(
+        body=body,
+        targets=[(req.user_id, phone)],
+        subject="Invitación WhatsApp",
+        triggered_by="invite",
+    )
+
+    cfg = TwilioConfig.from_env()
+    sandbox_warning = None
+    if "+14155238886" in cfg.from_number:
+        sandbox_warning = (
+            "Estás usando el sandbox de Twilio (+14155238886). El destinatario tiene "
+            "que haber enviado 'join <code>' desde su WhatsApp para poder recibir "
+            "mensajes. Configurá TWILIO_WHATSAPP_FROM con tu número propio para evitar esto."
+        )
+
+    if res.results:
+        r = res.results[0]
+        return WhatsAppInviteResponse(
+            ok=(r.status in ("sent", "dry_run")),
+            status=r.status,
+            twilio_sid=r.twilio_sid,
+            error=r.error,
+            sandbox_warning=sandbox_warning,
+            target_phone=phone,
+            body_preview=body[:200],
+        )
+    # Sin results = notifications deshabilitado
+    return WhatsAppInviteResponse(
+        ok=False,
+        status="disabled",
+        error="NOTIFICATIONS_ENABLED=false en el backend",
+        sandbox_warning=sandbox_warning,
+        target_phone=phone,
+        body_preview=body[:200],
+    )
+
+
 @router.post("/drivers/{driver_id}/capacitaciones/{cap_id}/validate",
               response_model=DriverCapacitacionOut)
 def validate_driver_capacitacion(
