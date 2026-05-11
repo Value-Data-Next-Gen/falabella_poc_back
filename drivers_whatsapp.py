@@ -778,6 +778,104 @@ def start_day(
     )
 
 
+class CalendarDay(BaseModel):
+    fecha: str
+    visitas: int
+    is_today: bool                # coincide con STATE.today
+    imported_at: Optional[str] = None
+    conflicts_count: int = 0
+    failed: int = 0
+    completed: int = 0
+    pending: int = 0
+
+
+@router.get("/api/planificacion/calendar", response_model=list[CalendarDay])
+def operational_calendar(
+    month: Optional[str] = Query(default=None, description="YYYY-MM (default: mes actual)"),
+    user: CurrentUser = Depends(current_user),
+) -> list[CalendarDay]:
+    """Lista de días con visitas cargadas para un mes.
+
+    Si transport_manager, las visitas se filtran a su empresa.
+    """
+    from datetime import date as _date_cls
+    today = _date_cls.today()
+    if month:
+        try:
+            y, m = month.split("-")
+            year, mon = int(y), int(m)
+        except Exception:
+            raise HTTPException(400, f"month inválido: {month} (esperado YYYY-MM)")
+    else:
+        year, mon = today.year, today.month
+    start = _date_cls(year, mon, 1)
+    if mon == 12:
+        end = _date_cls(year + 1, 1, 1)
+    else:
+        end = _date_cls(year, mon + 1, 1)
+
+    # Scope por empresa
+    scope_where = ""
+    scope_params: list = []
+    if not user.is_falabella:
+        scope_where = " AND Empresa_falsa = ?"
+        scope_params.append(user.empresa_id)
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            f"""SELECT planned_date,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending
+                FROM fpoc.simpli_visits
+                WHERE planned_date >= ? AND planned_date < ?
+                {scope_where}
+                GROUP BY planned_date
+                ORDER BY planned_date""",
+            start.isoformat(), end.isoformat(), *scope_params,
+        )
+        rows = cur.fetchall()
+        # Imports log
+        imports_map: dict[str, str] = {}
+        try:
+            cur.execute(
+                "SELECT fecha, imported_at FROM fpoc_planificacion_imports "
+                "WHERE fecha >= ? AND fecha < ?",
+                start.isoformat(), end.isoformat(),
+            )
+            for r in cur.fetchall():
+                imports_map[str(r.fecha)] = str(r.imported_at) if r.imported_at else None
+        except Exception:  # noqa: BLE001
+            pass
+
+    # State.today
+    state_today = None
+    try:
+        from state import STATE
+        if STATE.today:
+            state_today = STATE.today.isoformat()
+    except Exception:  # noqa: BLE001
+        pass
+
+    out: list[CalendarDay] = []
+    for r in rows:
+        fecha_iso = r.planned_date.isoformat() if hasattr(r.planned_date, "isoformat") else str(r.planned_date)
+        conflicts = _check_dotacion_conflicts(fecha_iso) if user.is_falabella else []
+        out.append(CalendarDay(
+            fecha=fecha_iso,
+            visitas=int(r.total or 0),
+            is_today=(fecha_iso == state_today),
+            imported_at=imports_map.get(fecha_iso),
+            conflicts_count=len(conflicts),
+            failed=int(r.failed or 0),
+            completed=int(r.completed or 0),
+            pending=int(r.pending or 0),
+        ))
+    return out
+
+
 @router.get("/api/planificacion/dotacion-check", response_model=list[DotacionConflict])
 def dotacion_check(
     fecha: str = Query(...),
