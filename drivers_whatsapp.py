@@ -778,6 +778,113 @@ def start_day(
     )
 
 
+class DayStatus(BaseModel):
+    fecha: str
+    visitas: int = 0
+    completed: int = 0
+    failed: int = 0
+    pending: int = 0
+    conflicts_count: int = 0
+    is_state_today: bool = False
+    live_gen_running: bool = False
+    imported_at: Optional[str] = None
+    imported_by_user_id: Optional[int] = None
+    # Status derivado para el wizard
+    loaded: bool = False                 # tiene visitas
+    dotacion_checked: bool = False       # se cruzó con dotacion (siempre true si hay backend)
+    no_conflicts: bool = False           # conflicts_count == 0
+    started: bool = False                # is_state_today + live_gen_paused
+
+
+@router.get("/api/planificacion/day-status", response_model=DayStatus)
+def day_status(
+    fecha: str = Query(...),
+    user: CurrentUser = Depends(current_user),
+) -> DayStatus:
+    """Estado consolidado del día para el wizard:
+    visitas, conflictos, si está como STATE.today, si live_gen está corriendo,
+    si fue importado, derivaciones para los steps del wizard.
+    """
+    from datetime import date as _date_cls
+    try:
+        _date_cls.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, f"fecha inválida: {fecha}")
+
+    scope_where = ""
+    scope_params: list = []
+    if not user.is_falabella:
+        scope_where = " AND Empresa_falsa = ?"
+        scope_params.append(user.empresa_id)
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            f"""SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending
+                FROM fpoc.simpli_visits
+                WHERE planned_date = ?
+                {scope_where}""",
+            fecha, *scope_params,
+        )
+        r = cur.fetchone()
+        total = int(r.total or 0)
+        completed = int(r.completed or 0)
+        failed = int(r.failed or 0)
+        pending = int(r.pending or 0)
+
+        imported_at = None
+        imported_by = None
+        try:
+            cur.execute(
+                "SELECT imported_at, imported_by_user_id FROM fpoc_planificacion_imports WHERE fecha = ?",
+                fecha,
+            )
+            row = cur.fetchone()
+            if row:
+                imported_at = str(row.imported_at) if row.imported_at else None
+                imported_by = int(row.imported_by_user_id) if row.imported_by_user_id is not None else None
+        except Exception:  # noqa: BLE001
+            pass
+
+    conflicts = _check_dotacion_conflicts(fecha) if user.is_falabella else []
+
+    # STATE.today + live_gen
+    is_state_today = False
+    live_gen_running = False
+    try:
+        from state import STATE
+        if STATE.today and STATE.today.isoformat() == fecha:
+            is_state_today = True
+        from live_generator import STATE as LIVE_STATE
+        live_gen_running = bool(LIVE_STATE.enabled)
+    except Exception:  # noqa: BLE001
+        pass
+
+    loaded = total > 0
+    no_conflicts = len(conflicts) == 0
+    started = is_state_today and not live_gen_running
+
+    return DayStatus(
+        fecha=fecha,
+        visitas=total,
+        completed=completed,
+        failed=failed,
+        pending=pending,
+        conflicts_count=len(conflicts),
+        is_state_today=is_state_today,
+        live_gen_running=live_gen_running,
+        imported_at=imported_at,
+        imported_by_user_id=imported_by,
+        loaded=loaded,
+        dotacion_checked=user.is_falabella,
+        no_conflicts=no_conflicts,
+        started=started,
+    )
+
+
 class CalendarDay(BaseModel):
     fecha: str
     visitas: int
