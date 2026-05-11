@@ -138,6 +138,7 @@ class Driver(BaseModel):
     name: str
     phone: str
     license: str
+    empresa_id: Optional[int] = None
     vehicle_id: int
     vehicle_name: str
     rating: float
@@ -149,6 +150,7 @@ class Driver(BaseModel):
 
 class VehicleExtended(BaseModel):
     vehicle_id: int
+    empresa_id: Optional[int] = None
     name: str
     type: str
     plate: str
@@ -226,6 +228,7 @@ class EmpresaSummary(BaseModel):
     empresa_id: int
     nombre: str
     activo: bool
+    central_phone: Optional[str] = None
     contactos_count: int
     opted_in_count: int
     last_alert_at: Optional[str] = None

@@ -35,17 +35,20 @@ class EmpresaIn(BaseModel):
     empresa_id: int = Field(ge=1)
     nombre: str = Field(min_length=1, max_length=100)
     activo: bool = True
+    central_phone: Optional[str] = Field(default=None, max_length=20)
 
 
 class EmpresaUpdate(BaseModel):
     nombre: Optional[str] = Field(default=None, min_length=1, max_length=100)
     activo: Optional[bool] = None
+    central_phone: Optional[str] = Field(default=None, max_length=20)
 
 
 class EmpresaOut(BaseModel):
     empresa_id: int
     nombre: str
     activo: bool
+    central_phone: Optional[str] = None
     created_at: Optional[str] = None
 
 
@@ -55,8 +58,12 @@ def _empresa_row(r) -> EmpresaOut:
         empresa_id=int(r.empresa_id),
         nombre=r.nombre,
         activo=bool(r.activo),
+        central_phone=getattr(r, "central_phone", None),
         created_at=created.isoformat() if hasattr(created, "isoformat") else (created or None),
     )
+
+
+_EMPRESA_COLS = "empresa_id, nombre, activo, central_phone, created_at"
 
 
 @router.get("/empresas", response_model=list[EmpresaOut])
@@ -64,7 +71,7 @@ def list_empresas(_: CurrentUser = Depends(require_admin)) -> list[EmpresaOut]:
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            "SELECT empresa_id, nombre, activo, created_at FROM fpoc.empresas_transporte ORDER BY empresa_id"
+            f"SELECT {_EMPRESA_COLS} FROM fpoc.empresas_transporte ORDER BY empresa_id"
         )
         return [_empresa_row(r) for r in cur.fetchall()]
 
@@ -75,15 +82,16 @@ def create_empresa(req: EmpresaIn, _: CurrentUser = Depends(require_admin)) -> E
         cur = cn.cursor()
         try:
             cur.execute(
-                "INSERT INTO fpoc.empresas_transporte (empresa_id, nombre, activo) VALUES (?, ?, ?)",
-                req.empresa_id, req.nombre, 1 if req.activo else 0,
+                "INSERT INTO fpoc.empresas_transporte (empresa_id, nombre, activo, central_phone) "
+                "VALUES (?, ?, ?, ?)",
+                req.empresa_id, req.nombre, 1 if req.activo else 0, req.central_phone,
             )
             cn.commit()
         except Exception as e:  # noqa: BLE001
             cn.rollback()
             raise HTTPException(409, f"empresa duplicada o inválida: {e}")
         cur.execute(
-            "SELECT empresa_id, nombre, activo, created_at FROM fpoc.empresas_transporte WHERE empresa_id = ?",
+            f"SELECT {_EMPRESA_COLS} FROM fpoc.empresas_transporte WHERE empresa_id = ?",
             req.empresa_id,
         )
         return _empresa_row(cur.fetchone())
@@ -97,6 +105,9 @@ def update_empresa(empresa_id: int, req: EmpresaUpdate,
         sets.append("nombre = ?"); params.append(req.nombre)
     if req.activo is not None:
         sets.append("activo = ?"); params.append(1 if req.activo else 0)
+    if req.central_phone is not None:
+        # cadena vacía → null
+        sets.append("central_phone = ?"); params.append(req.central_phone or None)
     if not sets:
         raise HTTPException(400, "nada que actualizar")
     params.append(empresa_id)
@@ -110,7 +121,7 @@ def update_empresa(empresa_id: int, req: EmpresaUpdate,
             raise HTTPException(404, "empresa no encontrada")
         cn.commit()
         cur.execute(
-            "SELECT empresa_id, nombre, activo, created_at FROM fpoc.empresas_transporte WHERE empresa_id = ?",
+            f"SELECT {_EMPRESA_COLS} FROM fpoc.empresas_transporte WHERE empresa_id = ?",
             empresa_id,
         )
         return _empresa_row(cur.fetchone())

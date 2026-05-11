@@ -171,11 +171,11 @@ def list_empresas_with_summary(user: CurrentUser = Depends(current_user)) -> lis
         cur = cn.cursor()
         if user.is_falabella:
             cur.execute(
-                "SELECT empresa_id, nombre, activo FROM fpoc_empresas_transporte ORDER BY empresa_id"
+                "SELECT empresa_id, nombre, activo, central_phone FROM fpoc_empresas_transporte ORDER BY empresa_id"
             )
         else:
             cur.execute(
-                "SELECT empresa_id, nombre, activo FROM fpoc_empresas_transporte WHERE empresa_id = ?",
+                "SELECT empresa_id, nombre, activo, central_phone FROM fpoc_empresas_transporte WHERE empresa_id = ?",
                 user.empresa_id,
             )
         empresas = cur.fetchall()
@@ -216,6 +216,7 @@ def list_empresas_with_summary(user: CurrentUser = Depends(current_user)) -> lis
                 empresa_id=eid,
                 nombre=e.nombre,
                 activo=bool(e.activo),
+                central_phone=getattr(e, "central_phone", None),
                 contactos_count=total,
                 opted_in_count=optin,
                 last_alert_at=last_at,
