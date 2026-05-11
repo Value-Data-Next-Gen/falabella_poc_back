@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from auth import CurrentUser, current_user, require_admin
@@ -494,6 +494,200 @@ def import_mock(
         count=inserted,
         fecha=target_date.isoformat(),
         already_imported=False,
+        message=msg,
+        conflicts=conflicts,
+    )
+
+
+class ImportXlsxResponse(BaseModel):
+    ok: bool
+    fechas: list[str] = []          # planned_dates encontrados en el xlsx
+    simpli_count: int = 0
+    geo_count: int = 0
+    skipped: int = 0
+    message: str = ""
+    conflicts: list[DotacionConflict] = []
+
+
+@router.post("/api/planificacion/import-xlsx", response_model=ImportXlsxResponse)
+async def import_xlsx(
+    file: UploadFile = File(...),
+    force: bool = Query(default=False, description="Si true, reemplaza fechas existentes"),
+    user: CurrentUser = Depends(current_user),
+) -> ImportXlsxResponse:
+    """Carga el XLSX REAL de SimpliRoute (formato datos_eta_YYYY-MM-DD.xlsx).
+
+    Hoja 'Simpli' → fpoc.simpli_visits (DELETE por planned_date encontrado + INSERT).
+    Hoja 'Geo'   → fpoc.geo_suborders (DELETE por idruta encontrado + INSERT).
+
+    Reusa la lógica del script fpoc_loader/load_to_azure.py para mantener
+    consistencia con el seed inicial.
+    """
+    if not user.is_falabella:
+        raise HTTPException(403, "Solo admin/ops puede cargar XLSX")
+    import pandas as pd
+    import io as _io
+    from fpoc_loader.load_to_azure import SIMPLI_COLS, GEO_COLS
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "archivo vacío")
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(413, "archivo > 50MB")
+
+    try:
+        xl = pd.ExcelFile(_io.BytesIO(raw))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"no es un xlsx válido: {e}")
+
+    sheets = set(xl.sheet_names)
+    if "Simpli" not in sheets:
+        raise HTTPException(400, f"hoja 'Simpli' no encontrada. hojas: {list(sheets)}")
+    has_geo = "Geo" in sheets
+
+    df_s = pd.read_excel(xl, sheet_name="Simpli")
+    df_g = pd.read_excel(xl, sheet_name="Geo") if has_geo else None
+
+    # Validar columnas mínimas en Simpli
+    missing = [c for c in SIMPLI_COLS if c not in df_s.columns]
+    if missing:
+        raise HTTPException(400, f"hoja Simpli sin columnas requeridas: {missing[:10]}")
+
+    df = df_s[SIMPLI_COLS].copy()
+    before = len(df)
+    df = df.drop_duplicates(subset=["id"], keep="first")
+    deduped = before - len(df)
+
+    df["planned_date"] = pd.to_datetime(df["planned_date"]).dt.date
+    df["checkout_cl"] = pd.to_datetime(df["checkout_cl"])
+    df["current_eta_cl"] = pd.to_datetime(df["current_eta_cl"])
+    for c in ("checkout_comment", "checkout_observation"):
+        df[c] = df[c].astype(object).where(df[c].notna(), None)
+    for c in (
+        "fechas_futuras_bq", "finicio_currenteta_bq",
+        "current_eta_cl_fechainicioruta_dates",
+        "ruta_eta_futuro", "ruta_fecha_inicio_mayor_eta",
+        "ruta_primer_punto_lejano", "ruta_fecha_inicio_distinta_fecha_eta",
+        "ruta_anomala",
+    ):
+        if c in df.columns:
+            df[c] = df[c].astype(int)
+
+    fechas = sorted({d.isoformat() for d in df["planned_date"].unique()})
+
+    # Si force=False y alguna fecha ya tiene visitas, devolver advertencia
+    with get_conn() as cn:
+        cur = cn.cursor()
+        if not force:
+            existing_dates = []
+            for d in fechas:
+                cur.execute("SELECT COUNT(*) FROM fpoc.simpli_visits WHERE planned_date = ?", d)
+                if int(cur.fetchone()[0]) > 0:
+                    existing_dates.append(d)
+            if existing_dates:
+                return ImportXlsxResponse(
+                    ok=False,
+                    fechas=fechas,
+                    skipped=len(df),
+                    message=(f"Fechas ya cargadas: {existing_dates}. "
+                              f"Reenvía con force=true para reemplazar."),
+                )
+
+        # DELETE + INSERT por fechas
+        for d in fechas:
+            cur.execute("DELETE FROM fpoc.simpli_visits WHERE planned_date = ?", d)
+
+        placeholders = ", ".join(["?"] * len(SIMPLI_COLS))
+        cols_sql = ", ".join(f"[{c}]" for c in SIMPLI_COLS)
+        rows = [tuple(None if pd.isna(v) else v for v in row)
+                for row in df.itertuples(index=False, name=None)]
+        try:
+            cur.fast_executemany = True
+        except Exception:  # noqa: BLE001
+            pass
+        cur.executemany(
+            f"INSERT INTO fpoc.simpli_visits ({cols_sql}) VALUES ({placeholders})",
+            rows,
+        )
+
+        simpli_count = len(rows)
+        geo_count = 0
+        if df_g is not None and not df_g.empty:
+            missing_g = [c for c in GEO_COLS if c not in df_g.columns]
+            if not missing_g:
+                dg = df_g[GEO_COLS].copy().drop_duplicates(subset=["Suborden"], keep="first")
+                dg["fechapactada"] = pd.to_datetime(dg["fechapactada"]).dt.date
+                for c in ("lpn", "parentorder"):
+                    dg[c] = dg[c].astype("Int64")
+                for c in ("motivonoentrega", "comentarionoentrega"):
+                    dg[c] = dg[c].astype(object).where(dg[c].notna(), None)
+                rutas = dg["idruta"].unique().tolist()
+                for i in range(0, len(rutas), 1000):
+                    chunk = rutas[i:i + 1000]
+                    marks = ",".join(["?"] * len(chunk))
+                    cur.execute(f"DELETE FROM fpoc.geo_suborders WHERE idruta IN ({marks})", *chunk)
+                geo_placeholders = ", ".join(["?"] * len(GEO_COLS))
+                geo_cols_sql = ", ".join(f"[{c}]" for c in GEO_COLS)
+                geo_rows = [tuple(None if pd.isna(v) else v for v in row)
+                            for row in dg.itertuples(index=False, name=None)]
+                cur.executemany(
+                    f"INSERT INTO fpoc.geo_suborders ({geo_cols_sql}) VALUES ({geo_placeholders})",
+                    geo_rows,
+                )
+                geo_count = len(geo_rows)
+
+        # Registrar imports
+        for d in fechas:
+            cur.execute("SELECT 1 FROM fpoc_planificacion_imports WHERE fecha = ?", (d,))
+            count_for_date = int(df[df["planned_date"].astype(str) == d].shape[0])
+            if cur.fetchone():
+                cur.execute(
+                    "UPDATE fpoc_planificacion_imports SET count = ?, "
+                    "imported_at = CURRENT_TIMESTAMP, imported_by_user_id = ? "
+                    "WHERE fecha = ?",
+                    (count_for_date, user.user_id, d),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO fpoc_planificacion_imports (fecha, count, imported_by_user_id) "
+                    "VALUES (?, ?, ?)",
+                    (d, count_for_date, user.user_id),
+                )
+        cn.commit()
+
+    # Pausar live_gen si STATE.today coincide con alguna fecha
+    paused = False
+    try:
+        from state import STATE
+        if STATE.today and STATE.today.isoformat() in fechas:
+            from live_generator import STATE as LIVE_STATE
+            if LIVE_STATE.enabled:
+                LIVE_STATE.enabled = False
+                paused = True
+            STATE.reset_day(start_date=STATE.today, day_seed=getattr(STATE, "day_seed", 42))
+    except Exception:  # noqa: BLE001
+        pass
+
+    conflicts = []
+    for d in fechas:
+        conflicts.extend(_check_dotacion_conflicts(d))
+
+    msg = f"Cargadas {simpli_count} visitas para {len(fechas)} fecha(s): {fechas}"
+    if geo_count:
+        msg += f" · {geo_count} suborders geo"
+    if deduped:
+        msg += f" · {deduped} duplicados omitidos"
+    if paused:
+        msg += " · live_gen pausado"
+    if conflicts:
+        msg += f" · ⚠ {len(conflicts)} conflictos de dotación"
+
+    return ImportXlsxResponse(
+        ok=True,
+        fechas=fechas,
+        simpli_count=simpli_count,
+        geo_count=geo_count,
+        skipped=deduped,
         message=msg,
         conflicts=conflicts,
     )
