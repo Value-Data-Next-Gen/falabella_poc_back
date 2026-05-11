@@ -472,6 +472,19 @@ def import_mock(
     except Exception:  # noqa: BLE001
         pass
 
+    # CUADRATURA: pausar el live_generator para que no siga inyectando filas
+    # al planned_date recién importado. Antes esto causaba que las 288 visitas
+    # subidas se inflaran a 700+ luego de unos minutos.
+    try:
+        from state import STATE as _STATE
+        if _STATE.today and target_date.isoformat() == _STATE.today.isoformat():
+            from live_generator import STATE as LIVE_STATE
+            if LIVE_STATE.enabled:
+                LIVE_STATE.enabled = False
+                msg += " · live_generator pausado (cuadratura)"
+    except Exception:  # noqa: BLE001
+        pass
+
     conflicts = _check_dotacion_conflicts(target_date.isoformat())
     if conflicts:
         msg += f" · ⚠ {len(conflicts)} driver(s)/vehículo(s) marcados no operables"
@@ -483,6 +496,91 @@ def import_mock(
         already_imported=False,
         message=msg,
         conflicts=conflicts,
+    )
+
+
+class StartDayResponse(BaseModel):
+    ok: bool
+    fecha: str
+    visitas_en_db: int
+    live_gen_paused: bool
+    state_today: Optional[str] = None
+    snapshot_size: int = 0
+    conflicts: list[DotacionConflict] = []
+    message: str = ""
+
+
+@router.post("/api/planificacion/start-day", response_model=StartDayResponse)
+def start_day(
+    fecha: str = Query(...),
+    user: CurrentUser = Depends(current_user),
+) -> StartDayResponse:
+    """Marca el comienzo del día operativo en la fecha indicada.
+
+    - Detiene el live_generator (deja de inyectar visitas al planned_date).
+    - Setea STATE.today = fecha y refresca el snapshot ML/in-memory.
+    - Cuenta visitas reales en fpoc.simpli_visits para esa fecha (cuadratura).
+    - Devuelve conflictos de dotación pendientes.
+    """
+    if not user.is_falabella:
+        raise HTTPException(403, "Solo admin/ops puede iniciar el día")
+    from datetime import date as _date_cls
+    try:
+        target = _date_cls.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, f"fecha inválida: {fecha}")
+
+    # Pausar live_gen
+    paused = False
+    try:
+        from live_generator import STATE as LIVE_STATE
+        if LIVE_STATE.enabled:
+            LIVE_STATE.enabled = False
+            paused = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Setear STATE.today + refrescar snapshot
+    snapshot_size = 0
+    state_today_iso: Optional[str] = None
+    try:
+        from state import STATE
+        STATE.reset_day(start_date=target, day_seed=getattr(STATE, "day_seed", 42))
+        state_today_iso = STATE.today.isoformat() if STATE.today else None
+        snapshot_size = len(STATE.snapshot_df) if STATE.snapshot_df is not None else 0
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[start-day] reset_day fallo: {e}")
+
+    # Contar visitas
+    visitas = 0
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM fpoc.simpli_visits WHERE planned_date = ?",
+                target.isoformat(),
+            )
+            visitas = int(cur.fetchone()[0])
+    except Exception:  # noqa: BLE001
+        pass
+
+    conflicts = _check_dotacion_conflicts(target.isoformat())
+
+    msg_parts = [f"Día {fecha} iniciado", f"{visitas} visitas en DB"]
+    if paused:
+        msg_parts.append("live_gen pausado")
+    if conflicts:
+        msg_parts.append(f"⚠ {len(conflicts)} conflictos de dotación")
+
+    return StartDayResponse(
+        ok=True,
+        fecha=target.isoformat(),
+        visitas_en_db=visitas,
+        live_gen_paused=paused,
+        state_today=state_today_iso,
+        snapshot_size=snapshot_size,
+        conflicts=conflicts,
+        message=" · ".join(msg_parts),
     )
 
 
