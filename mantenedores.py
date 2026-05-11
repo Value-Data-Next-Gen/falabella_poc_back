@@ -360,7 +360,10 @@ def delete_user(user_id: int, admin: CurrentUser = Depends(require_admin)) -> di
 class DriverIn(BaseModel):
     driver_id: str = Field(min_length=1, max_length=20)
     name: str = Field(min_length=1, max_length=200)
-    phone: Optional[str] = Field(default=None, max_length=50)
+    # Teléfono obligatorio al crear: es el contacto principal del driver
+    # (recibe WhatsApp con sus pedidos, alertas, etc.). Formato libre por
+    # ahora pero la app espera E.164 (+56...).
+    phone: str = Field(min_length=8, max_length=50)
     license: Optional[str] = Field(default="A-3 Profesional", max_length=50)
     empresa_id: int = Field(ge=1)
     vehicle_id: int = Field(ge=1)
@@ -1217,7 +1220,9 @@ async def drivers_upload(
 ) -> BulkUploadResult:
     _enforce_fleet_empresa(user, empresa_id)
     headers, rows = _read_xlsx_rows(await file.read())
-    required = ["driver_id", "name", "vehicle_id", "vehicle_name"]
+    # phone es obligatorio al CREAR un driver (contacto WhatsApp).
+    # En update se mantiene opcional (no se borra si no viene).
+    required = ["driver_id", "name", "phone", "vehicle_id", "vehicle_name"]
     missing = [h for h in required if h not in headers]
     if missing:
         raise HTTPException(400, f"Faltan columnas requeridas: {missing}")
@@ -1231,14 +1236,17 @@ async def drivers_upload(
                 if not driver_id:
                     continue
                 name = str(r[idx["name"]] or "").strip()
-                phone = str(r[idx["phone"]] or "").strip() or None if "phone" in idx else None
+                phone = str(r[idx["phone"]] or "").strip() or None
                 lic = str(r[idx["license"]] or "").strip() or None if "license" in idx else None
                 vehicle_id = int(r[idx["vehicle_id"]])
                 vehicle_name = str(r[idx["vehicle_name"]] or "").strip()
                 active = bool(int(r[idx["active"]] or 1)) if "active" in idx else True
-                # Existe? -> update, sino insert
+                # Existe? -> update, sino insert (con validación phone obligatorio)
                 cur.execute("SELECT 1 FROM fpoc.drivers WHERE driver_id = ?", driver_id)
-                if cur.fetchone():
+                existing = cur.fetchone()
+                if not existing and not phone:
+                    raise ValueError("phone obligatorio para nuevo driver")
+                if existing:
                     cur.execute(
                         """UPDATE fpoc.drivers SET name=?, phone=?, license=?, empresa_id=?,
                                   vehicle_id=?, vehicle_name=?, active=?, updated_at=CURRENT_TIMESTAMP
