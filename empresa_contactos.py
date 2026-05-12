@@ -185,14 +185,50 @@ def list_empresas_with_summary(user: CurrentUser = Depends(current_user)) -> lis
 
         for e in empresas:
             eid = int(e.empresa_id)
+            # R7: contactos_count = audiencia unificada (drivers + contactos +
+            # users con role driver/transport_manager con phone). El header
+            # tiene que coincidir con el chip "Todos / Solo opt-in" del
+            # Broadcast.
             cur.execute(
                 """
                 SELECT
-                  SUM(CASE WHEN active=1 THEN 1 ELSE 0 END) AS total,
-                  SUM(CASE WHEN active=1 AND opted_in_at IS NOT NULL THEN 1 ELSE 0 END) AS optin
-                FROM fpoc_empresa_contactos WHERE empresa_id = ?
+                  (
+                    SELECT COUNT(*) FROM fpoc_drivers
+                    WHERE empresa_id = ? AND active = 1
+                      AND phone_e164 IS NOT NULL AND phone_e164 <> ''
+                  ) +
+                  (
+                    SELECT COUNT(*) FROM fpoc_empresa_contactos
+                    WHERE empresa_id = ? AND active = 1
+                      AND phone_e164 IS NOT NULL AND phone_e164 <> ''
+                  ) +
+                  (
+                    SELECT COUNT(*) FROM fpoc_users
+                    WHERE empresa_id = ? AND activo = 1
+                      AND role IN ('transport_manager', 'driver')
+                      AND phone_e164 IS NOT NULL AND phone_e164 <> ''
+                  ) AS total,
+                  (
+                    SELECT COUNT(*) FROM fpoc_drivers
+                    WHERE empresa_id = ? AND active = 1
+                      AND phone_e164 IS NOT NULL AND phone_e164 <> ''
+                      AND opted_in_at IS NOT NULL AND notify_whatsapp = 1
+                  ) +
+                  (
+                    SELECT COUNT(*) FROM fpoc_empresa_contactos
+                    WHERE empresa_id = ? AND active = 1
+                      AND phone_e164 IS NOT NULL AND phone_e164 <> ''
+                      AND opted_in_at IS NOT NULL
+                  ) +
+                  (
+                    SELECT COUNT(*) FROM fpoc_users
+                    WHERE empresa_id = ? AND activo = 1
+                      AND role IN ('transport_manager', 'driver')
+                      AND phone_e164 IS NOT NULL AND phone_e164 <> ''
+                      AND notify_whatsapp = 1
+                  ) AS optin
                 """,
-                eid,
+                eid, eid, eid, eid, eid, eid,
             )
             r = cur.fetchone()
             total = int(r.total or 0) if r else 0
