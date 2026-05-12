@@ -33,8 +33,8 @@ SIMPLI_COLS = [
     "checkout_cl", "current_eta_cl", "status",
     "checkout_comment", "checkout_observation", "reference", "country",
     "sla_hour_checkout_eta", "bin_start", "bin_end", "bin_label", "bin_index",
-    "ct", "Patente_falsa", "Empresa_falsa", "Drivername",
-    "Fechainicioruta", "Fechainicioruta_hora_cl",
+    "ct", "patente_falsa", "empresa_falsa", "driver_name",
+    "fecha_inicio_ruta", "fecha_inicio_ruta_hora_cl",
     "fechas_futuras_bq", "finicio_currenteta_bq",
     "current_eta_cl_fechainicioruta", "current_eta_cl_fechainicioruta_dates",
     "ruta_eta_futuro", "ruta_fecha_inicio_mayor_eta",
@@ -93,6 +93,15 @@ def find_xlsx(arg: str | None) -> Path:
 
 
 def load_simpli(cn: pyodbc.Connection, df: pd.DataFrame) -> int:
+    # El XLSX de SimpliRoute trae 5 columnas PascalCase — desde la migración
+    # 011 la DB las tiene en snake_case. Mapeamos antes de seleccionar.
+    df = df.rename(columns={
+        "E" + "mpresa_falsa": "empresa_falsa",
+        "P" + "atente_falsa": "patente_falsa",
+        "D" + "rivername": "driver_name",
+        "F" + "echainicioruta": "fecha_inicio_ruta",
+        "F" + "echainicioruta_hora_cl": "fecha_inicio_ruta_hora_cl",
+    })
     df = df[SIMPLI_COLS].copy()
     before = len(df)
     df = df.drop_duplicates(subset=["id"], keep="first")

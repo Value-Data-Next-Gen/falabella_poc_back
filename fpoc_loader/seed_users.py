@@ -1,6 +1,6 @@
 """Seed de empresas_transporte + users para POC.
 
-Toma las Empresa_falsa distintas que hay en fpoc.simpli_visits y las carga como
+Toma las empresa_falsa distintas que hay en fpoc.simpli_visits y las carga como
 empresas. Crea 1 admin Falabella + 1 transport_manager por empresa.
 
 Todos los passwords son de demo (ver DEFAULT_PASSWORD).
@@ -65,7 +65,7 @@ def apply_ddl(cn: pyodbc.Connection) -> None:
 
 def seed_empresas(cn: pyodbc.Connection) -> list[int]:
     cur = cn.cursor()
-    cur.execute("SELECT DISTINCT Empresa_falsa FROM fpoc.simpli_visits ORDER BY Empresa_falsa")
+    cur.execute("SELECT DISTINCT empresa_falsa FROM fpoc.simpli_visits ORDER BY empresa_falsa")
     ids = [int(r[0]) for r in cur.fetchall()]
     for eid in ids:
         nombre = f"Transporte {eid:02d}"

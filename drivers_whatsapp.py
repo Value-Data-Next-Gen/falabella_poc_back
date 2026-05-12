@@ -320,8 +320,8 @@ def _check_dotacion_conflicts(target_date_iso: str) -> list[DotacionConflict]:
               LEFT JOIN fpoc.vehicles v ON v.vehicle_id = dd.vehicle_id
               LEFT JOIN fpoc.simpli_visits sv
                 ON sv.planned_date = dd.fecha
-               AND sv.Empresa_falsa = dd.empresa_id
-               AND sv.Patente_falsa = dd.vehicle_id
+               AND sv.empresa_falsa = dd.empresa_id
+               AND sv.patente_falsa = dd.vehicle_id
              WHERE dd.fecha = ?
                AND dd.estado IN ({",".join("?" * len(blocking_estados))})
              GROUP BY dd.empresa_id, e.nombre, dd.driver_id, d.name,
@@ -548,6 +548,16 @@ async def import_xlsx(
 
     df_s = pd.read_excel(xl, sheet_name="Simpli")
     df_g = pd.read_excel(xl, sheet_name="Geo") if has_geo else None
+
+    # XLSX SimpliRoute trae 5 columnas PascalCase — la DB las tiene en
+    # snake_case desde migración 011. Renombramos antes de validar.
+    df_s = df_s.rename(columns={
+        "E" + "mpresa_falsa": "empresa_falsa",
+        "P" + "atente_falsa": "patente_falsa",
+        "D" + "rivername": "driver_name",
+        "F" + "echainicioruta": "fecha_inicio_ruta",
+        "F" + "echainicioruta_hora_cl": "fecha_inicio_ruta_hora_cl",
+    })
 
     # Validar columnas mínimas en Simpli
     missing = [c for c in SIMPLI_COLS if c not in df_s.columns]
@@ -878,7 +888,7 @@ def day_status(
     scope_where = ""
     scope_params: list = []
     if not user.is_falabella:
-        scope_where = " AND Empresa_falsa = ?"
+        scope_where = " AND empresa_falsa = ?"
         scope_params.append(user.empresa_id)
 
     with get_conn() as cn:
@@ -1016,7 +1026,7 @@ def _compute_day_prep(fecha: str, user: CurrentUser) -> dict:
     scope_where = ""
     scope_params: list = []
     if not user.is_falabella:
-        scope_where = " AND s.Empresa_falsa = ?"
+        scope_where = " AND s.empresa_falsa = ?"
         scope_params.append(user.empresa_id)
 
     vips: list[dict] = []
@@ -1027,7 +1037,7 @@ def _compute_day_prep(fecha: str, user: CurrentUser) -> dict:
         cur = cn.cursor()
         # ---- VIPs del día (match por title contra fpoc.vip_clients activos) ----
         cur.execute(
-            f"""SELECT s.id, s.title, s.comuna, s.reference, s.ruta_id, s.Drivername,
+            f"""SELECT s.id, s.title, s.comuna, s.reference, s.ruta_id, s.driver_name,
                        s.sla_hour_checkout_eta
                 FROM fpoc.simpli_visits s
                 INNER JOIN fpoc.vip_clients v
@@ -1058,7 +1068,7 @@ def _compute_day_prep(fecha: str, user: CurrentUser) -> dict:
                 "folio": str(r.reference) if r.reference else None,
                 "deadline": None,
                 "ruta_id": str(r.ruta_id) if r.ruta_id else None,
-                "driver_name": str(r.Drivername) if r.Drivername else None,
+                "driver_name": str(r.driver_name) if r.driver_name else None,
                 "priority_set": tid in priority_tids,
             })
 
@@ -1115,15 +1125,15 @@ def _compute_day_prep(fecha: str, user: CurrentUser) -> dict:
 
         # 2) Drivers de las rutas del día sin phone_e164 o sin licencia
         cur.execute(
-            f"""SELECT DISTINCT s.Drivername, s.ruta_id, COUNT(s.id) AS n
+            f"""SELECT DISTINCT s.driver_name, s.ruta_id, COUNT(s.id) AS n
                 FROM fpoc.simpli_visits s
                 WHERE s.planned_date = ?{scope_where}
-                  AND s.Drivername IS NOT NULL AND s.Drivername <> ''
-                GROUP BY s.Drivername, s.ruta_id""",
+                  AND s.driver_name IS NOT NULL AND s.driver_name <> ''
+                GROUP BY s.driver_name, s.ruta_id""",
             fecha, *scope_params,
         )
         ruta_drivers = cur.fetchall()
-        names = list({r.Drivername for r in ruta_drivers if r.Drivername})
+        names = list({r.driver_name for r in ruta_drivers if r.driver_name})
         driver_meta: dict[str, dict] = {}
         if names:
             marks = ",".join(["?"] * len(names))
@@ -1141,7 +1151,7 @@ def _compute_day_prep(fecha: str, user: CurrentUser) -> dict:
                 }
 
         for r in ruta_drivers:
-            dn = str(r.Drivername)
+            dn = str(r.driver_name)
             meta = driver_meta.get(dn)
             ruta = str(r.ruta_id) if r.ruta_id else None
             affects = int(r.n or 0)
@@ -1209,7 +1219,7 @@ def day_clients(
     scope_where = ""
     params: list = [fecha]
     if not user.is_falabella:
-        scope_where = " AND s.Empresa_falsa = ?"
+        scope_where = " AND s.empresa_falsa = ?"
         params.append(user.empresa_id)
     q_where = ""
     if q and q.strip():
@@ -1219,7 +1229,7 @@ def day_clients(
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            f"""SELECT TOP (?) s.title, s.id, s.comuna, s.ruta_id, s.Drivername,
+            f"""SELECT TOP (?) s.title, s.id, s.comuna, s.ruta_id, s.driver_name,
                        (CASE WHEN v.vip_id IS NULL THEN 0 ELSE 1 END) AS is_vip
                 FROM fpoc.simpli_visits s
                 LEFT JOIN fpoc.vip_clients v
@@ -1240,7 +1250,7 @@ def day_clients(
                 cliente=title,
                 comuna=str(r.comuna) if r.comuna else None,
                 ruta_id=str(r.ruta_id) if r.ruta_id else None,
-                driver_name=str(r.Drivername) if r.Drivername else None,
+                driver_name=str(r.driver_name) if r.driver_name else None,
                 is_vip=bool(r.is_vip),
             ))
         return out
@@ -1308,7 +1318,7 @@ def operational_calendar(
     scope_where = ""
     scope_params: list = []
     if not user.is_falabella:
-        scope_where = " AND Empresa_falsa = ?"
+        scope_where = " AND empresa_falsa = ?"
         scope_params.append(user.empresa_id)
 
     with get_conn() as cn:

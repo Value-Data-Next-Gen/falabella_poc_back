@@ -249,21 +249,21 @@ def _search_visitas(cn, q: str, user: CurrentUser) -> list[SearchHit]:
 
     if user.is_falabella:
         sql = (
-            "SELECT id, title, status, planned_date, Empresa_falsa AS empresa_id, "
+            "SELECT id, title, status, planned_date, empresa_falsa AS empresa_id, "
             "       e.nombre AS empresa_nombre "
             "FROM fpoc_simpli_visits v "
-            "LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = v.Empresa_falsa "
+            "LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = v.empresa_falsa "
             f"WHERE ({where_sql}) "
             "ORDER BY planned_date DESC LIMIT ?"
         )
         params.append(MAX_PER_CATEGORY)
     else:
         sql = (
-            "SELECT id, title, status, planned_date, Empresa_falsa AS empresa_id, "
+            "SELECT id, title, status, planned_date, empresa_falsa AS empresa_id, "
             "       e.nombre AS empresa_nombre "
             "FROM fpoc_simpli_visits v "
-            "LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = v.Empresa_falsa "
-            f"WHERE Empresa_falsa = ? AND ({where_sql}) "
+            "LEFT JOIN fpoc_empresas_transporte e ON e.empresa_id = v.empresa_falsa "
+            f"WHERE empresa_falsa = ? AND ({where_sql}) "
             "ORDER BY planned_date DESC LIMIT ?"
         )
         params = [user.empresa_id] + params + [MAX_PER_CATEGORY]

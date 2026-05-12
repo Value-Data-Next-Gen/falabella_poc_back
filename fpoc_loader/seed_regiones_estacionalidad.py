@@ -210,13 +210,13 @@ def _backfill_ruta_id(cn) -> int:
 
     print(f"[backfill-ruta] procesando {n_pending} visitas...")
 
-    # 1. Obtener combos (date, Drivername, Patente_falsa) de visitas sin ruta_id
+    # 1. Obtener combos (date, driver_name, patente_falsa) de visitas sin ruta_id
     cur.execute(
         """
-        SELECT DISTINCT planned_date, Drivername, Patente_falsa
+        SELECT DISTINCT planned_date, driver_name, patente_falsa
         FROM fpoc_simpli_visits
         WHERE ruta_id IS NULL OR ruta_id = ''
-        ORDER BY planned_date, Drivername, Patente_falsa
+        ORDER BY planned_date, driver_name, patente_falsa
         """
     )
     combos = [(r[0], r[1], int(r[2])) for r in cur.fetchall()]
@@ -228,7 +228,7 @@ def _backfill_ruta_id(cn) -> int:
         dkey = str(d)[:10]
         by_date.setdefault(dkey, []).append((drv, pat))
 
-    update_pairs = []  # (ruta_id, planned_date, Drivername, Patente_falsa)
+    update_pairs = []  # (ruta_id, planned_date, driver_name, patente_falsa)
     for dkey, rutas in by_date.items():
         # date sin guiones para el id
         dcompact = dkey.replace("-", "")
@@ -242,7 +242,7 @@ def _backfill_ruta_id(cn) -> int:
         """
         UPDATE fpoc_simpli_visits
         SET ruta_id = ?
-        WHERE planned_date = ? AND Drivername = ? AND Patente_falsa = ?
+        WHERE planned_date = ? AND driver_name = ? AND patente_falsa = ?
               AND (ruta_id IS NULL OR ruta_id = '')
         """,
         update_pairs,
@@ -326,11 +326,11 @@ def _gen_visita_regiones(
         bin_label,                                                 # bin_label
         bin_idx,                                                   # bin_index
         ct,                                                        # ct
-        patente,                                                   # Patente_falsa
-        empresa_id,                                                # Empresa_falsa
-        drv,                                                       # Drivername
-        fecha_inicio.strftime("%Y-%m-%d %H:%M:%S.000000 UTC"),     # Fechainicioruta
-        fecha_inicio.strftime("%H:%M:%S"),                         # Fechainicioruta_hora_cl
+        patente,                                                   # patente_falsa
+        empresa_id,                                                # empresa_falsa
+        drv,                                                       # driver_name
+        fecha_inicio.strftime("%Y-%m-%d %H:%M:%S.000000 UTC"),     # fecha_inicio_ruta
+        fecha_inicio.strftime("%H:%M:%S"),                         # fecha_inicio_ruta_hora_cl
         0, 0, 0, 0, 0, 0, 0, 0,                                    # flags BQ (todos 0)
         am_pm,                                                     # am_pm
         0,                                                         # ruta_anomala
@@ -344,8 +344,8 @@ SIMPLI_INSERT_COLS = [
     "planned_date", "id", "title", '"order"', "address", "checkout_cl",
     "current_eta_cl", "status", "checkout_comment", "checkout_observation",
     "reference", "country", "sla_hour_checkout_eta", "bin_start", "bin_end",
-    "bin_label", "bin_index", "ct", "Patente_falsa", "Empresa_falsa",
-    "Drivername", "Fechainicioruta", "Fechainicioruta_hora_cl",
+    "bin_label", "bin_index", "ct", "patente_falsa", "empresa_falsa",
+    "driver_name", "fecha_inicio_ruta", "fecha_inicio_ruta_hora_cl",
     "fechas_futuras_bq", "finicio_currenteta_bq",
     "current_eta_cl_fechainicioruta", "current_eta_cl_fechainicioruta_dates",
     "ruta_eta_futuro", "ruta_fecha_inicio_mayor_eta",

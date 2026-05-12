@@ -123,8 +123,8 @@ def my_orders(
                        current_eta_cl, sla_hour_checkout_eta, ruta_id, reference
                 FROM fpoc.simpli_visits
                 WHERE planned_date = ?
-                  AND Empresa_falsa = ?
-                  AND Patente_falsa = ?
+                  AND empresa_falsa = ?
+                  AND patente_falsa = ?
                 ORDER BY [order]""",
             target.isoformat(), empresa_id, vehicle_id,
         )

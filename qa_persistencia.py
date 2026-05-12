@@ -116,7 +116,7 @@ print(f"    RM: {rm_s} | Regiones: {len(visits_snap)-rm_s}")
 
 # BD real
 real_today = cn.execute(
-    "SELECT COUNT(*), COUNT(DISTINCT ruta_id), COUNT(DISTINCT Drivername) "
+    "SELECT COUNT(*), COUNT(DISTINCT ruta_id), COUNT(DISTINCT driver_name) "
     "FROM fpoc_simpli_visits WHERE planned_date = ?", (today_snap,)
 ).fetchone()
 print(f"\n  BD REAL fpoc_simpli_visits (lo que ve plan_diario):")
@@ -158,7 +158,7 @@ gaps.append("  → BD real (162k visitas Excel) NO recibe predicciones ML.")
 
 # Gap 4: maestros
 gaps.append("\nMaestros consistentes (post-fix import):")
-gaps.append("  → fpoc_drivers (12) ↔ fpoc_simpli_visits.Drivername: 100% match en imports nuevos.")
+gaps.append("  → fpoc_drivers (12) ↔ fpoc_simpli_visits.driver_name: 100% match en imports nuevos.")
 gaps.append("  → Match perfecto desde el último ajuste de live_generator.")
 
 for g in gaps:

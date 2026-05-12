@@ -164,10 +164,10 @@ def _vehicle_empresa_from_visits(cn) -> dict[int, int]:
     try:
         cur.execute(
             """
-            SELECT Patente_falsa AS vehicle_id, Empresa_falsa AS empresa_id, COUNT(*) AS n
+            SELECT patente_falsa AS vehicle_id, empresa_falsa AS empresa_id, COUNT(*) AS n
             FROM fpoc.simpli_visits
-            WHERE Patente_falsa IS NOT NULL AND Empresa_falsa IS NOT NULL
-            GROUP BY Patente_falsa, Empresa_falsa
+            WHERE patente_falsa IS NOT NULL AND empresa_falsa IS NOT NULL
+            GROUP BY patente_falsa, empresa_falsa
             """
         )
     except Exception:

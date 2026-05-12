@@ -79,7 +79,7 @@ class PlanVisit(BaseModel):
 
 class PlanRuta(BaseModel):
     ruta_id: str                 # NEW Sprint 6: 'R-YYYYMMDD-NNN'
-    vehicle_id: int              # = Patente_falsa (compat)
+    vehicle_id: int              # = patente_falsa (compat)
     vehicle_name: str            # 'FAL-XXXX' (synth) o 'PAT-NNN' (real)
     plate: Optional[str] = None
     patente: Optional[str] = None  # NEW alias
@@ -456,7 +456,7 @@ def _build_new_from_real(
         where = ["planned_date = ?"]
         params: list = [pd_iso]
         if empresa_id is not None:
-            where.append("Empresa_falsa = ?")
+            where.append("empresa_falsa = ?")
             params.append(int(empresa_id))
         # region: 'all' | 'RM' | 'regiones' | 'Valparaíso' | ...
         # Compat con UI: 'regiones' = todas excepto RM
@@ -473,7 +473,7 @@ def _build_new_from_real(
             SELECT id, planned_date, title, "order", address, comuna, region, ruta_id,
                    ct, status, current_eta_cl, sla_hour_checkout_eta,
                    bin_label, ruta_anomala, reference,
-                   Empresa_falsa, Patente_falsa, Drivername, Fechainicioruta_hora_cl
+                   empresa_falsa, patente_falsa, driver_name, fecha_inicio_ruta_hora_cl
             FROM fpoc_simpli_visits
             WHERE {where_sql}
         """
@@ -518,10 +518,10 @@ def _build_new_from_real(
             "p_fallo": p_fallo,
             "ruta_anomala": int(r.ruta_anomala or 0),
             "ruta_id": str(r.ruta_id) if r.ruta_id else "",
-            "empresa_id": int(r.Empresa_falsa),
-            "patente": int(r.Patente_falsa),
-            "drivername": str(r.Drivername) if r.Drivername else "",
-            "fecha_inicio_hora": str(r.Fechainicioruta_hora_cl) if r.Fechainicioruta_hora_cl else "",
+            "empresa_id": int(r.empresa_falsa),
+            "patente": int(r.patente_falsa),
+            "drivername": str(r.driver_name) if r.driver_name else "",
+            "fecha_inicio_hora": str(r.fecha_inicio_ruta_hora_cl) if r.fecha_inicio_ruta_hora_cl else "",
             "reference": int(r.reference) if r.reference is not None else 0,
             "alert_valuedata": (alert_slack == "RED" and r.status == "pending"),
         }

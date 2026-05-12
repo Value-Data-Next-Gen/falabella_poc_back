@@ -1,7 +1,7 @@
 """Dashboard de seguimiento sobre fpoc.simpli_visits + fpoc.geo_suborders.
 
 Lee la data real cargada a Azure SQL. Scope multi-tenant por
-Empresa_falsa = user.empresa_id cuando el rol es transport_manager.
+empresa_falsa = user.empresa_id cuando el rol es transport_manager.
 
 Todos los endpoints aceptan ?planned_date=YYYY-MM-DD.
 Si no se provee, se usa MAX(planned_date) en la tabla (última fecha disponible).
@@ -36,7 +36,7 @@ def _scope(user: CurrentUser, alias: str = "s") -> tuple[str, list]:
     """Devuelve (clausula_sql, params) para aplicar scope por empresa."""
     if user.is_falabella:
         return "", []
-    return f" AND {alias}.Empresa_falsa = ?", [user.empresa_id]
+    return f" AND {alias}.empresa_falsa = ?", [user.empresa_id]
 
 
 def _resolve_date(pd: Optional[str]) -> date_cls:
@@ -193,8 +193,8 @@ def kpis(
               SUM(CASE WHEN ABS(s.sla_hour_checkout_eta) <= 1 THEN 1 ELSE 0 END) AS on_time,
               SUM(CASE WHEN s.sla_hour_checkout_eta < -1 THEN 1 ELSE 0 END)       AS early,
               SUM(CASE WHEN s.sla_hour_checkout_eta >  1 THEN 1 ELSE 0 END)       AS late,
-              COUNT(DISTINCT s.Empresa_falsa)                    AS empresas,
-              COUNT(DISTINCT s.Drivername)                       AS drivers
+              COUNT(DISTINCT s.empresa_falsa)                    AS empresas,
+              COUNT(DISTINCT s.driver_name)                       AS drivers
             FROM fpoc.simpli_visits s
             WHERE 1=1 {where}
             """,
@@ -271,7 +271,7 @@ def motivos(
     limit: int = Query(default=10, ge=1, le=50),
     user: CurrentUser = Depends(current_user),
 ) -> list[MotivoItem]:
-    """Top motivos no entrega. Join geo_suborders -> simpli_visits via Empresa_falsa para scope."""
+    """Top motivos no entrega. Join geo_suborders -> simpli_visits via empresa_falsa para scope."""
     # Scope via JOIN: geo_suborders tiene empresa_falsa (lowercase)
     if user.is_falabella:
         where, params = "", []
@@ -305,7 +305,7 @@ def by_empresa(
         cur = cn.cursor()
         cur.execute(
             f"""
-            SELECT s.Empresa_falsa AS empresa_id, e.nombre,
+            SELECT s.empresa_falsa AS empresa_id, e.nombre,
                    COUNT(*) AS total,
                    SUM(CASE WHEN s.status='completed' THEN 1 ELSE 0 END) AS completed,
                    SUM(CASE WHEN s.status='failed'    THEN 1 ELSE 0 END) AS failed,
@@ -313,9 +313,9 @@ def by_empresa(
                    AVG(s.sla_hour_checkout_eta) AS sla_avg,
                    SUM(CASE WHEN ABS(s.sla_hour_checkout_eta) <= 1 THEN 1 ELSE 0 END) AS on_time
             FROM fpoc.simpli_visits s
-            LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = s.Empresa_falsa
+            LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = s.empresa_falsa
             WHERE 1=1 {where}
-            GROUP BY s.Empresa_falsa, e.nombre
+            GROUP BY s.empresa_falsa, e.nombre
             ORDER BY total DESC
             """,
             *params,
@@ -437,17 +437,17 @@ def list_visits(
         where_parts.append("s.ruta_anomala = ?")
         params.append(1 if ruta_anomala else 0)
     if empresa_id is not None and user.is_falabella:
-        where_parts.append("s.Empresa_falsa = ?")
+        where_parts.append("s.empresa_falsa = ?")
         params.append(empresa_id)
     if localidad:
         where_parts.append(
             "EXISTS (SELECT 1 FROM fpoc.geo_suborders g WHERE g.idruta IN "
-            "(SELECT idruta FROM fpoc.geo_suborders WHERE fechainicioruta = s.Fechainicioruta) "
+            "(SELECT idruta FROM fpoc.geo_suborders WHERE fechainicioruta = s.fecha_inicio_ruta) "
             "AND g.localidad = ?)"
         )
         params.append(localidad)
     if search:
-        where_parts.append("(s.title LIKE ? OR s.address LIKE ? OR s.Drivername LIKE ?)")
+        where_parts.append("(s.title LIKE ? OR s.address LIKE ? OR s.driver_name LIKE ?)")
         like = f"%{search}%"
         params.extend([like, like, like])
     where_sql = " AND ".join(where_parts)
@@ -460,10 +460,10 @@ def list_visits(
             f"""
             SELECT s.id, s.planned_date, s.title, s."order", s.address, s.status,
                    s.checkout_cl, s.current_eta_cl, s.sla_hour_checkout_eta,
-                   s.ct, s.Drivername, s.Empresa_falsa, s.ruta_anomala, s.am_pm
+                   s.ct, s.driver_name, s.empresa_falsa, s.ruta_anomala, s.am_pm
             FROM fpoc.simpli_visits s
             WHERE {where_sql}
-            ORDER BY s.planned_date DESC, s.Empresa_falsa, s."order"
+            ORDER BY s.planned_date DESC, s.empresa_falsa, s."order"
             LIMIT ? OFFSET ?
             """,
             *params, limit, offset,
@@ -481,8 +481,8 @@ def list_visits(
             current_eta_cl=r.current_eta_cl.isoformat() if r.current_eta_cl else None,
             sla_hour_checkout_eta=float(r.sla_hour_checkout_eta or 0.0),
             ct=r.ct or "",
-            drivername=r.Drivername or "",
-            empresa_id=int(r.Empresa_falsa or 0),
+            drivername=r.driver_name or "",
+            empresa_id=int(r.empresa_falsa or 0),
             ruta_anomala=bool(r.ruta_anomala),
             am_pm=r.am_pm or "",
         )

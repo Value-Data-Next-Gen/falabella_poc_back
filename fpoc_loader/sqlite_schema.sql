@@ -25,11 +25,11 @@ CREATE TABLE IF NOT EXISTS fpoc_simpli_visits (
     bin_label                             TEXT     NOT NULL,
     bin_index                             INTEGER  NOT NULL,
     ct                                    TEXT     NOT NULL,
-    Patente_falsa                         INTEGER  NOT NULL,
-    Empresa_falsa                         INTEGER  NOT NULL,
-    Drivername                            TEXT     NOT NULL,
-    Fechainicioruta                       TEXT     NOT NULL,
-    Fechainicioruta_hora_cl               TEXT     NOT NULL,
+    patente_falsa                         INTEGER  NOT NULL,
+    empresa_falsa                         INTEGER  NOT NULL,
+    driver_name                            TEXT     NOT NULL,
+    fecha_inicio_ruta                       TEXT     NOT NULL,
+    fecha_inicio_ruta_hora_cl               TEXT     NOT NULL,
     fechas_futuras_bq                     INTEGER  NOT NULL,
     finicio_currenteta_bq                 INTEGER  NOT NULL,
     current_eta_cl_fechainicioruta        INTEGER  NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS fpoc_simpli_visits (
 );
 CREATE INDEX IF NOT EXISTS IX_simpli_visits_planned_date ON fpoc_simpli_visits (planned_date);
 CREATE INDEX IF NOT EXISTS IX_simpli_visits_ct ON fpoc_simpli_visits (ct);
-CREATE INDEX IF NOT EXISTS IX_simpli_visits_empresa ON fpoc_simpli_visits (Empresa_falsa);
+CREATE INDEX IF NOT EXISTS IX_simpli_visits_empresa ON fpoc_simpli_visits (empresa_falsa);
 
 CREATE TABLE IF NOT EXISTS fpoc_geo_suborders (
     Suborden             INTEGER  NOT NULL PRIMARY KEY,

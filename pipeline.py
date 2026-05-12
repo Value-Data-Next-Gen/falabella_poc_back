@@ -395,11 +395,11 @@ def _load_historical_real(end_date: date, n_days: int) -> Optional[pd.DataFrame]
             cur.execute(
                 """
                 SELECT id, planned_date, title, "order", current_eta_cl, status,
-                       sla_hour_checkout_eta, Patente_falsa, Drivername,
+                       sla_hour_checkout_eta, patente_falsa, driver_name,
                        region, comuna
                 FROM fpoc_simpli_visits
                 WHERE planned_date >= ? AND planned_date < ?
-                ORDER BY planned_date, Patente_falsa, "order"
+                ORDER BY planned_date, patente_falsa, "order"
                 """,
                 (start.isoformat(), end_date.isoformat()),
             )
@@ -669,7 +669,7 @@ def _load_real_plan(today_date: date) -> Optional[pd.DataFrame]:
     Diseño:
       - lat/lon se generan deterministically desde region+id (no hay geocoding
         del Excel real). Suficiente para mapa visual + ML features.
-      - vehicle_id capeado a 1..12 via (Patente_falsa-1)%12+1 (data vieja del
+      - vehicle_id capeado a 1..12 via (patente_falsa-1)%12+1 (data vieja del
         seed tenia patentes 1..40; nuevos imports ya usan 1..12).
       - Los campos sintéticos (load, n_subordenes, _is_recurrent) se rellenan
         con valores randomizados pero deterministas por id.
@@ -689,11 +689,11 @@ def _load_real_plan(today_date: date) -> Optional[pd.DataFrame]:
             cur.execute(
                 """
                 SELECT id, title, "order", address, current_eta_cl, status,
-                       sla_hour_checkout_eta, Patente_falsa, Empresa_falsa,
-                       Drivername, region, comuna
+                       sla_hour_checkout_eta, patente_falsa, empresa_falsa,
+                       driver_name, region, comuna
                 FROM fpoc_simpli_visits
                 WHERE planned_date = ?
-                ORDER BY Patente_falsa, "order"
+                ORDER BY patente_falsa, "order"
                 """,
                 (today_date.isoformat(),),
             )

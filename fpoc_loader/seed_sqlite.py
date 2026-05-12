@@ -42,8 +42,8 @@ SIMPLI_COLS = [
     "checkout_cl", "current_eta_cl", "status",
     "checkout_comment", "checkout_observation", "reference", "country",
     "sla_hour_checkout_eta", "bin_start", "bin_end", "bin_label", "bin_index",
-    "ct", "Patente_falsa", "Empresa_falsa", "Drivername",
-    "Fechainicioruta", "Fechainicioruta_hora_cl",
+    "ct", "patente_falsa", "empresa_falsa", "driver_name",
+    "fecha_inicio_ruta", "fecha_inicio_ruta_hora_cl",
     "fechas_futuras_bq", "finicio_currenteta_bq",
     "current_eta_cl_fechainicioruta", "current_eta_cl_fechainicioruta_dates",
     "ruta_eta_futuro", "ruta_fecha_inicio_mayor_eta",
@@ -133,7 +133,7 @@ def load_simpli(cn: sqlite3.Connection, df: pd.DataFrame) -> int:
     df["checkout_cl"] = pd.to_datetime(df["checkout_cl"])
     df["current_eta_cl"] = pd.to_datetime(df["current_eta_cl"])
     # SQLite no tiene type TIME; lo guardamos como string HH:MM:SS
-    df["Fechainicioruta_hora_cl"] = df["Fechainicioruta_hora_cl"].apply(
+    df["fecha_inicio_ruta_hora_cl"] = df["fecha_inicio_ruta_hora_cl"].apply(
         lambda v: v.strftime("%H:%M:%S") if hasattr(v, "strftime") else str(v) if pd.notna(v) else None
     )
     for c in (
@@ -195,7 +195,7 @@ def load_geo(cn: sqlite3.Connection, df: pd.DataFrame) -> int:
 
 def seed_empresas(cn: sqlite3.Connection) -> list[int]:
     cur = cn.cursor()
-    cur.execute("SELECT DISTINCT Empresa_falsa FROM fpoc_simpli_visits ORDER BY Empresa_falsa")
+    cur.execute("SELECT DISTINCT empresa_falsa FROM fpoc_simpli_visits ORDER BY empresa_falsa")
     ids = [int(r[0]) for r in cur.fetchall()]
     for eid in ids:
         nombre = f"Transporte {eid:02d}"

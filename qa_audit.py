@@ -107,9 +107,9 @@ if not r2.get("already_imported"):
 if r1.get("count") != r2.get("count"):
     F("CRITICAL", "import", f"count distinto re-call: {r1.get('count')} vs {r2.get('count')}")
 unmatched = list(cn.execute(
-    "SELECT v.Drivername, COUNT(*) FROM fpoc_simpli_visits v "
-    "LEFT JOIN fpoc_drivers d ON d.name = v.Drivername "
-    "WHERE v.planned_date = ? AND d.driver_id IS NULL GROUP BY v.Drivername",
+    "SELECT v.driver_name, COUNT(*) FROM fpoc_simpli_visits v "
+    "LEFT JOIN fpoc_drivers d ON d.name = v.driver_name "
+    "WHERE v.planned_date = ? AND d.driver_id IS NULL GROUP BY v.driver_name",
     (test_date,)
 ).fetchall())
 if unmatched:

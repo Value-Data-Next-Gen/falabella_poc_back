@@ -294,7 +294,7 @@ def _visit_by_tracking(tracking_id: str) -> Optional[dict]:
             cur.execute(
                 """
                 SELECT id, title, address, comuna, region,
-                       Patente_falsa, Empresa_falsa, Drivername, status,
+                       patente_falsa, empresa_falsa, driver_name, status,
                        current_eta_cl, ruta_id
                 FROM fpoc_simpli_visits
                 WHERE CAST(id AS TEXT) = ? OR ruta_id = ?

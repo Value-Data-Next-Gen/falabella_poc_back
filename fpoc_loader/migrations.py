@@ -121,4 +121,5 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("008_entity_documents",          _wrap_quiet("fpoc_loader.migrate_entity_documents")),
     ("009_cap_validation",            _wrap_quiet("fpoc_loader.migrate_cap_validation")),
     ("010_foreign_keys",              _wrap_quiet("fpoc_loader.migrate_foreign_keys")),
+    ("011_simpli_pascal_rename",      _wrap_quiet("fpoc_loader.migrate_simpli_pascal_rename")),
 ]

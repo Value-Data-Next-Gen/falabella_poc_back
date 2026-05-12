@@ -254,7 +254,7 @@ def _gen_row(rng: random.Random, empresas: list[tuple[int, str]], today: date,
     bin_label = f"[{bin_start}, {bin_end}]"
     bin_index = int(40 + bin_start * 2)
 
-    # Fechainicioruta (string "YYYY-MM-DD HH:MM:SS.000000 UTC")
+    # fecha_inicio_ruta (string "YYYY-MM-DD HH:MM:SS.000000 UTC")
     ruta_start = eta_dt - timedelta(hours=rng.randint(3, 6))
     f_inicio = ruta_start.strftime("%Y-%m-%d %H:%M:%S.000000 UTC")
     f_inicio_time = ruta_start.time().replace(microsecond=0)
@@ -292,11 +292,11 @@ def _gen_row(rng: random.Random, empresas: list[tuple[int, str]], today: date,
         "bin_label": bin_label,
         "bin_index": bin_index,
         "ct": ct,
-        "Patente_falsa": patente_falsa,
-        "Empresa_falsa": empresa_id,
-        "Drivername": driver,
-        "Fechainicioruta": f_inicio,
-        "Fechainicioruta_hora_cl": f_inicio_time,
+        "patente_falsa": patente_falsa,
+        "empresa_falsa": empresa_id,
+        "driver_name": driver,
+        "fecha_inicio_ruta": f_inicio,
+        "fecha_inicio_ruta_hora_cl": f_inicio_time,
         "fechas_futuras_bq": 0,
         "finicio_currenteta_bq": 0,
         "current_eta_cl_fechainicioruta": 0,
@@ -316,8 +316,8 @@ SIMPLI_COLS = [
     "checkout_cl", "current_eta_cl", "status",
     "checkout_comment", "checkout_observation", "reference", "country",
     "sla_hour_checkout_eta", "bin_start", "bin_end", "bin_label", "bin_index",
-    "ct", "Patente_falsa", "Empresa_falsa", "Drivername",
-    "Fechainicioruta", "Fechainicioruta_hora_cl",
+    "ct", "patente_falsa", "empresa_falsa", "driver_name",
+    "fecha_inicio_ruta", "fecha_inicio_ruta_hora_cl",
     "fechas_futuras_bq", "finicio_currenteta_bq",
     "current_eta_cl_fechainicioruta", "current_eta_cl_fechainicioruta_dates",
     "ruta_eta_futuro", "ruta_fecha_inicio_mayor_eta",
