@@ -200,6 +200,19 @@ def _emit_one() -> Optional[dict]:
 def _tick():
     if not SIM.enabled:
         return
+    # R7: gate por day_state EN_CURSO. Si el día activo no está EN_CURSO no
+    # emitimos comentarios sintéticos (BORRADOR/VALIDADO/CERRADO → silencio).
+    try:
+        from state import STATE as APP_STATE
+        from live_generator import _day_state_is_running
+        sim_today = getattr(APP_STATE, "today", None)
+        if sim_today is None or not _day_state_is_running(sim_today.isoformat()):
+            return
+    except Exception:  # noqa: BLE001
+        # Si no podemos verificar (DB transitoria), no bloqueamos para no
+        # romper QA local sin DB. En prod _day_state_is_running siempre
+        # devuelve un bool.
+        pass
     _emit_one()
 
 

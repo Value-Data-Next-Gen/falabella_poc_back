@@ -42,5 +42,11 @@ class EventLog:
         items.reverse()
         return items[:limit]
 
+    def reset(self) -> int:
+        """Limpia el buffer. Devuelve cuántos eventos se eliminaron."""
+        n = len(self._events)
+        self._events.clear()
+        return n
+
 
 EVENTS = EventLog()

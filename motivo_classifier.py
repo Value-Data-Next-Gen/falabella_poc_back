@@ -183,16 +183,53 @@ def _classify_llm(comentario: str, empresa_id: Optional[int] = None) -> Optional
             api_version=api_version,
         )
         system_prompt = _build_system_prompt(empresa_id)
-        resp = client.chat.completions.create(
-            model=deployment,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"COMENTARIO: {comentario}\n\nResponde en JSON con tu clasificacion segun el manual."},
-            ],
-            temperature=0,
-            max_tokens=200,
-            response_format={"type": "json_object"},
-        )
+        # R7: response_format con json_schema strict. El modelo se ve forzado
+        # a devolver EXACTAMENTE las keys del schema, sin extras y sin
+        # nombres distintos. Si Azure rechaza (versión vieja), caemos a
+        # json_object como antes.
+        schema = {
+            "name": "ClasificacionMotivo",
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["motivo_correcto", "confianza", "razonamiento"],
+                "properties": {
+                    "motivo_correcto": {
+                        "type": "string",
+                        "enum": list(MOTIVOS_CATALOGO),
+                    },
+                    "confianza": {
+                        "type": "string",
+                        "enum": ["alta", "media", "baja"],
+                    },
+                    "razonamiento": {"type": "string", "maxLength": 300},
+                },
+            },
+            "strict": True,
+        }
+        try:
+            resp = client.chat.completions.create(
+                model=deployment,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"COMENTARIO: {comentario}\n\nResponde en JSON con tu clasificacion segun el manual."},
+                ],
+                temperature=0,
+                max_tokens=200,
+                response_format={"type": "json_schema", "json_schema": schema},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.info(f"[classify] json_schema rechazado ({e}); reintentando con json_object")
+            resp = client.chat.completions.create(
+                model=deployment,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"COMENTARIO: {comentario}\n\nResponde en JSON con tu clasificacion segun el manual."},
+                ],
+                temperature=0,
+                max_tokens=200,
+                response_format={"type": "json_object"},
+            )
         contenido = resp.choices[0].message.content.strip()
         # Workaround: algunos endpoints devuelven UTF-8 mal interpretado
         # como latin-1 ("anuló" -> "anulÃ³"). Si detectamos ese patrón,
@@ -248,6 +285,15 @@ def classify(req: ClassifyRequest, user: CurrentUser = Depends(current_user)) ->
         alertable=alertable,
         severity=severity,
     )
+
+
+# R7: alias semántico pedido por el spec del frontend.
+@router.post("/api/llm/clasificar-motivo", response_model=ClassifyResponse)
+def clasificar_motivo(
+    req: ClassifyRequest,
+    user: CurrentUser = Depends(current_user),
+) -> ClassifyResponse:
+    return classify(req, user)
 
 
 class SystemPromptResponse(BaseModel):

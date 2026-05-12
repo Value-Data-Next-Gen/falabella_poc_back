@@ -326,6 +326,21 @@ def transition_day_state(
                 stop_sim(req.fecha)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[day-state] driver_sim.stop_sim falló: {e}")
+        elif target == "BORRADOR":
+            # R7: volver a BORRADOR limpia el ring buffer del stream para que
+            # el panel de Alertas en vivo no muestre el residuo del día anterior.
+            LIVE_STATE.enabled = False
+            try:
+                from events import EVENTS
+                n = EVENTS.reset()
+                logger.info(f"[day-state] {req.fecha}: buffer eventos limpiado ({n} evt)")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[day-state] EVENTS.reset falló: {e}")
+            try:
+                from driver_sim import stop_sim
+                stop_sim(req.fecha)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[day-state] live_gen control falló: {e}")
 
@@ -363,6 +378,11 @@ def reset_day_state(
     try:
         from live_generator import STATE as LIVE_STATE
         LIVE_STATE.enabled = False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from events import EVENTS
+        EVENTS.reset()
     except Exception:  # noqa: BLE001
         pass
     logger.info(f"[day-state] {fecha}: RESET → BORRADOR by user_id={user.user_id}")
