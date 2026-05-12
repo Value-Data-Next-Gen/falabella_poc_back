@@ -223,6 +223,7 @@ def _log_inbound(
 # Command parser
 # =============================================================================
 _RE_STATUS = re.compile(r"^\s*status\s+(\S+)\s*$", re.IGNORECASE)
+_RE_RUTA = re.compile(r"^\s*ruta\s+(R-\d+-\d+|\S+)\s*$", re.IGNORECASE)
 _RE_REAGENDAR = re.compile(
     r"^\s*reagendar\s+(\S+)\s+(\d{1,2}:\d{2})\s*$", re.IGNORECASE
 )
@@ -263,6 +264,49 @@ def _cmd_status(tracking_id: str) -> str:
         f"Window end: {row['window_end']}\n"
         f"Riesgo: {float(row['p_fallo'])*100:.0f}%"
     )
+
+
+def _cmd_ruta(ruta_id: str) -> str:
+    """Resumen WhatsApp de una ruta: R-YYYYMMDD-NNN → empresa, región, driver,
+    stops, completadas, VIPs, folios, integridad."""
+    try:
+        from rutas import get_ruta
+        # Sintética: emulamos CurrentUser admin para WA (el agente ya hace identity)
+        from auth import CurrentUser
+        admin = CurrentUser(
+            user_id=0, email="wa", display_name="WhatsApp",
+            role="falabella_admin", empresa_id=None, empresa_nombre=None,
+        )
+        d = get_ruta(ruta_id=ruta_id, user=admin)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "no encontrada" in msg.lower() or "404" in msg:
+            return f"No encuentro la ruta {ruta_id}. Formato: R-YYYYMMDD-NNN."
+        logger.warning(f"[wa] _cmd_ruta {ruta_id} falló: {e}")
+        return f"No pude leer la ruta {ruta_id}."
+    lines = [
+        f"📍 Ruta {d.ruta_id} ({d.planned_date})",
+        f"Empresa: {d.empresa_nombre or '—'}",
+        f"Región: {d.region or '—'}",
+        f"Driver: {d.driver_name or '—'} ({d.patente or '—'})",
+        "",
+        f"Stops: {d.total_stops}  ·  OK {d.completed} · pend {d.pending} · fail {d.failed}",
+        f"VIPs: {d.vip_count}",
+        f"Folios: {d.folios_unicos}  ·  subfolios: {d.subfolios_total}",
+    ]
+    if not d.valid_routing:
+        lines.append("")
+        lines.append("⚠ Integridad:")
+        for w in d.integrity_warnings:
+            lines.append(f"  · {w}")
+    # Primeros 3 VIP stops
+    vip_stops = [s for s in d.stops if s.is_vip][:3]
+    if vip_stops:
+        lines.append("")
+        lines.append("VIPs:")
+        for s in vip_stops:
+            lines.append(f"  · {s.cliente} ({s.comuna or '—'}) [{s.status}]")
+    return "\n".join(lines)
 
 
 def _cmd_reagendar(tracking_id: str, hh_mm: str, identity: dict) -> str:
@@ -442,6 +486,9 @@ def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str]
     m = _RE_STATUS.match(body)
     if m:
         return _cmd_status(m.group(1))
+    m = _RE_RUTA.match(body)
+    if m:
+        return _cmd_ruta(m.group(1))
     m = _RE_REAGENDAR.match(body)
     if m:
         return _cmd_reagendar(m.group(1), m.group(2), identity)

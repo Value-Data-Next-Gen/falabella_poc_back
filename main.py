@@ -170,6 +170,7 @@ from motivo_corrections import router as motivo_corrections_router
 from drivers_whatsapp import router as drivers_whatsapp_router
 from day_planning import router as day_planning_router
 from day_state import router as day_state_router
+from rutas import router as rutas_router
 from search import router as search_router
 from twilio_inbound import router as twilio_inbound_router, _legacy_router as twilio_legacy_router
 from whatsapp_onboarding import router as whatsapp_onboarding_router
@@ -194,6 +195,7 @@ app.include_router(motivo_corrections_router)
 app.include_router(drivers_whatsapp_router)
 app.include_router(day_planning_router)
 app.include_router(day_state_router)
+app.include_router(rutas_router)
 app.include_router(search_router)
 app.include_router(twilio_inbound_router)
 app.include_router(twilio_legacy_router)
