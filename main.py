@@ -86,62 +86,13 @@ SCHEDULER_TICK_SEC = 3  # cada 3s avanza sim_clock por sim_minutes_per_tick
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Sprint 7: bootstrap automático de SQLite si la DB no existe / está vacía.
-    # No-op para DB_BACKEND=sqlserver. Se corre antes de STATE.init() porque
-    # train_model lee fpoc_simpli_visits.
+    # Migraciones idempotentes con tracking en fpoc.schema_migrations.
+    # Se corren antes de STATE.init() porque train_model lee fpoc_simpli_visits.
     try:
-        from fpoc_loader.bootstrap import bootstrap_if_needed
-        bootstrap_if_needed()
+        from fpoc_loader.migrations import MIGRATIONS, apply_all
+        apply_all(MIGRATIONS)
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"[bootstrap] falló (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_dotacion_diaria import main as migrate_dotacion_diaria
-        migrate_dotacion_diaria(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-dotacion] fallo (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_driver_documents import main as migrate_driver_documents
-        migrate_driver_documents(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-driver-docs] fallo (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_capacitaciones import main as migrate_capacitaciones
-        migrate_capacitaciones(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-capacitaciones] fallo (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_driver_role import main as migrate_driver_role
-        migrate_driver_role(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-driver-role] fallo (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_empresa_central import main as migrate_empresa_central
-        migrate_empresa_central(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-empresa-central] fallo (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_document_types import main as migrate_document_types
-        migrate_document_types(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-document-types] fallo (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_entity_documents import main as migrate_entity_documents
-        migrate_entity_documents(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-entity-documents] fallo (se intenta seguir): {e}")
-
-    try:
-        from fpoc_loader.migrate_cap_validation import main as migrate_cap_validation
-        migrate_cap_validation(quiet=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[migrate-cap-validation] fallo (se intenta seguir): {e}")
+        logger.warning(f"[migrations] runner falló (se intenta seguir): {e}")
 
     logger.info("Bootstrapping ValueData backend (training model, may take 30-40s)...")
     STATE.init()
