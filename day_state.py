@@ -154,29 +154,30 @@ def _build_state(fecha: str, user: CurrentUser) -> DayState:
     summary = _prep_summary(fecha, user) if visitas > 0 else {
         "conflicts_count": 0, "config_issues_count": 0, "driver_issues_count": 0,
     }
-    prep_ok = (
-        visitas > 0
-        and summary["conflicts_count"] == 0
-        and summary["driver_issues_count"] == 0
-    )
+    # Bloqueantes (impiden VALIDADO sin override):
+    #   - sin visitas cargadas
+    #   - conflicts_count > 0 (dotación inválida: drivers ausentes/licencia/etc)
+    # Warnings (permiten VALIDADO con allow_non_blocking=true):
+    #   - driver_issues_count (sin teléfono, sin licencia administrativa)
+    #   - config_issues_count (visitas con campos faltantes)
+    hard_blocked = visitas == 0 or summary["conflicts_count"] > 0
+    prep_ok = not hard_blocked
 
-    # Auto-promoción BORRADOR → LISTO si prep_ok (no persistido salvo que se llame validate).
-    # Reportamos el state real persistido; el frontend decide si llamar a /transition.
-    can_validate = (state == "BORRADOR" and prep_ok)
-    can_start = (state == "LISTO" and prep_ok)
+    # can_validate=true cuando se puede pasar a LISTO (con o sin warnings).
+    # El frontend decide si pedir confirmación cuando hay warnings.
+    can_validate = (state == "BORRADOR" and not hard_blocked)
+    can_start = (state == "LISTO" and not hard_blocked)
     can_pause = (state == "EN_CURSO")
     can_resume = (state == "PAUSADO")
     can_close = (state in ("EN_CURSO", "PAUSADO"))
 
     blocked_reason: Optional[str] = None
-    if not prep_ok and state in ("BORRADOR", "LISTO"):
+    if hard_blocked and state in ("BORRADOR", "LISTO"):
         bits = []
         if visitas == 0:
             bits.append("sin visitas cargadas")
         if summary["conflicts_count"]:
             bits.append(f"{summary['conflicts_count']} conflictos de dotación")
-        if summary["driver_issues_count"]:
-            bits.append(f"{summary['driver_issues_count']} drivers con problemas")
         blocked_reason = ", ".join(bits) if bits else None
 
     return DayState(
