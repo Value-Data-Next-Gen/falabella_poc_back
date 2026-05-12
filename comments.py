@@ -294,14 +294,54 @@ def _resolve_description(motivo: str, empresa_id: Optional[int]) -> tuple[str, b
 
 def _visit_meta(tracking_id: str) -> Optional[dict]:
     """Devuelve toda la info disponible de la visita: vehículo, driver, ruta, ETA, etc.
-    Reúne datos del snapshot + maestros (drivers / vehicles_ext) + empresa."""
-    if STATE.snapshot_df is None:
+    Reúne datos del snapshot + maestros (drivers / vehicles_ext) + empresa.
+
+    Si el tracking_id no está en el snapshot ML (sintético) cae a buscar en
+    fpoc.simpli_visits (visitas reales del XLSX SimpliRoute)."""
+    row_data: Optional[dict] = None
+    if STATE.snapshot_df is not None:
+        df = STATE.snapshot_df
+        matching = df[df["tracking_id"] == tracking_id]
+        if not matching.empty:
+            row_data = matching.iloc[0].to_dict()
+
+    if row_data is None:
+        # Fallback DB: buscar por id (BIGINT del XLSX SimpliRoute)
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT id, title, reference, ct, ruta_id, driver_name, "
+                    "empresa_falsa, patente_falsa, planned_date, current_eta_cl, "
+                    "address, comuna, region "
+                    "FROM fpoc.simpli_visits WHERE id = ?",
+                    tracking_id,
+                )
+                r = cur.fetchone()
+            if r is None:
+                return None
+            # Mapeo a la shape esperada (con campos mínimos; algunos quedan None)
+            row_data = {
+                "tracking_id": str(r.id),
+                "vehicle_id": int(r.patente_falsa) if r.patente_falsa is not None else None,
+                "title": r.title or "",
+                "reference": r.reference,
+                "customer_id": None,
+                "ct": r.ct,
+                "ruta_id": r.ruta_id,
+                "address": r.address,
+                "comuna": r.comuna,
+                "region": r.region,
+                "planned_date": str(r.planned_date) if r.planned_date else None,
+                "current_eta_cl": str(r.current_eta_cl) if r.current_eta_cl else None,
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[_visit_meta] fallback DB falló: {e}")
+            return None
+
+    row = row_data  # nombre estable
+    if row.get("vehicle_id") is None:
         return None
-    df = STATE.snapshot_df
-    matching = df[df["tracking_id"] == tracking_id]
-    if matching.empty:
-        return None
-    row = matching.iloc[0]
     vehicle_id = int(row["vehicle_id"])
 
     # Driver / vehículo extendido
@@ -353,9 +393,9 @@ def _visit_meta(tracking_id: str) -> Optional[dict]:
 
     return {
         "vehicle_id": vehicle_id,
-        "vehicle_name": str(row["vehicle_name"]),
-        "title": str(row["title"]),
-        "address": str(row.get("address", "")),
+        "vehicle_name": str(row.get("vehicle_name") or row.get("title") or ""),
+        "title": str(row.get("title") or ""),
+        "address": str(row.get("address", "") or ""),
         "order": int(row.get("order", 0)),
         "window_start": str(row.get("window_start", "")),
         "window_end": str(row.get("window_end", "")),
@@ -943,18 +983,43 @@ def _persist_and_dispatch_comment(
     alertable, severity = _resolve_alert_config(motivo, empresa_id)
     region = _visit_region(meta.get("latitude"), meta.get("longitude"))
 
+    from db import backend as db_backend
     with get_conn() as cn:
         cur = cn.cursor()
-        cur.execute(
-            """
-            INSERT INTO fpoc.visit_comments
-              (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            tracking_id, vehicle_id, empresa_id,
-            motivo, comentario, user_id, region,
-        )
-        cn.commit()
+        if db_backend() == "sqlserver":
+            # OUTPUT INSERTED.comment_id es 100% confiable con pyodbc;
+            # SCOPE_IDENTITY() en cur.execute separado a veces devuelve NULL.
+            cur.execute(
+                """
+                INSERT INTO fpoc.visit_comments
+                  (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
+                OUTPUT INSERTED.comment_id
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                tracking_id, vehicle_id, empresa_id,
+                motivo, comentario, user_id, region,
+            )
+            new_id_row = cur.fetchone()
+            new_id = int(new_id_row[0]) if new_id_row else None
+            cn.commit()
+        else:
+            cur.execute(
+                """
+                INSERT INTO fpoc.visit_comments
+                  (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                tracking_id, vehicle_id, empresa_id,
+                motivo, comentario, user_id, region,
+            )
+            cur.execute("SELECT last_insert_rowid()")
+            new_id_row = cur.fetchone()
+            new_id = int(new_id_row[0]) if new_id_row and new_id_row[0] else None
+            cn.commit()
+
+        if new_id is None:
+            raise HTTPException(500, "no se pudo obtener comment_id tras INSERT")
+
         cur.execute(
             """
             SELECT c.comment_id, c.tracking_id, c.vehicle_id, c.empresa_id,
@@ -962,10 +1027,13 @@ def _persist_and_dispatch_comment(
                    u.display_name AS created_by_name
             FROM fpoc.visit_comments c
             LEFT JOIN fpoc.users u ON u.user_id = c.created_by
-            WHERE c.comment_id = last_insert_rowid()
-            """
+            WHERE c.comment_id = ?
+            """,
+            new_id,
         )
         r = cur.fetchone()
+        if r is None:
+            raise HTTPException(500, f"comment {new_id} insertado pero no se pudo leer")
 
     created_at = r.created_at.isoformat() if hasattr(r.created_at, "isoformat") else str(r.created_at)
 
