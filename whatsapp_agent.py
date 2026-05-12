@@ -380,6 +380,30 @@ def _render_role_menu(profile_name: Optional[str]) -> str:
     )
 
 
+def _day_message_banner() -> Optional[str]:
+    """Si fpoc.day_config tiene message_to_drivers para hoy, lo devuelve como
+    banner 📢 listo para prepend al saludo del agente."""
+    try:
+        from datetime import date as _date_cls
+        today = _date_cls.today().isoformat()
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT message_to_drivers FROM fpoc.day_config WHERE fecha = ?",
+                today,
+            )
+            r = cur.fetchone()
+        if not r or not r.message_to_drivers:
+            return None
+        msg = str(r.message_to_drivers).strip()
+        if not msg:
+            return None
+        return f"📢 {msg}"
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[wa-agent] _day_message_banner: {e}")
+        return None
+
+
 def _greeting() -> str:
     """Buenos días/tardes/noches según hora de Chile (UTC-3/-4)."""
     try:
@@ -487,7 +511,12 @@ def _record_action(sess: "Session", kind: str, detail: str) -> None:
 
 
 def _wrap_menu(saludo_line: str, summary: Optional[str], hint: Optional[str], menu_lines: list[str]) -> str:
-    parts = [saludo_line]
+    parts = []
+    banner = _day_message_banner()
+    if banner:
+        parts.append(banner)
+        parts.append("")
+    parts.append(saludo_line)
     if summary:
         parts.append(summary)
     if hint:
