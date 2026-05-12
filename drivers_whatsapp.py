@@ -660,6 +660,46 @@ async def import_xlsx(
                 )
                 geo_count = len(geo_rows)
 
+        # Auto-enrich: derivar ruta_id/region/comuna desde geo_suborders.
+        # Sin esto, ruta_id queda NULL y la UI muestra "0 rutas".
+        try:
+            from collections import Counter
+            for d in fechas:
+                cur.execute(
+                    "SELECT patente_falsa, idruta, region, localidad "
+                    "FROM fpoc.geo_suborders WHERE fechapactada = ?",
+                    d,
+                )
+                agg: dict[int, dict] = {}
+                for r in cur.fetchall():
+                    if r.patente_falsa is None:
+                        continue
+                    pat = int(r.patente_falsa)
+                    slot = agg.setdefault(pat, {
+                        "rutas": Counter(), "regions": Counter(), "comunas": Counter(),
+                    })
+                    if r.idruta is not None:
+                        slot["rutas"][int(r.idruta)] += 1
+                    if r.region:
+                        slot["regions"][str(r.region)] += 1
+                    if r.localidad:
+                        slot["comunas"][str(r.localidad).strip().title()] += 1
+                # Aplicar UPDATE por (patente, fecha)
+                for patente, data in agg.items():
+                    if not data["rutas"]:
+                        continue
+                    idruta = data["rutas"].most_common(1)[0][0]
+                    region = data["regions"].most_common(1)[0][0] if data["regions"] else None
+                    comuna = data["comunas"].most_common(1)[0][0] if data["comunas"] else None
+                    cur.execute(
+                        "UPDATE fpoc.simpli_visits SET ruta_id = ?, region = ?, comuna = ? "
+                        "WHERE patente_falsa = ? AND planned_date = ?",
+                        f"R-{idruta}", region, comuna, patente, d,
+                    )
+                cn.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[import-xlsx] auto-enrich falló (no fatal): {e}")
+
         # Registrar imports
         for d in fechas:
             cur.execute("SELECT 1 FROM fpoc_planificacion_imports WHERE fecha = ?", (d,))

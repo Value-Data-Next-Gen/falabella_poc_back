@@ -224,6 +224,7 @@ def _log_inbound(
 # =============================================================================
 _RE_STATUS = re.compile(r"^\s*status\s+(\S+)\s*$", re.IGNORECASE)
 _RE_RUTA = re.compile(r"^\s*ruta\s+(R-\d+-\d+|\S+)\s*$", re.IGNORECASE)
+_RE_FOLIO = re.compile(r"^\s*folio\s+(\S+)\s*$", re.IGNORECASE)
 _RE_REAGENDAR = re.compile(
     r"^\s*reagendar\s+(\S+)\s+(\d{1,2}:\d{2})\s*$", re.IGNORECASE
 )
@@ -264,6 +265,72 @@ def _cmd_status(tracking_id: str) -> str:
         f"Window end: {row['window_end']}\n"
         f"Riesgo: {float(row['p_fallo'])*100:.0f}%"
     )
+
+
+def _cmd_folio(folio: str) -> str:
+    """Busca un folio (reference) en simpli_visits, devuelve resumen WhatsApp."""
+    folio_clean = folio.strip().lstrip("#").upper()
+    # Acepta 'FAL-1001' (sacamos prefijo) o número directo
+    num_part = folio_clean
+    for prefix in ("FAL-", "FAL"):
+        if num_part.startswith(prefix):
+            num_part = num_part[len(prefix):]
+            break
+    try:
+        ref_int = int(num_part)
+    except ValueError:
+        return f"Folio {folio} no parece un número válido. Formato: FAL-1234 o 14246784."
+    try:
+        from db import get_conn as _gc
+        from datetime import date as _date_cls
+        with _gc() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT TOP 1 id, title, comuna, region, ruta_id, driver_name, "
+                "patente_falsa, status, current_eta_cl, planned_date, address "
+                "FROM fpoc.simpli_visits WHERE reference = ? "
+                "ORDER BY planned_date DESC",
+                ref_int,
+            )
+            r = cur.fetchone()
+            if r is None:
+                return f"Folio {folio_clean} no encontrado en visitas."
+            tid = str(r.id)
+            title = r.title or ""
+            ruta_id = r.ruta_id or "—"
+            driver = r.driver_name or "—"
+            patente = str(r.patente_falsa) if r.patente_falsa is not None else "—"
+            status = r.status or "pending"
+            eta = str(r.current_eta_cl)[:16] if r.current_eta_cl else "—"
+            pd = str(r.planned_date) if r.planned_date else "—"
+            addr = r.address or "—"
+            comuna = r.comuna or "—"
+            region = r.region or "—"
+            # Subfolios desde geo
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM fpoc.geo_suborders WHERE parentorder = ?",
+                ref_int,
+            )
+            n_sub = int(cur.fetchone().n or 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[wa] _cmd_folio {folio} falló: {e}")
+        return f"No pude leer el folio {folio_clean}."
+    status_emoji = {"completed": "✅", "failed": "❌", "pending": "⏳"}.get(status, "•")
+    lines = [
+        f"📦 Folio {folio_clean}  {status_emoji} {status}",
+        f"Cliente: {title}",
+        f"Dirección: {addr}",
+        f"{comuna} · {region}",
+        "",
+        f"Ruta: {ruta_id}",
+        f"Driver: {driver} ({patente})",
+        f"ETA: {eta}",
+        f"Fecha plan: {pd}",
+        f"Tracking: {tid}",
+    ]
+    if n_sub:
+        lines.append(f"Subfolios: {n_sub}")
+    return "\n".join(lines)
 
 
 def _cmd_ruta(ruta_id: str) -> str:
@@ -489,6 +556,9 @@ def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str]
     m = _RE_RUTA.match(body)
     if m:
         return _cmd_ruta(m.group(1))
+    m = _RE_FOLIO.match(body)
+    if m:
+        return _cmd_folio(m.group(1))
     m = _RE_REAGENDAR.match(body)
     if m:
         return _cmd_reagendar(m.group(1), m.group(2), identity)
