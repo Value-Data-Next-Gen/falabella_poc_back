@@ -380,19 +380,139 @@ def _render_role_menu(profile_name: Optional[str]) -> str:
     )
 
 
-def _render_driver_menu(driver: dict) -> str:
-    return (
-        f"Hola {driver['name']} 👋  ({driver['vehicle_name']})\n"
-        "¿Qué necesitás?\n"
-        " 1️⃣  Ver mi ruta de hoy\n"
-        " 2️⃣  Próxima visita pendiente\n"
-        " 3️⃣  Reportar incidente / motivo\n"
-        " 4️⃣  Hablar con coordinador\n"
-        " 9️⃣  Salir"
-    )
+def _greeting() -> str:
+    """Buenos días/tardes/noches según hora de Chile (UTC-3/-4)."""
+    try:
+        from zoneinfo import ZoneInfo
+        h = datetime.now(ZoneInfo("America/Santiago")).hour
+    except Exception:  # noqa: BLE001 — fallback UTC-3 fijo
+        h = (datetime.utcnow().hour - 3) % 24
+    if 6 <= h < 12:
+        return "Buenos días"
+    if 12 <= h < 20:
+        return "Buenas tardes"
+    return "Buenas noches"
 
 
-def _render_manager_menu(persona: dict) -> str:
+def _driver_summary(driver: dict) -> Optional[str]:
+    """Resumen 1-line de la jornada del driver para inyectar en el saludo."""
+    name = driver.get("name")
+    if not name:
+        return None
+    try:
+        from datetime import date as _date_cls
+        today = _date_cls.today().isoformat()
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """SELECT COUNT(*) AS total,
+                          SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS ok,
+                          SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+                          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
+                   FROM fpoc.simpli_visits
+                   WHERE planned_date = ? AND driver_name = ?""",
+                today, name,
+            )
+            r = cur.fetchone()
+        if not r or int(r.total or 0) == 0:
+            return None
+        return (
+            f"Tu ruta de hoy: {int(r.total or 0)} stops · "
+            f"{int(r.ok or 0)} OK · {int(r.pending or 0)} pendientes"
+            + (f" · {int(r.failed or 0)} con problema" if (r.failed and int(r.failed) > 0) else "")
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[wa-agent] _driver_summary: {e}")
+        return None
+
+
+def _manager_summary(persona: dict) -> Optional[str]:
+    """Resumen 1-line para el manager/admin: KPIs + VIP count."""
+    try:
+        is_falabella = bool(persona.get("is_falabella"))
+        k = _empresa_kpis(persona.get("empresa_id"), is_falabella)
+        if not k:
+            return None
+        # VIP count adicional desde el snapshot
+        vip_ct = 0
+        try:
+            from state import STATE
+            df = STATE.snapshot_df
+            if df is not None and "is_vip" in df.columns:
+                if not is_falabella and persona.get("empresa_id") is not None:
+                    allowed = set(_vehicle_ids_for_empresa(persona["empresa_id"]))
+                    df = df[df["vehicle_id"].isin(allowed)]
+                vip_ct = int(df["is_vip"].sum())
+        except Exception:  # noqa: BLE001
+            pass
+        parts = [f"{k['total']} visitas", f"{k['pending']} pendientes"]
+        if k.get("alerts_critical"):
+            parts.append(f"⚠ {k['alerts_critical']} críticas")
+        if vip_ct:
+            parts.append(f"★ {vip_ct} VIP")
+        return "Hoy: " + " · ".join(parts)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[wa-agent] _manager_summary: {e}")
+        return None
+
+
+def _recent_action_hint(sess: "Session") -> Optional[str]:
+    """Si en context.last_action hay una acción reciente (<2h), devuelve hint."""
+    la = (sess.context or {}).get("last_action")
+    if not la:
+        return None
+    try:
+        ts = datetime.fromisoformat(la.get("ts", "").replace("Z", "+00:00").split(".")[0])
+        if ts.tzinfo is not None:
+            ts = ts.replace(tzinfo=None)
+        mins = int((datetime.utcnow() - ts).total_seconds() / 60)
+    except Exception:  # noqa: BLE001
+        return None
+    if mins < 0 or mins > 120:
+        return None
+    detail = la.get("detail") or la.get("kind") or "actividad"
+    ago = f"{mins} min" if mins < 60 else f"{mins // 60}h{mins % 60:02d}"
+    return f"💭 Tu última acción fue hace {ago}: {detail}"
+
+
+def _record_action(sess: "Session", kind: str, detail: str) -> None:
+    """Marca en sess.context la última acción para mostrarla la próxima vez.
+    No persiste solo: el caller debe llamar sess.save() después."""
+    sess.context = sess.context or {}
+    sess.context["last_action"] = {
+        "kind": kind,
+        "ts": datetime.utcnow().isoformat(),
+        "detail": detail[:120],
+    }
+
+
+def _wrap_menu(saludo_line: str, summary: Optional[str], hint: Optional[str], menu_lines: list[str]) -> str:
+    parts = [saludo_line]
+    if summary:
+        parts.append(summary)
+    if hint:
+        parts.append(hint)
+    parts.append("")  # línea en blanco antes del menú
+    parts.extend(menu_lines)
+    return "\n".join(parts)
+
+
+def _render_driver_menu(driver: dict, sess: Optional["Session"] = None) -> str:
+    saludo = _greeting()
+    head = f"{saludo}, {driver['name']} 👋  ({driver['vehicle_name']})"
+    summary = _driver_summary(driver)
+    hint = _recent_action_hint(sess) if sess else None
+    return _wrap_menu(head, summary, hint, [
+        "¿Qué necesitás?",
+        " 1️⃣  Ver mi ruta de hoy",
+        " 2️⃣  Próxima visita pendiente",
+        " 3️⃣  Reportar incidente / motivo",
+        " 4️⃣  Hablar con coordinador",
+        " 9️⃣  Salir",
+    ])
+
+
+def _render_manager_menu(persona: dict, sess: Optional["Session"] = None) -> str:
     """Menú para transport_manager / falabella_admin / falabella_ops."""
     name = persona["name"]
     empresa_str = (
@@ -400,16 +520,19 @@ def _render_manager_menu(persona: dict) -> str:
         else " · vista global Falabella"
     )
     role_label = "Falabella" if persona.get("is_falabella") else "Manager"
-    return (
-        f"Hola {name} 👋  ({role_label}{empresa_str})\n"
-        "¿Qué querés ver?\n"
-        " 1️⃣  KPIs de hoy\n"
-        " 2️⃣  Alertas críticas\n"
-        " 3️⃣  Listar mis drivers\n"
-        " 4️⃣  Buscar visita (TRK)\n"
-        " 5️⃣  Reportar incidente\n"
-        " 9️⃣  Salir"
-    )
+    saludo = _greeting()
+    head = f"{saludo}, {name} 👋  ({role_label}{empresa_str})"
+    summary = _manager_summary(persona)
+    hint = _recent_action_hint(sess) if sess else None
+    return _wrap_menu(head, summary, hint, [
+        "¿Qué querés ver?",
+        " 1️⃣  KPIs de hoy",
+        " 2️⃣  Alertas críticas",
+        " 3️⃣  Listar mis drivers",
+        " 4️⃣  Buscar visita (TRK)",
+        " 5️⃣  Reportar incidente",
+        " 9️⃣  Salir",
+    ])
 
 
 def _render_manager_kpis(persona: dict) -> str:
@@ -618,14 +741,14 @@ def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -
                     "vehicle_id": persona["vehicle_id"], "vehicle_name": persona["vehicle_name"],
                 }}
                 sess.save()
-                return _render_driver_menu(sess.context["driver"]) + "\n\n(detecté tu número en el sistema)"
+                return _render_driver_menu(sess.context["driver"], sess) + "\n\n(detecté tu número en el sistema)"
             if kind == "manager":
                 sess.state = "menu_manager"
                 sess.role = "manager"
                 sess.identified_id = str(persona["id"])
                 sess.context = {"persona": persona}
                 sess.save()
-                return _render_manager_menu(persona) + "\n\n(detecté tu número en el sistema)"
+                return _render_manager_menu(persona, sess) + "\n\n(detecté tu número en el sistema)"
             if kind == "contact":
                 rol = (persona.get("role") or "").lower()
                 empresa_id = persona.get("empresa_id")
@@ -644,7 +767,7 @@ def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -
                     sess.context = {"persona": mgr_persona}
                     sess.save()
                     return (
-                        _render_manager_menu(mgr_persona)
+                        _render_manager_menu(mgr_persona, sess)
                         + "\n\n(detecté tu número como jefe en el sistema)"
                     )
 
@@ -680,7 +803,7 @@ def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -
                         sess.context = {"driver": driver_synth}
                         sess.save()
                         return (
-                            _render_driver_menu(driver_synth)
+                            _render_driver_menu(driver_synth, sess)
                             + f"\n\n(te asigné el {vehicle_name} de {persona.get('empresa_nombre','tu empresa')})"
                         )
                     # Fallback: empresa sin vehicles cargados → role menu
@@ -733,7 +856,7 @@ def _on_awaiting_role(sess: Session, text: str, text_lower: str, identity: dict)
             sess.identified_id = driver["driver_id"]
             sess.context = {"driver": driver}
             sess.save()
-            return _render_driver_menu(driver)
+            return _render_driver_menu(driver, sess)
         sess.state = "awaiting_driver_id"
         sess.role = "driver"
         sess.save()
@@ -772,7 +895,7 @@ def _on_awaiting_driver_id(sess: Session, text: str, text_lower: str, identity: 
     sess.identified_id = driver["driver_id"]
     sess.context = {"driver": driver}
     sess.save()
-    return _render_driver_menu(driver)
+    return _render_driver_menu(driver, sess)
 
 
 def _on_menu_driver(sess: Session, text: str, text_lower: str, identity: dict) -> str:
@@ -816,7 +939,7 @@ def _on_awaiting_tracking(sess: Session, text: str, text_lower: str, identity: d
         driver = sess.context.get("driver")
         sess.state = "menu_driver"
         sess.save()
-        return _render_driver_menu(driver) if driver else _render_role_menu(None)
+        return _render_driver_menu(driver, sess) if driver else _render_role_menu(None)
     visit = _visit_by_tracking(text.upper().strip())
     if visit is None:
         return f"No encuentro {text}. Pegá el tracking_id completo (ej TRK0600009) o '0' para cancelar."
@@ -959,7 +1082,7 @@ def _on_confirming_ia_motivo(sess: Session, text: str, text_lower: str, identity
             sess.context.pop(k, None)
         sess.save()
         driver = sess.context.get("driver")
-        return _render_driver_menu(driver) if driver else _render_role_menu(None)
+        return _render_driver_menu(driver, sess) if driver else _render_role_menu(None)
 
     return "Elegí 1 (confirmar), 2 (cambiar motivo) o 0 (cancelar)."
 
@@ -970,7 +1093,7 @@ def _on_choosing_motivo(sess: Session, text: str, text_lower: str, identity: dic
         sess.state = "menu_driver"
         sess.context.pop("tracking_id", None)
         sess.save()
-        return _render_driver_menu(driver) if driver else _render_role_menu(None)
+        return _render_driver_menu(driver, sess) if driver else _render_role_menu(None)
     if not text.isdigit():
         return "Elegí un número del 1 al 6, o '0' para cancelar."
     idx = int(text)
@@ -1067,7 +1190,7 @@ def _on_done_motivo(sess: Session, text: str, text_lower: str, identity: dict) -
         sess.state = "menu_driver"
         sess.context.pop("tracking_id", None)
         sess.save()
-        return _render_driver_menu(driver) if driver else _render_role_menu(None)
+        return _render_driver_menu(driver, sess) if driver else _render_role_menu(None)
     if text == "9" or text_lower in ("salir", "exit"):
         Session.delete(sess.phone)
         return "👋 Gracias, hasta luego."
@@ -1206,7 +1329,7 @@ def _on_manager_search_tracking(sess: Session, text: str, text_lower: str, ident
         persona = sess.context.get("persona")
         sess.state = "menu_manager"
         sess.save()
-        return _render_manager_menu(persona) if persona else _render_role_menu(None)
+        return _render_manager_menu(persona, sess) if persona else _render_role_menu(None)
     visit = _visit_by_tracking(text.upper().strip())
     if visit is None:
         return f"No encuentro {text}. Pegá el tracking_id completo (ej TRK0600009) o '0' para cancelar."
