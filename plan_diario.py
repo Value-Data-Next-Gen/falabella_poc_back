@@ -152,8 +152,8 @@ class PlanVisitLegacy(BaseModel):
 
 class PlanDriverLegacy(BaseModel):
     vehicle_id: int
-    vehicle_name: str
-    driver_name: str
+    vehicle_name: Optional[str] = None
+    driver_name: Optional[str] = None
     total_visits: int
     completed: int
     pending: int
