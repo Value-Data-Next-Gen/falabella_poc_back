@@ -53,7 +53,7 @@ class OnboardRequest(BaseModel):
     empresa_id: Optional[int] = None
     vehicle_id: Optional[int] = None        # solo si kind=driver
     role: Optional[str] = None              # solo si kind=manager: 'transport_manager' | 'falabella_admin' | 'falabella_ops'
-    rol: Optional[str] = None               # solo si kind=contact: 'jefe' | 'coordinador' | 'driver' | 'otro'
+    rol: Optional[str] = None               # solo si kind=contact: 'jefe' | 'coordinador' | 'dispatcher' | 'otro'
     sandbox_join_code: Optional[str] = None  # informativo, no se persiste
 
 
@@ -208,7 +208,8 @@ def onboard(body: OnboardRequest, user: CurrentUser = Depends(require_admin)) ->
         if empresa_id is None:
             raise HTTPException(400, "empresa_id requerido para kind=contact")
         rol = body.rol or "otro"
-        if rol not in ("jefe", "coordinador", "dispatcher", "driver", "otro"):
+        # 'driver' removido: drivers van en fpoc.drivers con kind='driver'.
+        if rol not in ("jefe", "coordinador", "dispatcher", "otro"):
             raise HTTPException(400, f"rol inválido: {rol}")
         with get_conn() as cn:
             cur = cn.cursor()

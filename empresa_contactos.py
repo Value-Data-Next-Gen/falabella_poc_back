@@ -49,7 +49,10 @@ from schemas import (
 router = APIRouter(prefix="/api/empresa-contactos", tags=["empresa-contactos"])
 
 
-ALLOWED_ROLES = {"jefe", "coordinador", "dispatcher", "driver", "otro"}
+ALLOWED_ROLES = {"jefe", "coordinador", "dispatcher", "otro"}
+# 'driver' fue removido: los drivers viven en fpoc.drivers con su propio phone.
+# Los contactos de empresa son SOLO no-drivers. Filas legacy con rol='driver'
+# fueron migradas a 'otro' en la migración 012.
 ALLOWED_REGIONS = {"RM", "regiones", "all"}
 ALLOWED_SEVERITIES = {"low", "medium", "high", "critical"}
 PHONE_RE = re.compile(r"^\+\d{8,15}$")
