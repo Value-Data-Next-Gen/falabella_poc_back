@@ -1,24 +1,24 @@
-"""Máquina de estados del día operativo.
+"""Máquina de estados del día operativo (Ronda 3).
 
 Estados:
   BORRADOR  — día con visitas cargadas pero sin validar ni iniciar.
               live_gen NO inyecta. reloj NO avanza.
-  LISTO     — sin issues bloqueantes; listo para iniciar.
+  VALIDADO  — sin issues bloqueantes; listo para iniciar.
               live_gen NO inyecta todavía.
   EN_CURSO  — el usuario apretó "Iniciar día". live_gen inyecta visitas
               para esta fecha. STATE.today queda fijado a esta fecha.
-  PAUSADO   — pausa temporal de la inyección. El día sigue activo pero
-              live_gen no inyecta.
   CERRADO   — terminal. Solo lectura.
 
 Transiciones válidas:
-  BORRADOR → LISTO    (validate, requiere prep_ok)
-  LISTO → EN_CURSO    (start, requiere prep_ok, registra started_at + day_seed)
-  EN_CURSO → PAUSADO  (pause)
-  PAUSADO → EN_CURSO  (resume)
-  EN_CURSO → CERRADO  (close)
-  PAUSADO → CERRADO   (close)
-  cualquier → BORRADOR (reset; solo admin con confirmación, opcional)
+  BORRADOR → VALIDADO  (validate, requiere prep_ok)
+  VALIDADO → BORRADOR  (volver a editar si surge un problema)
+  VALIDADO → EN_CURSO  (start, registra started_at + day_seed)
+  EN_CURSO → CERRADO   (close)
+  cualquier → BORRADOR (reset; solo admin con DEMO_QA=true)
+
+PAUSADO se eliminó en Ronda 3. La pausa operativa ahora es responsabilidad
+del live_gen (que tiene su propio toggle vía /api/live-gen/toggle).
+Para el modelo del día, EN_CURSO → CERRADO directo.
 
 Cualquier transición no listada → 400.
 """
@@ -39,14 +39,16 @@ from db import get_conn
 router = APIRouter(tags=["day-state"])
 
 
-VALID_STATES = ("BORRADOR", "LISTO", "EN_CURSO", "PAUSADO", "CERRADO")
+VALID_STATES = ("BORRADOR", "VALIDADO", "EN_CURSO", "CERRADO")
 VALID_TRANSITIONS = {
-    "BORRADOR": {"LISTO"},
-    "LISTO":    {"BORRADOR", "EN_CURSO"},
-    "EN_CURSO": {"PAUSADO", "CERRADO"},
-    "PAUSADO":  {"EN_CURSO", "CERRADO"},
+    "BORRADOR": {"VALIDADO"},
+    "VALIDADO": {"BORRADOR", "EN_CURSO"},
+    "EN_CURSO": {"CERRADO"},
     "CERRADO":  set(),  # terminal
 }
+# Backcompat: aceptar 'LISTO' como alias entrante (frontend viejo). Se mapea a
+# VALIDADO antes de validar transición.
+_TARGET_ALIAS = {"LISTO": "VALIDADO"}
 
 
 # ============================================================================
@@ -54,7 +56,7 @@ VALID_TRANSITIONS = {
 # ============================================================================
 class DayState(BaseModel):
     fecha: str
-    state: str  # BORRADOR | LISTO | EN_CURSO | PAUSADO | CERRADO
+    state: str  # BORRADOR | VALIDADO | EN_CURSO | CERRADO
     visitas: int = 0
     imported_at: Optional[str] = None
     imported_by_user_id: Optional[int] = None
@@ -166,13 +168,13 @@ def _build_state(fecha: str, user: CurrentUser) -> DayState:
     # can_validate=true cuando se puede pasar a LISTO (con o sin warnings).
     # El frontend decide si pedir confirmación cuando hay warnings.
     can_validate = (state == "BORRADOR" and not hard_blocked)
-    can_start = (state == "LISTO" and not hard_blocked)
-    can_pause = (state == "EN_CURSO")
-    can_resume = (state == "PAUSADO")
-    can_close = (state in ("EN_CURSO", "PAUSADO"))
+    can_start = (state == "VALIDADO" and not hard_blocked)
+    can_pause = False  # PAUSADO eliminado en Ronda 3 (compat solo del field)
+    can_resume = False
+    can_close = (state == "EN_CURSO")
 
     blocked_reason: Optional[str] = None
-    if hard_blocked and state in ("BORRADOR", "LISTO"):
+    if hard_blocked and state in ("BORRADOR", "VALIDADO"):
         bits = []
         if visitas == 0:
             bits.append("sin visitas cargadas")
@@ -244,6 +246,8 @@ def transition_day_state(
     except ValueError:
         raise HTTPException(400, f"fecha inválida: {req.fecha}")
     target = req.target.upper().strip()
+    # Backcompat: LISTO (R2) → VALIDADO (R3)
+    target = _TARGET_ALIAS.get(target, target)
     if target not in VALID_STATES:
         raise HTTPException(400, f"target inválido: {target}")
 
@@ -255,14 +259,13 @@ def transition_day_state(
         )
 
     # Reglas específicas
-    if target == "LISTO":
+    if target == "VALIDADO":
         if not current.prep_ok and not req.allow_non_blocking:
             raise HTTPException(
                 409,
-                f"No se puede pasar a LISTO: {current.blocked_reason or 'issues bloqueantes'}",
+                f"No se puede pasar a VALIDADO: {current.blocked_reason or 'issues bloqueantes'}",
             )
     if target == "EN_CURSO":
-        # Requiere LISTO previo (ya validado por VALID_TRANSITIONS)
         if not current.prep_ok and not req.allow_non_blocking:
             raise HTTPException(
                 409,
@@ -276,7 +279,7 @@ def transition_day_state(
     # Aplicar transición
     sets: list[str] = ["state = ?"]
     params: list = [target]
-    if target == "EN_CURSO" and current.state == "LISTO":
+    if target == "EN_CURSO" and current.state == "VALIDADO":
         # Primera vez que se inicia: registrar started_at + day_seed + user
         from random import randint
         seed = randint(1, 999_999)
@@ -285,11 +288,6 @@ def transition_day_state(
         params.append(user.user_id)
         sets.append("day_seed = ?")
         params.append(seed)
-    if target == "EN_CURSO" and current.state == "PAUSADO":
-        # Reanudación: limpiar paused_at
-        sets.append("paused_at = NULL")
-    if target == "PAUSADO":
-        sets.append("paused_at = SYSDATETIME()")
     if target == "CERRADO":
         sets.append("closed_at = SYSDATETIME()")
 
@@ -315,7 +313,7 @@ def transition_day_state(
                 STATE.reset_day(start_date=_date_cls.fromisoformat(req.fecha))
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[day-state] STATE.reset_day falló: {e}")
-        elif target in ("PAUSADO", "CERRADO"):
+        elif target == "CERRADO":
             LIVE_STATE.enabled = False
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[day-state] live_gen control falló: {e}")
