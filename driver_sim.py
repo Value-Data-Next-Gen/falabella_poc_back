@@ -359,6 +359,8 @@ class DriverPosition(BaseModel):
     ruta_id: Optional[str] = None
     driver_name: Optional[str] = None
     patente: Optional[int] = None
+    empresa_id: Optional[int] = None
+    empresa_nombre: Optional[str] = None
     current_stop: Optional[int] = None
     next_stop: Optional[int] = None
     lat: Optional[float] = None
@@ -369,6 +371,7 @@ class DriverPosition(BaseModel):
     stops_total: int = 0
     stops_completed: int = 0
     stops_failed: int = 0
+    vip_visitas: int = 0
 
 
 class SimStatusResponse(BaseModel):
@@ -382,6 +385,7 @@ class SimStatusResponse(BaseModel):
 @router.get("/api/operacion/driver-positions", response_model=SimStatusResponse)
 def driver_positions(
     fecha: str = Query(...),
+    empresa_id: Optional[int] = Query(None),
     user: CurrentUser = Depends(current_user),
 ) -> SimStatusResponse:
     try:
@@ -395,6 +399,9 @@ def driver_positions(
     if not user.is_falabella and user.empresa_id is not None:
         scope_where = " AND v.empresa_falsa = ?"
         scope_params.append(user.empresa_id)
+    elif empresa_id is not None:
+        scope_where = " AND v.empresa_falsa = ?"
+        scope_params.append(empresa_id)
 
     with get_conn() as cn:
         cur = cn.cursor()
@@ -402,17 +409,25 @@ def driver_positions(
             f"""SELECT dp.vehicle_id, dp.ruta_id, dp.driver_name, dp.patente_falsa,
                        dp.current_stop, dp.next_stop, dp.lat, dp.lon,
                        dp.ts_sim, dp.status, dp.speed_kmh,
+                       MAX(v.empresa_falsa) AS empresa_id,
+                       MAX(et.nombre) AS empresa_nombre,
                        COUNT(v.id) AS stops_total,
                        SUM(CASE WHEN v.status='completed' THEN 1 ELSE 0 END) AS stops_completed,
-                       SUM(CASE WHEN v.status='failed' THEN 1 ELSE 0 END) AS stops_failed
+                       SUM(CASE WHEN v.status='failed' THEN 1 ELSE 0 END) AS stops_failed,
+                       SUM(CASE WHEN vc.match_value IS NOT NULL THEN 1 ELSE 0 END) AS vip_visitas
                 FROM fpoc.driver_positions dp
                 LEFT JOIN fpoc.simpli_visits v
                    ON v.patente_falsa = dp.vehicle_id AND v.planned_date = dp.planned_date
+                LEFT JOIN fpoc.empresas_transporte et
+                   ON et.empresa_id = v.empresa_falsa
+                LEFT JOIN fpoc.vip_clients vc
+                   ON vc.active = 1 AND vc.match_type = 'title' AND vc.match_value = v.title
                 WHERE dp.planned_date = ?{scope_where}
                 GROUP BY dp.vehicle_id, dp.ruta_id, dp.driver_name, dp.patente_falsa,
                          dp.current_stop, dp.next_stop, dp.lat, dp.lon,
-                         dp.ts_sim, dp.status, dp.speed_kmh""",
-            fecha, *scope_params,
+                         dp.ts_sim, dp.status, dp.speed_kmh
+                HAVING (? IS NULL OR MAX(v.empresa_falsa) = ?)""",
+            fecha, *scope_params, empresa_id, empresa_id,
         )
         rows = cur.fetchall()
 
@@ -426,6 +441,8 @@ def driver_positions(
         ruta_id=r.ruta_id,
         driver_name=r.driver_name,
         patente=int(r.patente_falsa) if r.patente_falsa is not None else None,
+        empresa_id=int(r.empresa_id) if r.empresa_id is not None else None,
+        empresa_nombre=r.empresa_nombre,
         current_stop=int(r.current_stop) if r.current_stop is not None else None,
         next_stop=int(r.next_stop) if r.next_stop is not None else None,
         lat=float(r.lat) if r.lat is not None else None,
@@ -436,6 +453,7 @@ def driver_positions(
         stops_total=int(r.stops_total or 0),
         stops_completed=int(r.stops_completed or 0),
         stops_failed=int(r.stops_failed or 0),
+        vip_visitas=int(r.vip_visitas or 0),
     ) for r in rows]
 
     return SimStatusResponse(

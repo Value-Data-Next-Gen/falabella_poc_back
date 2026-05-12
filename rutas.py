@@ -286,3 +286,117 @@ def integridad_rutas(
                 issue=issue,
             ))
     return out
+
+
+# ============================================================================
+# Folios + subfolios por (fecha, empresa)  — alimenta tabla bajo el mapa
+# ============================================================================
+class FolioRow(BaseModel):
+    ruta_id: Optional[str] = None
+    vehicle_id: Optional[int] = None
+    driver_name: Optional[str] = None
+    tracking_id: str
+    order: Optional[int] = None
+    cliente: str
+    direccion: Optional[str] = None
+    comuna: Optional[str] = None
+    region: Optional[str] = None
+    folio: Optional[str] = None
+    subfolios: list[str] = []
+    status: str
+    is_vip: bool = False
+    vip_tier: Optional[str] = None
+    eta: Optional[str] = None
+
+
+@router.get("/api/operacion/folios", response_model=list[FolioRow])
+def folios_del_dia(
+    fecha: str = Query(...),
+    empresa_id: Optional[int] = Query(None),
+    ruta_id: Optional[str] = Query(None),
+    only_vip: bool = Query(False),
+    limit: int = Query(500, ge=1, le=5000),
+    user: CurrentUser = Depends(current_user),
+) -> list[FolioRow]:
+    try:
+        _date_cls.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, f"fecha inválida: {fecha}")
+
+    where = ["v.planned_date = ?"]
+    params: list = [fecha]
+    if not user.is_falabella and user.empresa_id is not None:
+        where.append("v.empresa_falsa = ?")
+        params.append(user.empresa_id)
+    elif empresa_id is not None:
+        where.append("v.empresa_falsa = ?")
+        params.append(empresa_id)
+    if ruta_id:
+        where.append("v.ruta_id = ?")
+        params.append(ruta_id)
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            f"""SELECT TOP ({limit}) v.id, v.ruta_id, v.patente_falsa, v.driver_name,
+                       v."order", v.title, v.address, v.comuna, v.region,
+                       v.reference, v.status, v.current_eta_cl
+                FROM fpoc.simpli_visits v
+                WHERE {' AND '.join(where)}
+                ORDER BY v.ruta_id, v."order", v.id""",
+            *params,
+        )
+        rows = cur.fetchall()
+
+        # VIPs
+        cur.execute(
+            "SELECT match_value, tier FROM fpoc.vip_clients "
+            "WHERE active = 1 AND match_type = 'title'"
+        )
+        vip_map: dict[str, str] = {str(r.match_value): str(r.tier) for r in cur.fetchall()}
+
+        # Subfolios por reference (folio)
+        refs = [r.reference for r in rows if r.reference is not None]
+        sub_by_ref: dict[str, list[str]] = {}
+        if refs:
+            try:
+                # batch para evitar IN gigante
+                for i in range(0, len(refs), 500):
+                    batch = refs[i:i + 500]
+                    marks = ",".join(["?"] * len(batch))
+                    cur.execute(
+                        f"SELECT parentorder, Suborden FROM fpoc.geo_suborders "
+                        f"WHERE parentorder IN ({marks})",
+                        *batch,
+                    )
+                    for r in cur.fetchall():
+                        k = str(r.parentorder)
+                        sub_by_ref.setdefault(k, []).append(str(r.Suborden))
+            except Exception:  # noqa: BLE001
+                sub_by_ref = {}
+
+    out: list[FolioRow] = []
+    for r in rows:
+        title = str(r.title or "")
+        is_vip = title in vip_map
+        if only_vip and not is_vip:
+            continue
+        folio = str(r.reference) if r.reference is not None else None
+        out.append(FolioRow(
+            ruta_id=str(r.ruta_id) if r.ruta_id else None,
+            vehicle_id=int(r.patente_falsa) if r.patente_falsa is not None else None,
+            driver_name=str(r.driver_name) if r.driver_name else None,
+            tracking_id=str(r.id),
+            order=int(getattr(r, "order")) if hasattr(r, "order") else None,
+            cliente=title,
+            direccion=str(r.address) if r.address else None,
+            comuna=str(r.comuna) if r.comuna else None,
+            region=str(r.region) if r.region else None,
+            folio=folio,
+            subfolios=sub_by_ref.get(folio, []) if folio else [],
+            status=str(r.status) if r.status else "pending",
+            is_vip=is_vip,
+            vip_tier=vip_map.get(title),
+            eta=str(r.current_eta_cl) if r.current_eta_cl else None,
+        ))
+    return out
