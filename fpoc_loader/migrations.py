@@ -127,4 +127,5 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("014_day_config",                _wrap_quiet("fpoc_loader.migrate_day_config")),
     ("015_day_state_machine",         _wrap_quiet("fpoc_loader.migrate_day_state")),
     ("016_day_state_r3",              _wrap_quiet("fpoc_loader.migrate_day_state_r3")),
+    ("017_split_multi_region_routes", _wrap_quiet("fpoc_loader.migrate_split_multi_region_routes")),
 ]

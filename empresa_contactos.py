@@ -627,3 +627,222 @@ def test_broadcast(
         empresa_id=empresa_id, body=body, results=rows,
         sent=sent, failed=failed,
     )
+
+
+# ============================================================================
+# Ronda 5: audiencia unificada de WhatsApp por empresa
+# ============================================================================
+# Fuente única que combina:
+#   - drivers de fpoc.drivers (kind='driver')
+#   - contactos de fpoc.empresa_contactos (kind='contacto', rol = jefe/coord/etc.)
+#   - usuarios de fpoc.users con role TRANSPORT_MANAGER o DRIVER (kind='user')
+#
+# Cada destinatario tiene `audience_tags` que el frontend usa para segmentar:
+#   - 'drivers'  → fila proviene de fpoc.drivers o user con role=driver
+#   - 'managers' → contacto rol=jefe|coordinador|dispatcher o user TRANSPORT_MANAGER
+#   - 'todos'    → siempre
+
+class AudienceRecipient(BaseModel):
+    kind: str                 # 'driver' | 'contacto' | 'user'
+    id: str                   # driver_id | contact_id | user_id
+    nombre: str
+    phone_e164: Optional[str] = None
+    has_opt_in: bool          # confirmó join al sandbox
+    audience_tags: list[str]  # ['drivers'], ['managers'], ['drivers','managers'] etc.
+    extra: Optional[str] = None  # vehículo, rol, role, etc.
+
+
+class AudienceResponse(BaseModel):
+    empresa_id: int
+    empresa_nombre: Optional[str] = None
+    total: int
+    by_tag: dict[str, int]    # {'drivers': N, 'managers': N, ...}
+    recipients: list[AudienceRecipient]
+
+
+@router.get("/empresas/{empresa_id}/whatsapp-audience", response_model=AudienceResponse)
+def whatsapp_audience(
+    empresa_id: int,
+    user: CurrentUser = Depends(current_user),
+) -> AudienceResponse:
+    if not user.is_falabella and user.empresa_id != empresa_id:
+        raise HTTPException(403, "fuera de tu empresa")
+
+    with get_conn() as cn:
+        empresa_nombre = _ensure_empresa_exists(cn, empresa_id)
+        cur = cn.cursor()
+        recipients: list[AudienceRecipient] = []
+
+        # 1) Drivers de la empresa (fpoc.drivers)
+        cur.execute(
+            "SELECT driver_id, name, phone_e164, notify_whatsapp, opted_in_at, "
+            "       vehicle_name, active "
+            "FROM fpoc_drivers WHERE empresa_id = ? AND active = 1",
+            empresa_id,
+        )
+        for r in cur.fetchall():
+            recipients.append(AudienceRecipient(
+                kind="driver",
+                id=str(r.driver_id),
+                nombre=str(r.name or ""),
+                phone_e164=r.phone_e164,
+                has_opt_in=bool(r.opted_in_at is not None and r.notify_whatsapp),
+                audience_tags=["drivers"],
+                extra=str(r.vehicle_name) if r.vehicle_name else None,
+            ))
+
+        # 2) Contactos (fpoc.empresa_contactos)
+        cur.execute(
+            "SELECT contact_id, nombre, rol, phone_e164, opted_in_at "
+            "FROM fpoc_empresa_contactos WHERE empresa_id = ? AND active = 1",
+            empresa_id,
+        )
+        for r in cur.fetchall():
+            rol = (str(r.rol) if r.rol else "otro").lower()
+            tags = ["contactos"]
+            if rol in ("jefe", "coordinador", "dispatcher"):
+                tags.append("managers")
+            recipients.append(AudienceRecipient(
+                kind="contacto",
+                id=str(r.contact_id),
+                nombre=str(r.nombre or ""),
+                phone_e164=r.phone_e164,
+                has_opt_in=r.opted_in_at is not None,
+                audience_tags=tags,
+                extra=rol,
+            ))
+
+        # 3) Usuarios con role TRANSPORT_MANAGER o DRIVER de esa empresa
+        cur.execute(
+            "SELECT user_id, display_name, role, phone_e164, notify_whatsapp, opted_in_at "
+            "FROM fpoc_users "
+            "WHERE empresa_id = ? AND activo = 1 "
+            "  AND role IN ('transport_manager', 'driver') "
+            "  AND phone_e164 IS NOT NULL AND phone_e164 <> ''",
+            empresa_id,
+        )
+        for r in cur.fetchall():
+            role = (str(r.role) if r.role else "").lower()
+            tags = []
+            if role == "driver":
+                tags = ["drivers"]
+            elif role == "transport_manager":
+                tags = ["managers"]
+            recipients.append(AudienceRecipient(
+                kind="user",
+                id=str(int(r.user_id)),
+                nombre=str(r.display_name or ""),
+                phone_e164=r.phone_e164,
+                has_opt_in=bool(r.opted_in_at is not None and r.notify_whatsapp),
+                audience_tags=tags,
+                extra=role,
+            ))
+
+    # Dedup por (phone_e164, kind) para evitar duplicados driver+user_driver
+    seen: set[tuple] = set()
+    deduped: list[AudienceRecipient] = []
+    for r in recipients:
+        key = (r.phone_e164 or "", r.kind, r.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+
+    by_tag: dict[str, int] = {"todos": len(deduped)}
+    for r in deduped:
+        for t in r.audience_tags:
+            by_tag[t] = by_tag.get(t, 0) + 1
+    by_tag["opted_in"] = sum(1 for r in deduped if r.has_opt_in)
+
+    return AudienceResponse(
+        empresa_id=empresa_id,
+        empresa_nombre=empresa_nombre,
+        total=len(deduped),
+        by_tag=by_tag,
+        recipients=deduped,
+    )
+
+
+# Test broadcast extendido: acepta filtro de audiencia (todos / drivers / managers / contactos)
+class BroadcastAudienceRequest(BaseModel):
+    audience: str = "todos"   # 'todos' | 'drivers' | 'managers' | 'contactos' | 'opted_in'
+    only_opted_in: bool = True
+    custom_body: Optional[str] = None
+
+
+@router.post("/empresas/{empresa_id}/audience-broadcast", response_model=TestBroadcastResult)
+def audience_broadcast(
+    empresa_id: int,
+    req: BroadcastAudienceRequest,
+    user: CurrentUser = Depends(current_user),
+) -> TestBroadcastResult:
+    """Broadcast a la audiencia unificada filtrada por tag.
+    Reusa la pipeline de test_broadcast pero con destinatarios de las 3
+    fuentes (drivers + contactos + users)."""
+    _require_admin_or_ops(user)
+    audience = whatsapp_audience(empresa_id, user)
+
+    tag = req.audience.lower().strip()
+    if tag == "todos":
+        pool = audience.recipients
+    else:
+        pool = [r for r in audience.recipients if tag in r.audience_tags]
+    if req.only_opted_in:
+        pool = [r for r in pool if r.has_opt_in and r.phone_e164]
+    else:
+        pool = [r for r in pool if r.phone_e164]
+
+    body = req.custom_body or (
+        f"🔔 Mensaje ValueData × Falabella · {audience.empresa_nombre or empresa_id} · "
+        "audiencia: " + tag
+    )
+
+    # Reuso el envío de notifications
+    rows: list[TestBroadcastRow] = []
+    if not pool:
+        return TestBroadcastResult(empresa_id=empresa_id, body=body, results=rows, sent=0, failed=0)
+
+    from notifications import TwilioConfig, _send_one, _twilio_client  # type: ignore
+    cfg = TwilioConfig.from_env()
+    client = None
+    if cfg.enabled and not cfg.dry_run:
+        try:
+            client, _ = _twilio_client()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[audience-broadcast] Twilio init falló: {e}")
+            cfg.dry_run = True
+
+    sent = 0
+    failed = 0
+    for r in pool:
+        if not cfg.enabled:
+            status, sid, err = "disabled", None, None
+        elif cfg.dry_run:
+            status, sid, err = "dry_run", None, None
+            logger.info(f"[audience-broadcast][dry] {r.phone_e164}: {body[:120]}")
+        else:
+            status, sid, err = _send_one(
+                client, cfg, r.phone_e164,
+                body=body, content_sid=None, content_variables=None,
+            )
+        if status == "sent":
+            sent += 1
+        elif status == "error":
+            failed += 1
+        rows.append(TestBroadcastRow(
+            contact_id=0,  # el frontend ya no usa solo contact_id
+            nombre=r.nombre,
+            phone=r.phone_e164 or "",
+            status=status,
+            twilio_sid=sid,
+            error=err,
+        ))
+
+    logger.info(
+        f"[audience-broadcast] empresa={empresa_id} audience={tag} "
+        f"sent={sent} failed={failed} total={len(pool)}"
+    )
+    return TestBroadcastResult(
+        empresa_id=empresa_id, body=body, results=rows,
+        sent=sent, failed=failed,
+    )
