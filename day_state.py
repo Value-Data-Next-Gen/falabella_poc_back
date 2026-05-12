@@ -302,7 +302,7 @@ def transition_day_state(
         )
         cn.commit()
 
-    # Lado del live_generator + driver_sim: arrancar/parar según target
+    # Lado del live_generator + driver_sim + comment_sim: arrancar/parar según target
     try:
         from live_generator import STATE as LIVE_STATE
         if target == "EN_CURSO":
@@ -319,6 +319,15 @@ def transition_day_state(
                 start_sim(req.fecha)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[day-state] driver_sim.start_sim falló: {e}")
+            # R7: auto-arrancar el comment_simulator. Sin esto el panel
+            # Auditoría IA → Alertas IA queda vacío aunque el día esté
+            # EN_CURSO porque nadie genera comentarios alertables.
+            try:
+                from comment_simulator import SIM as COMMENT_SIM
+                COMMENT_SIM.enabled = True
+                logger.info(f"[day-state] comment_simulator auto-enabled para {req.fecha}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[day-state] comment_sim auto-enable falló: {e}")
         elif target == "CERRADO":
             LIVE_STATE.enabled = False
             try:
@@ -326,6 +335,11 @@ def transition_day_state(
                 stop_sim(req.fecha)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[day-state] driver_sim.stop_sim falló: {e}")
+            try:
+                from comment_simulator import SIM as COMMENT_SIM
+                COMMENT_SIM.enabled = False
+            except Exception:  # noqa: BLE001
+                pass
         elif target == "BORRADOR":
             # R7: volver a BORRADOR limpia el ring buffer del stream para que
             # el panel de Alertas en vivo no muestre el residuo del día anterior.
@@ -339,6 +353,11 @@ def transition_day_state(
             try:
                 from driver_sim import stop_sim
                 stop_sim(req.fecha)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from comment_simulator import SIM as COMMENT_SIM
+                COMMENT_SIM.enabled = False
             except Exception:  # noqa: BLE001
                 pass
     except Exception as e:  # noqa: BLE001
