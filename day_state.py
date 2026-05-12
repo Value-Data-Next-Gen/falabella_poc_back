@@ -302,7 +302,7 @@ def transition_day_state(
         )
         cn.commit()
 
-    # Lado del live_generator: arrancar/pausar según target
+    # Lado del live_generator + driver_sim: arrancar/parar según target
     try:
         from live_generator import STATE as LIVE_STATE
         if target == "EN_CURSO":
@@ -313,8 +313,19 @@ def transition_day_state(
                 STATE.reset_day(start_date=_date_cls.fromisoformat(req.fecha))
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[day-state] STATE.reset_day falló: {e}")
+            # Arrancar simulación de drivers para esa fecha
+            try:
+                from driver_sim import start_sim
+                start_sim(req.fecha)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[day-state] driver_sim.start_sim falló: {e}")
         elif target == "CERRADO":
             LIVE_STATE.enabled = False
+            try:
+                from driver_sim import stop_sim
+                stop_sim(req.fecha)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[day-state] driver_sim.stop_sim falló: {e}")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[day-state] live_gen control falló: {e}")
 

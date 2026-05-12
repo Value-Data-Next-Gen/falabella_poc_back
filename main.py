@@ -121,12 +121,17 @@ async def lifespan(_: FastAPI):
     # Simulador de comentarios alertables (off por default; se enciende por endpoint)
     comment_sim_start()
 
+    # Driver simulation (Ronda 4): movimiento + entregas. Solo procesa fechas
+    # con state=EN_CURSO (gateado por start_sim() vía day_state.transition).
+    driver_sim_start()
+
     try:
         yield
     finally:
         scheduler.shutdown(wait=False)
         live_gen_stop()
         comment_sim_stop()
+        driver_sim_stop()
 
 
 app = FastAPI(
@@ -172,6 +177,7 @@ from day_planning import router as day_planning_router
 from day_state import router as day_state_router
 from rutas import router as rutas_router
 from seed_admin import router as seed_admin_router
+from driver_sim import router as driver_sim_router, start_scheduler as driver_sim_start, stop_scheduler as driver_sim_stop
 from search import router as search_router
 from twilio_inbound import router as twilio_inbound_router, _legacy_router as twilio_legacy_router
 from whatsapp_onboarding import router as whatsapp_onboarding_router
@@ -198,6 +204,7 @@ app.include_router(day_planning_router)
 app.include_router(day_state_router)
 app.include_router(rutas_router)
 app.include_router(seed_admin_router)
+app.include_router(driver_sim_router)
 app.include_router(search_router)
 app.include_router(twilio_inbound_router)
 app.include_router(twilio_legacy_router)
