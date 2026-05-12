@@ -790,6 +790,32 @@ def start_day(
 
     conflicts = _check_dotacion_conflicts(target.isoformat())
 
+    # Marker explícito de "Iniciar día" en la DB (verdad single-source para day-status).
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT 1 FROM fpoc.planificacion_imports WHERE fecha = ?",
+                target.isoformat(),
+            )
+            if cur.fetchone():
+                cur.execute(
+                    "UPDATE fpoc.planificacion_imports "
+                    "SET started_at = SYSDATETIME(), started_by_user_id = ? "
+                    "WHERE fecha = ?",
+                    user.user_id, target.isoformat(),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO fpoc.planificacion_imports "
+                    "(fecha, count, started_at, started_by_user_id) "
+                    "VALUES (?, ?, SYSDATETIME(), ?)",
+                    target.isoformat(), visitas, user.user_id,
+                )
+            cn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[start-day] no se pudo marcar started_at: {e}")
+
     msg_parts = [f"Día {fecha} iniciado", f"{visitas} visitas en DB"]
     if visitas_reset:
         msg_parts.append(f"{visitas_reset} reseteadas a pending")
@@ -822,6 +848,7 @@ class DayStatus(BaseModel):
     live_gen_running: bool = False
     imported_at: Optional[str] = None
     imported_by_user_id: Optional[int] = None
+    started_at: Optional[str] = None
     # Status derivado para el wizard
     loaded: bool = False                 # tiene visitas
     dotacion_checked: bool = False       # se cruzó con dotacion (siempre true si hay backend)
@@ -874,15 +901,18 @@ def day_status(
 
         imported_at = None
         imported_by = None
+        started_at = None
         try:
             cur.execute(
-                "SELECT imported_at, imported_by_user_id FROM fpoc_planificacion_imports WHERE fecha = ?",
+                "SELECT imported_at, imported_by_user_id, started_at "
+                "FROM fpoc_planificacion_imports WHERE fecha = ?",
                 fecha,
             )
             row = cur.fetchone()
             if row:
                 imported_at = str(row.imported_at) if row.imported_at else None
                 imported_by = int(row.imported_by_user_id) if row.imported_by_user_id is not None else None
+                started_at = str(row.started_at) if row.started_at else None
         except Exception:  # noqa: BLE001
             pass
 
@@ -902,7 +932,11 @@ def day_status(
 
     loaded = total > 0
     no_conflicts = len(conflicts) == 0
-    started = is_state_today and not live_gen_running
+    # "started" es ahora un hecho explícito: existe started_at en la fila de
+    # planificacion_imports para esa fecha. Antes lo derivábamos de
+    # STATE.today + !live_gen_running, lo cual hacía que cualquier reinicio
+    # del backend mostrara "iniciado" sin que el usuario hubiera apretado el botón.
+    started = started_at is not None
 
     # Sprint H: contadores accionables (Plan del día simplificado).
     prep = _compute_day_prep(fecha, user) if loaded else _empty_day_prep(fecha)
@@ -922,6 +956,7 @@ def day_status(
         live_gen_running=live_gen_running,
         imported_at=imported_at,
         imported_by_user_id=imported_by,
+        started_at=started_at,
         loaded=loaded,
         dotacion_checked=user.is_falabella,
         no_conflicts=no_conflicts,
@@ -1146,6 +1181,69 @@ def _compute_day_prep(fecha: str, user: CurrentUser) -> dict:
         "config_issues": config_issues,
         "driver_issues": driver_issues,
     }
+
+
+class DayClient(BaseModel):
+    tracking_id: str
+    cliente: str
+    comuna: Optional[str] = None
+    ruta_id: Optional[str] = None
+    driver_name: Optional[str] = None
+    is_vip: bool = False
+
+
+@router.get("/api/planificacion/day-clients", response_model=list[DayClient])
+def day_clients(
+    fecha: str = Query(...),
+    q: Optional[str] = Query(default=None, description="Substring sobre title"),
+    limit: int = Query(default=50, ge=1, le=200),
+    user: CurrentUser = Depends(current_user),
+) -> list[DayClient]:
+    """Lista distinct clientes del día para buscador VIP / configuración manual."""
+    from datetime import date as _date_cls
+    try:
+        _date_cls.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, f"fecha inválida: {fecha}")
+
+    scope_where = ""
+    params: list = [fecha]
+    if not user.is_falabella:
+        scope_where = " AND s.Empresa_falsa = ?"
+        params.append(user.empresa_id)
+    q_where = ""
+    if q and q.strip():
+        q_where = " AND LOWER(s.title) LIKE ?"
+        params.append(f"%{q.strip().lower()}%")
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            f"""SELECT TOP (?) s.title, s.id, s.comuna, s.ruta_id, s.Drivername,
+                       (CASE WHEN v.vip_id IS NULL THEN 0 ELSE 1 END) AS is_vip
+                FROM fpoc.simpli_visits s
+                LEFT JOIN fpoc.vip_clients v
+                    ON v.active = 1 AND v.match_type = 'title' AND v.match_value = s.title
+                WHERE s.planned_date = ?{scope_where}{q_where}
+                ORDER BY s.title""",
+            limit, *params,
+        )
+        out: list[DayClient] = []
+        seen: set[str] = set()
+        for r in cur.fetchall():
+            title = str(r.title or "")
+            if not title or title in seen:
+                continue
+            seen.add(title)
+            out.append(DayClient(
+                tracking_id=str(r.id),
+                cliente=title,
+                comuna=str(r.comuna) if r.comuna else None,
+                ruta_id=str(r.ruta_id) if r.ruta_id else None,
+                driver_name=str(r.Drivername) if r.Drivername else None,
+                is_vip=bool(r.is_vip),
+            ))
+        return out
 
 
 @router.get("/api/planificacion/day-prep", response_model=DayPrep)

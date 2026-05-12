@@ -192,6 +192,11 @@ DDL_BLOCKS = [
         );
     END
     """,
+    # started_at: marker explícito de "Iniciar día". NULL = aún no se inició.
+    "IF COL_LENGTH('fpoc.planificacion_imports', 'started_at') IS NULL "
+    "ALTER TABLE fpoc.planificacion_imports ADD started_at DATETIME2(0) NULL",
+    "IF COL_LENGTH('fpoc.planificacion_imports', 'started_by_user_id') IS NULL "
+    "ALTER TABLE fpoc.planificacion_imports ADD started_by_user_id INT NULL",
     # whatsapp_sessions
     """
     IF OBJECT_ID('fpoc.whatsapp_sessions', 'U') IS NULL
