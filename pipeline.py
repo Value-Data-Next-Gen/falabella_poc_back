@@ -905,15 +905,15 @@ def humanize_feature(name: str) -> str:
         except ValueError:
             return name
     if name.startswith("dow_"):
-        dias = {"0": "Lun", "1": "Mar", "2": "Mie", "3": "Jue",
-                "4": "Vie", "5": "Sab", "6": "Dom"}
-        return f"Dia: {dias.get(name.replace('dow_', ''), name)}"
+        dias = {"0": "Lun", "1": "Mar", "2": "Mié", "3": "Jue",
+                "4": "Vie", "5": "Sáb", "6": "Dom"}
+        return f"Día: {dias.get(name.replace('dow_', ''), name)}"
     return {
-        "hora_window_end": "Hora limite ventana",
-        "carga": "Carga (m3/kg)",
+        "hora_window_end": "Hora límite ventana",
+        "carga": "Carga (m³/kg)",
         "dist_depot_km": "Distancia al depot (km)",
-        "orden_en_ruta": "Posicion en ruta",
-        "retraso_acumulado_vehiculo": "Retraso acumulado del vehiculo",
-        "tasa_fallo_historica_cliente": "Tasa historica de fallo de la zona",
+        "orden_en_ruta": "Posición en ruta",
+        "retraso_acumulado_vehiculo": "Retraso acumulado del vehículo",
+        "tasa_fallo_historica_cliente": "Tasa histórica de fallo de la zona",
         "horas_hasta_window_end": "Horas hasta deadline",
     }.get(name, name)

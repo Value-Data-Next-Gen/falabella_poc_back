@@ -295,6 +295,8 @@ class FolioRow(BaseModel):
     ruta_id: Optional[str] = None
     vehicle_id: Optional[int] = None
     driver_name: Optional[str] = None
+    empresa_id: Optional[int] = None
+    empresa_nombre: Optional[str] = None
     tracking_id: str
     order: Optional[int] = None
     cliente: str
@@ -304,9 +306,11 @@ class FolioRow(BaseModel):
     folio: Optional[str] = None
     subfolios: list[str] = []
     status: str
+    motivo: Optional[str] = None
     is_vip: bool = False
     vip_tier: Optional[str] = None
     eta: Optional[str] = None
+    hora_real: Optional[str] = None
 
 
 @router.get("/api/operacion/folios", response_model=list[FolioRow])
@@ -339,9 +343,12 @@ def folios_del_dia(
         cur = cn.cursor()
         cur.execute(
             f"""SELECT TOP ({limit}) v.id, v.ruta_id, v.patente_falsa, v.driver_name,
+                       v.empresa_falsa, et.nombre AS empresa_nombre,
                        v."order", v.title, v.address, v.comuna, v.region,
-                       v.reference, v.status, v.current_eta_cl
+                       v.reference, v.status, v.current_eta_cl,
+                       v.checkout_cl, v.checkout_comment
                 FROM fpoc.simpli_visits v
+                LEFT JOIN fpoc.empresas_transporte et ON et.empresa_id = v.empresa_falsa
                 WHERE {' AND '.join(where)}
                 ORDER BY v.ruta_id, v."order", v.id""",
             *params,
@@ -386,6 +393,8 @@ def folios_del_dia(
             ruta_id=str(r.ruta_id) if r.ruta_id else None,
             vehicle_id=int(r.patente_falsa) if r.patente_falsa is not None else None,
             driver_name=str(r.driver_name) if r.driver_name else None,
+            empresa_id=int(r.empresa_falsa) if r.empresa_falsa is not None else None,
+            empresa_nombre=str(r.empresa_nombre) if r.empresa_nombre else None,
             tracking_id=str(r.id),
             order=int(getattr(r, "order")) if hasattr(r, "order") else None,
             cliente=title,
@@ -395,8 +404,10 @@ def folios_del_dia(
             folio=folio,
             subfolios=sub_by_ref.get(folio, []) if folio else [],
             status=str(r.status) if r.status else "pending",
+            motivo=str(r.checkout_comment)[:120] if getattr(r, "checkout_comment", None) else None,
             is_vip=is_vip,
             vip_tier=vip_map.get(title),
             eta=str(r.current_eta_cl) if r.current_eta_cl else None,
+            hora_real=str(r.checkout_cl) if getattr(r, "checkout_cl", None) else None,
         ))
     return out
