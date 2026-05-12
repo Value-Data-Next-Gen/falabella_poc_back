@@ -181,6 +181,7 @@ from driver_sim import router as driver_sim_router, start_scheduler as driver_si
 from search import router as search_router
 from twilio_inbound import router as twilio_inbound_router, _legacy_router as twilio_legacy_router
 from whatsapp_onboarding import router as whatsapp_onboarding_router
+from agent_web import router as agent_web_router
 
 app.include_router(auth_router)
 app.include_router(empresas_router)
@@ -209,6 +210,7 @@ app.include_router(search_router)
 app.include_router(twilio_inbound_router)
 app.include_router(twilio_legacy_router)
 app.include_router(whatsapp_onboarding_router)
+app.include_router(agent_web_router)
 
 
 def _scope_df(df, user: CurrentUser):
