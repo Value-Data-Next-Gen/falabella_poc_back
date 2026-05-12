@@ -712,9 +712,10 @@ def whatsapp_audience(
                 extra=rol,
             ))
 
-        # 3) Usuarios con role TRANSPORT_MANAGER o DRIVER de esa empresa
+        # 3) Usuarios con role TRANSPORT_MANAGER o DRIVER de esa empresa.
+        # fpoc.users no tiene opted_in_at — usamos notify_whatsapp como proxy.
         cur.execute(
-            "SELECT user_id, display_name, role, phone_e164, notify_whatsapp, opted_in_at "
+            "SELECT user_id, display_name, role, phone_e164, notify_whatsapp "
             "FROM fpoc_users "
             "WHERE empresa_id = ? AND activo = 1 "
             "  AND role IN ('transport_manager', 'driver') "
@@ -733,7 +734,7 @@ def whatsapp_audience(
                 id=str(int(r.user_id)),
                 nombre=str(r.display_name or ""),
                 phone_e164=r.phone_e164,
-                has_opt_in=bool(r.opted_in_at is not None and r.notify_whatsapp),
+                has_opt_in=bool(r.notify_whatsapp),
                 audience_tags=tags,
                 extra=role,
             ))
