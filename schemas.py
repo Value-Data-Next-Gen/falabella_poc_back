@@ -136,31 +136,31 @@ class ClockRequest(BaseModel):
 class Driver(BaseModel):
     driver_id: str
     name: str
-    phone: str
-    license: str
+    phone: Optional[str] = None
+    license: Optional[str] = None
     empresa_id: Optional[int] = None
-    vehicle_id: int
-    vehicle_name: str
-    rating: float
-    deliveries_30d: int
-    fail_rate_30d: float
+    vehicle_id: Optional[int] = None
+    vehicle_name: Optional[str] = None
+    rating: Optional[float] = None
+    deliveries_30d: Optional[int] = None
+    fail_rate_30d: Optional[float] = None
     active: bool
-    joined_at: str
+    joined_at: Optional[str] = None
 
 
 class VehicleExtended(BaseModel):
     vehicle_id: int
     empresa_id: Optional[int] = None
-    name: str
-    type: str
-    plate: str
-    capacity_m3: int
-    driver_id: str
-    driver_name: str
-    depot_lat: float
-    depot_lon: float
+    name: Optional[str] = None
+    type: Optional[str] = None
+    plate: Optional[str] = None
+    capacity_m3: Optional[int] = None
+    driver_id: Optional[str] = None
+    driver_name: Optional[str] = None
+    depot_lat: Optional[float] = None
+    depot_lon: Optional[float] = None
     active: bool
-    year: int
+    year: Optional[int] = None
 
 
 class ClientMaster(BaseModel):

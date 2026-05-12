@@ -473,9 +473,10 @@ class ToggleRequest(BaseModel):
 def stats(user: CurrentUser = Depends(current_user)) -> LiveGenStats:
     with get_conn() as cn:
         cur = cn.cursor()
+        from datetime import date as _date_cls
         cur.execute(
-            "SELECT COUNT(*) FROM fpoc.simpli_visits WHERE planned_date = date('now') AND id >= ?",
-            ID_BASE,
+            "SELECT COUNT(*) FROM fpoc.simpli_visits WHERE planned_date = ? AND id >= ?",
+            _date_cls.today().isoformat(), ID_BASE,
         )
         rows_today = int(cur.fetchone()[0])
     return LiveGenStats(

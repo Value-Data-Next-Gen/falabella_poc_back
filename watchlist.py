@@ -45,12 +45,12 @@ class NotifInline(BaseModel):
 class WatchlistVisit(BaseModel):
     tracking_id: str
     vehicle_id: int
-    vehicle_name: str
-    driver_name: str
+    vehicle_name: Optional[str] = None
+    driver_name: Optional[str] = None
     empresa_id: Optional[int] = None
     empresa_nombre: Optional[str] = None
     title: str
-    address: str
+    address: Optional[str] = None
     latitude: float
     longitude: float
     order: int

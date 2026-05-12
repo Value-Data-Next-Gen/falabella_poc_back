@@ -37,19 +37,35 @@ _INITIALIZED = False
 
 
 def _ensure_table() -> None:
-    """Crea la tabla si no existe. Idempotente."""
+    """Crea la tabla si no existe. Idempotente en SQLite y Azure SQL."""
+    from db import backend as db_backend
     with get_conn() as cn:
         cur = cn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fpoc_app_config (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_by_user_id INTEGER
+        if db_backend() == "sqlserver":
+            cur.execute(
+                """
+                IF OBJECT_ID('fpoc_app_config', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE fpoc_app_config (
+                        [key] NVARCHAR(100) NOT NULL PRIMARY KEY,
+                        value NVARCHAR(MAX) NOT NULL,
+                        updated_at DATETIME2(0) NOT NULL DEFAULT SYSDATETIME(),
+                        updated_by_user_id INT NULL
+                    )
+                END
+                """
             )
-            """
-        )
+        else:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fpoc_app_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_by_user_id INTEGER
+                )
+                """
+            )
         cn.commit()
 
 
@@ -59,7 +75,7 @@ def _load_all() -> None:
     _ensure_table()
     with get_conn() as cn:
         cur = cn.cursor()
-        cur.execute("SELECT key, value FROM fpoc_app_config")
+        cur.execute("SELECT [key], value FROM fpoc_app_config")
         rows = cur.fetchall()
     db_values = {r[0]: r[1] for r in rows}
     for key, default in _DEFAULTS.items():
@@ -98,19 +114,19 @@ def _set_float(key: str, value: float, user_id: Optional[int]) -> float:
         with get_conn() as cn:
             cur = cn.cursor()
             # Upsert portátil sqlite/sqlserver (ON CONFLICT es sqlite-only).
-            cur.execute("SELECT 1 FROM fpoc_app_config WHERE key = ?", (key,))
+            cur.execute("SELECT 1 FROM fpoc_app_config WHERE [key] = ?", (key,))
             if cur.fetchone():
                 cur.execute(
                     """UPDATE fpoc_app_config
                           SET value = ?, updated_at = CURRENT_TIMESTAMP,
                               updated_by_user_id = ?
-                        WHERE key = ?""",
+                        WHERE [key] = ?""",
                     (str(v), user_id, key),
                 )
             else:
                 cur.execute(
                     """INSERT INTO fpoc_app_config
-                          (key, value, updated_at, updated_by_user_id)
+                          ([key], value, updated_at, updated_by_user_id)
                          VALUES (?, ?, CURRENT_TIMESTAMP, ?)""",
                     (key, str(v), user_id),
                 )
@@ -153,7 +169,7 @@ def get_audit_meta() -> dict[str, dict]:
     _ensure_table()
     with get_conn() as cn:
         cur = cn.cursor()
-        cur.execute("SELECT key, value, updated_at, updated_by_user_id FROM fpoc_app_config")
+        cur.execute("SELECT [key], value, updated_at, updated_by_user_id FROM fpoc_app_config")
         rows = cur.fetchall()
     out: dict[str, dict] = {}
     for r in rows:
