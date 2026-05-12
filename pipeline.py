@@ -567,17 +567,30 @@ def train_model() -> dict:
         X_train = X_train.iloc[idx[:cut]].reset_index(drop=True)
         y_train = y_train[idx[:cut]]
 
-    spw = max(1.0, float((y_train == 0).sum() / max(1, (y_train == 1).sum())))
-    base_xgb = xgb.XGBClassifier(
-        n_estimators=300, max_depth=5, learning_rate=0.05,
-        scale_pos_weight=spw, eval_metric="logloss",
-        n_jobs=-1, random_state=SEED, tree_method="hist",
-    )
-    cal = CalibratedClassifierCV(base_xgb, method="isotonic", cv=3)
-    cal.fit(X_train.values, y_train)
+    # Si tenemos UNA sola clase en y_train (ej: todas pending recién cargadas),
+    # CalibratedClassifierCV degenera y predict_proba devuelve [N x 1].
+    # Saltamos directo al fallback sintético que sí tiene 2 clases.
+    if len(np.unique(y_train)) < 2:
+        from loguru import logger
+        logger.warning(
+            f"[train_model] y_train tiene 1 sola clase (n_pos={int((y_train==1).sum())}); "
+            "saltamos al fallback sintético"
+        )
+        # Forzamos auc_real bajo para gatillar el fallback más abajo
+        auc_real = 0.0
+        cal = None  # placeholder; se reemplaza en el fallback
+    else:
+        spw = max(1.0, float((y_train == 0).sum() / max(1, (y_train == 1).sum())))
+        base_xgb = xgb.XGBClassifier(
+            n_estimators=300, max_depth=5, learning_rate=0.05,
+            scale_pos_weight=spw, eval_metric="logloss",
+            n_jobs=-1, random_state=SEED, tree_method="hist",
+        )
+        cal = CalibratedClassifierCV(base_xgb, method="isotonic", cv=3)
+        cal.fit(X_train.values, y_train)
 
-    p_val = cal.predict_proba(X_val.values)[:, 1]
-    auc_real = float(roc_auc_score(y_val, p_val)) if len(np.unique(y_val)) > 1 else 0.5
+        p_val = cal.predict_proba(X_val.values)[:, 1]
+        auc_real = float(roc_auc_score(y_val, p_val)) if len(np.unique(y_val)) > 1 else 0.5
 
     # Si entrenamos con BD real y el AUC quedó débil (<0.6), reentrenar con
     # sintético (que tiene patrones espaciales claros para que el ML aprenda).

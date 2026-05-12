@@ -584,6 +584,19 @@ async def import_xlsx(
         if c in df.columns:
             df[c] = df[c].astype(int)
 
+    # PLAN limpio: el XLSX puede traer datos históricos con status=completed/failed
+    # y checkout_cl con timestamp real. Acá la carga es el PLAN del día — la
+    # simulación posterior (driver positions + tick) va completando visitas.
+    # Forzamos pending y limpiamos comentarios para que arranque limpio.
+    # checkout_cl es NOT NULL en el schema → dejamos el valor del XLSX como
+    # sentinela; el "completed real" se determina por status='completed'.
+    if "status" in df.columns:
+        df["status"] = "pending"
+    if "checkout_comment" in df.columns:
+        df["checkout_comment"] = None
+    if "checkout_observation" in df.columns:
+        df["checkout_observation"] = None
+
     fechas = sorted({d.isoformat() for d in df["planned_date"].unique()})
 
     # Si force=False y alguna fecha ya tiene visitas, devolver advertencia
