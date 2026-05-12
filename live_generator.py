@@ -378,21 +378,37 @@ def _insert_batch(cn, target_date: date, n_rows: int) -> int:
     return total
 
 
+def _day_state_is_running(fecha_iso: str) -> bool:
+    """True solo si fpoc.planificacion_imports.state = 'EN_CURSO' para esa fecha."""
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT state FROM fpoc.planificacion_imports WHERE fecha = ?",
+                fecha_iso,
+            )
+            r = cur.fetchone()
+        return r is not None and str(r.state) == "EN_CURSO"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _insert_tick() -> None:
     """Llamado por APScheduler. Inserta LIVE_GEN_ROWS_PER_TICK rows.
-    Usa la fecha simulada (STATE.today) si el tick del simulador está corriendo,
-    sino cae a date.today() del wall-clock."""
+    GATE: solo corre si (a) STATE.enabled local, (b) LIVE_GEN_CREATE_VISITS=true,
+    (c) el día operativo apuntado por STATE.today tiene state='EN_CURSO' en DB.
+    """
     if not STATE.enabled:
         return
-    # Insertar visitas sintéticas está desactivado por default — live_gen
-    # solo simula movimiento de drivers (otra historia), no genera demanda.
-    # Para reactivar la generación de demo, setear LIVE_GEN_CREATE_VISITS=true.
     if os.environ.get("LIVE_GEN_CREATE_VISITS", "false").lower() != "true":
         return
     try:
         # Importar acá para evitar ciclo en el import inicial
         from state import STATE as APP_STATE
         sim_today = getattr(APP_STATE, "today", None) or date.today()
+        if not _day_state_is_running(sim_today.isoformat()):
+            return  # día no está EN_CURSO → no inyectar
+
         with get_conn() as cn:
             cur = cn.cursor()
             cur.execute("SELECT empresa_id, nombre FROM fpoc.empresas_transporte WHERE activo = 1")
