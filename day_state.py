@@ -276,6 +276,33 @@ def transition_day_state(
     if target == "CERRADO" and not req.confirm:
         raise HTTPException(400, "Se requiere confirm=true para cerrar el día")
 
+    # R7: invariante un-solo-día-EN_CURSO. Al transicionar a EN_CURSO, primero
+    # buscamos otros días EN_CURSO != req.fecha y los cerramos automáticamente
+    # con timestamp 'force_closed'. Sin esto el state singleton (state.today)
+    # queda apuntando al último iniciado y la app muestra fuentes desalineadas.
+    other_open_dates: list[str] = []
+    if target == "EN_CURSO":
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT fecha FROM fpoc.planificacion_imports "
+                "WHERE state = 'EN_CURSO' AND fecha <> ?",
+                req.fecha,
+            )
+            other_open_dates = [str(r.fecha if hasattr(r, "fecha") else r[0]) for r in cur.fetchall()]
+            if other_open_dates:
+                cur.execute(
+                    "UPDATE fpoc.planificacion_imports "
+                    "SET state = 'CERRADO', closed_at = SYSDATETIME() "
+                    "WHERE state = 'EN_CURSO' AND fecha <> ?",
+                    req.fecha,
+                )
+                cn.commit()
+                logger.warning(
+                    f"[day-state] {req.fecha}: cierre forzado de {len(other_open_dates)} "
+                    f"día(s) huérfanos EN_CURSO: {other_open_dates}"
+                )
+
     # Aplicar transición
     sets: list[str] = ["state = ?"]
     params: list = [target]
