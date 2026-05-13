@@ -40,7 +40,7 @@ from motivo_classifier import _classify_llm
 from state import STATE
 
 
-router = APIRouter(tags=["motivo-corrections"])
+router = APIRouter(prefix="/api/motivo-corrections", tags=["motivo-corrections"])
 
 
 # =============================================================================
@@ -324,7 +324,7 @@ SELECT_BASE = """
 """
 
 
-@router.get("/api/motivo-corrections", response_model=list[MotivoCorrectionOut])
+@router.get("", response_model=list[MotivoCorrectionOut])
 def list_corrections(
     status: Optional[str] = Query(default="pending"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -373,7 +373,7 @@ def _update_decision(correction_id: int, status: str, user_id: int) -> None:
         cn.commit()
 
 
-@router.post("/api/motivo-corrections/{correction_id}/accept", response_model=MotivoCorrectionOut)
+@router.post("/{correction_id}/accept", response_model=MotivoCorrectionOut)
 def accept_correction(correction_id: int, user: CurrentUser = Depends(current_user)) -> MotivoCorrectionOut:
     if not user.is_falabella:
         raise HTTPException(403, "solo falabella_admin/ops")
@@ -444,7 +444,7 @@ def accept_correction(correction_id: int, user: CurrentUser = Depends(current_us
     return _fetch_correction(correction_id)
 
 
-@router.post("/api/motivo-corrections/{correction_id}/reject", response_model=MotivoCorrectionOut)
+@router.post("/{correction_id}/reject", response_model=MotivoCorrectionOut)
 def reject_correction(correction_id: int, user: CurrentUser = Depends(current_user)) -> MotivoCorrectionOut:
     if not user.is_falabella:
         raise HTTPException(403, "solo falabella_admin/ops")
@@ -457,7 +457,7 @@ def reject_correction(correction_id: int, user: CurrentUser = Depends(current_us
     return _fetch_correction(correction_id)
 
 
-@router.post("/api/motivo-corrections/{correction_id}/no-action", response_model=MotivoCorrectionOut)
+@router.post("/{correction_id}/no-action", response_model=MotivoCorrectionOut)
 def no_action_correction(correction_id: int, user: CurrentUser = Depends(current_user)) -> MotivoCorrectionOut:
     if not user.is_falabella:
         raise HTTPException(403, "solo falabella_admin/ops")
@@ -465,7 +465,7 @@ def no_action_correction(correction_id: int, user: CurrentUser = Depends(current
     return _fetch_correction(correction_id)
 
 
-@router.post("/api/motivo-corrections/{correction_id}/renotify-driver", response_model=MotivoCorrectionOut)
+@router.post("/{correction_id}/renotify-driver", response_model=MotivoCorrectionOut)
 def renotify_driver(correction_id: int, user: CurrentUser = Depends(current_user)) -> MotivoCorrectionOut:
     if not user.is_falabella:
         raise HTTPException(403, "solo falabella_admin/ops")

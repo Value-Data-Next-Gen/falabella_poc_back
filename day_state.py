@@ -36,7 +36,7 @@ from auth import CurrentUser, current_user, require_admin
 from db import get_conn
 
 
-router = APIRouter(tags=["day-state"])
+router = APIRouter(prefix="/api/planificacion/day-state", tags=["day-state"])
 
 
 VALID_STATES = ("BORRADOR", "VALIDADO", "EN_CURSO", "CERRADO")
@@ -224,7 +224,7 @@ def _ensure_row(cn, fecha: str, user_id: int) -> None:
 # ============================================================================
 # Endpoints
 # ============================================================================
-@router.get("/api/planificacion/day-state", response_model=DayState)
+@router.get("", response_model=DayState)
 def get_day_state(
     fecha: str = Query(...),
     user: CurrentUser = Depends(current_user),
@@ -236,7 +236,7 @@ def get_day_state(
     return _build_state(fecha, user)
 
 
-@router.post("/api/planificacion/day-state/transition", response_model=DayState)
+@router.post("/transition", response_model=DayState)
 def transition_day_state(
     req: TransitionRequest,
     user: CurrentUser = Depends(current_user),
@@ -396,7 +396,7 @@ def transition_day_state(
     return _build_state(req.fecha, user)
 
 
-@router.post("/api/planificacion/day-state/reset", response_model=DayState)
+@router.post("/reset", response_model=DayState)
 def reset_day_state(
     fecha: str = Query(...),
     user: CurrentUser = Depends(require_admin),
@@ -445,7 +445,7 @@ class ExtendDayResponse(BaseModel):
     pending_visits: int
 
 
-@router.post("/api/planificacion/day-state/extend", response_model=ExtendDayResponse)
+@router.post("/extend", response_model=ExtendDayResponse)
 def extend_day(
     fecha: str = Query(...),
     minutes: int = Query(60, ge=15, le=240),

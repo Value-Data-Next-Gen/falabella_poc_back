@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from auth import CurrentUser, current_user
 from db import get_conn
 
-router = APIRouter(tags=["search"])
+router = APIRouter(prefix="/api/search", tags=["search"])
 
 MAX_PER_CATEGORY = 5
 
@@ -328,7 +328,7 @@ def _search_motivos(cn, q: str, user: CurrentUser) -> list[SearchHit]:
 # =============================================================================
 # Endpoint principal
 # =============================================================================
-@router.get("/api/search", response_model=SearchResults)
+@router.get("", response_model=SearchResults)
 def search_global(
     q: str = Query(..., min_length=2, max_length=80),
     user: CurrentUser = Depends(current_user),

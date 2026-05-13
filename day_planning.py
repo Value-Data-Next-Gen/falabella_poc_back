@@ -27,7 +27,7 @@ from auth import CurrentUser, current_user, require_admin
 from db import get_conn
 
 
-router = APIRouter(tags=["day-planning"])
+router = APIRouter(prefix="/api/planificacion", tags=["day-planning"])
 
 
 # ============================================================================
@@ -46,7 +46,7 @@ class ClienteDelDia(BaseModel):
     priority_set_count: int = 0
 
 
-@router.get("/api/planificacion/clientes-del-dia", response_model=list[ClienteDelDia])
+@router.get("/clientes-del-dia", response_model=list[ClienteDelDia])
 def list_clientes_del_dia(
     fecha: str = Query(...),
     only_no_vip: bool = Query(default=False),
@@ -173,7 +173,7 @@ class ClientDayNoteIn(BaseModel):
     vip_tier: Optional[str] = "VIP"
 
 
-@router.put("/api/planificacion/client-day-notes")
+@router.put("/client-day-notes")
 def upsert_client_day_note(
     req: ClientDayNoteIn,
     user: CurrentUser = Depends(current_user),
@@ -291,7 +291,7 @@ def _row_to_day_config(fecha: str, r) -> DayConfig:
     )
 
 
-@router.get("/api/planificacion/day-config", response_model=DayConfig)
+@router.get("/day-config", response_model=DayConfig)
 def get_day_config(
     fecha: str = Query(...),
     _: CurrentUser = Depends(current_user),
@@ -321,7 +321,7 @@ class DayConfigUpdate(BaseModel):
     restricted_empresa_ids: Optional[list[int]] = None
 
 
-@router.put("/api/planificacion/day-config", response_model=DayConfig)
+@router.put("/day-config", response_model=DayConfig)
 def upsert_day_config(
     body: DayConfigUpdate,
     fecha: str = Query(...),

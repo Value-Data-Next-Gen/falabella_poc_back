@@ -38,7 +38,7 @@ from auth import CurrentUser, current_user
 from db import get_conn
 
 
-router = APIRouter(tags=["driver-sim"])
+router = APIRouter(prefix="/api/operacion", tags=["driver-sim"])
 
 
 SIM_TICK_SEC = int(os.environ.get("SIM_TICK_SEC", "10"))
@@ -382,7 +382,7 @@ class SimStatusResponse(BaseModel):
     drivers: list[DriverPosition]
 
 
-@router.get("/api/operacion/driver-positions", response_model=SimStatusResponse)
+@router.get("/driver-positions", response_model=SimStatusResponse)
 def driver_positions(
     fecha: str = Query(...),
     empresa_id: Optional[int] = Query(None),

@@ -43,6 +43,20 @@ _SQLITE_PATH = os.environ.get(
 )
 
 
+# =============================================================================
+# SQL rewriter bidireccional — soporta dos dialectos en el código fuente:
+#   - "fpoc.<tabla>"  (notación schema dot, Azure SQL Server nativa)
+#   - "fpoc_<tabla>"  (notación con prefijo, SQLite que no tiene schemas)
+#
+# Ambas formas SE PUEDEN MEZCLAR en el backend. El cursor wrapper de get_conn()
+# las traduce on-the-fly al dialecto activo:
+#   - SQLite      → todo se reescribe a fpoc_<tabla> (_rewrite_sql)
+#   - SQL Server  → todo se reescribe a fpoc.<tabla> (_rewrite_sql_for_mssql)
+#
+# Esta tolerancia es intencional para soportar QA local en SQLite y deploy en
+# Azure SQL sin reescribir queries. Si ves "fpoc.X" en un módulo Y "fpoc_X"
+# en otro, NO es inconsistencia: ambos llegan al motor correcto.
+# =============================================================================
 # -------- SQL rewriter (sqlite-only) --------
 _SCHEMA_RE = re.compile(r"\bfpoc\.(\w+)", re.IGNORECASE)
 _SYSUTC_RE = re.compile(r"\bSYSUTCDATETIME\s*\(\s*\)", re.IGNORECASE)
