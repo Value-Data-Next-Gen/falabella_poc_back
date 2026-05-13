@@ -199,8 +199,8 @@ def _generate_synthetic_data(cn: sqlite3.Connection) -> int:
     from datetime import date, datetime, time, timedelta
 
     try:
-        from pipeline import gen_customer_pool, gen_day_visits  # type: ignore
-        from masters import gen_drivers, gen_vehicles_extended  # type: ignore
+        from ml.pipeline import gen_customer_pool, gen_day_visits  # type: ignore
+        from ml.masters import gen_drivers, gen_vehicles_extended  # type: ignore
     except Exception as e:
         logger.warning(f"[bootstrap] no pude importar generadores sintéticos: {e}")
         return 0

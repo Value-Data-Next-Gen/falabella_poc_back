@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Callable
 from loguru import logger
 
-from db import backend as db_backend, get_conn
+from core.db import backend as db_backend, get_conn
 
 
 def _ensure_migrations_table() -> None:
@@ -110,6 +110,28 @@ def _wrap_quiet(import_path: str, func_name: str = "main") -> Callable[[], None]
     return _run
 
 
+def _wrap_sqlite_only(import_path: str, func_name: str = "main") -> Callable[[], None]:
+    """Wrapper para migraciones escritas SOLO en sintaxis SQLite (IF NOT EXISTS,
+    AUTOINCREMENT, etc.). En SQL Server las estructuras se aplican manualmente
+    una vez y este wrapper las marca como aplicadas sin ejecutar SQL — evita
+    el ruido de 'Incorrect syntax near IF' en cada arranque.
+
+    Si en algún momento se necesita correr la migración contra una DB SQL
+    Server nueva, hay que escribir la versión Azure-compatible y registrarla
+    con _wrap_quiet."""
+    def _run() -> None:
+        if db_backend() == "sqlserver":
+            logger.debug(f"[migration] {import_path}: sqlite-only, marcando aplicada en sqlserver")
+            return  # no-op; apply_migration marca como aplicada
+        mod = __import__(import_path, fromlist=[func_name])
+        fn = getattr(mod, func_name)
+        try:
+            fn(quiet=True)
+        except TypeError:
+            fn()
+    return _run
+
+
 MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("001_bootstrap_if_needed",       _wrap_quiet("fpoc_loader.bootstrap", "bootstrap_if_needed")),
     ("002_dotacion_diaria",           _wrap_quiet("fpoc_loader.migrate_dotacion_diaria")),
@@ -130,11 +152,13 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("017_split_multi_region_routes", _wrap_quiet("fpoc_loader.migrate_split_multi_region_routes")),
     ("018_driver_positions",          _wrap_quiet("fpoc_loader.migrate_driver_positions")),
     # R7: migraciones que se aplicaron manualmente en sprints anteriores y
-    # quedaron sin registrar. Todas son idempotentes (IF NOT EXISTS / chequeo
-    # de columnas), así que en DBs existentes con la estructura ya creada se
-    # marcan como aplicadas sin ejecutar trabajo real.
-    ("019_drivers_whatsapp",          _wrap_quiet("fpoc_loader.migrate_drivers_whatsapp")),
-    ("020_empresa_contactos_table",   _wrap_quiet("fpoc_loader.migrate_empresa_contactos")),
-    ("021_motivo_corrections",        _wrap_quiet("fpoc_loader.migrate_motivo_corrections")),
-    ("022_vip_deadline",              _wrap_quiet("fpoc_loader.migrate_vip_deadline")),
+    # quedaron sin registrar. Están escritas en sintaxis SQLite pura
+    # (CREATE TABLE IF NOT EXISTS, AUTOINCREMENT) que SQL Server rechaza.
+    # En SQL Server las tablas ya existen aplicadas a mano → _wrap_sqlite_only
+    # las marca como aplicadas sin ejecutar SQL. En SQLite (POC local) sí se
+    # ejecutan normalmente. Evita "Incorrect syntax near IF" en cada arranque.
+    ("019_drivers_whatsapp",          _wrap_sqlite_only("fpoc_loader.migrate_drivers_whatsapp")),
+    ("020_empresa_contactos_table",   _wrap_sqlite_only("fpoc_loader.migrate_empresa_contactos")),
+    ("021_motivo_corrections",        _wrap_sqlite_only("fpoc_loader.migrate_motivo_corrections")),
+    ("022_vip_deadline",              _wrap_sqlite_only("fpoc_loader.migrate_vip_deadline")),
 ]

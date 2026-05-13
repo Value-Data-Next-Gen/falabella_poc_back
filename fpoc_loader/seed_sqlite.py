@@ -237,8 +237,8 @@ def seed_maestros(cn: sqlite3.Connection) -> None:
     pipeline.py + masters.py. Idempotente: solo inserta si la tabla esta vacia."""
     sys.path.insert(0, str(BACKEND_ROOT))
     try:
-        from pipeline import gen_customer_pool
-        from masters import gen_drivers, gen_vehicles_extended
+        from ml.pipeline import gen_customer_pool
+        from ml.masters import gen_drivers, gen_vehicles_extended
     finally:
         sys.path.pop(0)
 

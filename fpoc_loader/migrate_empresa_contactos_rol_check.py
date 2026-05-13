@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from db import backend as db_backend, get_conn
+from core.db import backend as db_backend, get_conn
 
 
 CONSTRAINT_NAME = "CK_empresa_contactos_rol"

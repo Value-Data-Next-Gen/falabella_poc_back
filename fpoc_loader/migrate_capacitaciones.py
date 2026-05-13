@@ -25,7 +25,7 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
         load_dotenv(_p)
         break
 
-from db import backend, get_conn  # noqa: E402
+from core.db import backend, get_conn  # noqa: E402
 
 
 def _log(msg: str, quiet: bool) -> None:

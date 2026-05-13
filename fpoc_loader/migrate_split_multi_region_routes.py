@@ -23,7 +23,7 @@ import unicodedata
 
 from loguru import logger
 
-from db import backend as db_backend, get_conn
+from core.db import backend as db_backend, get_conn
 
 
 REGION_CODE = {

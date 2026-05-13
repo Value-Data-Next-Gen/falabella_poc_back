@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from db import backend as db_backend, get_conn
+from core.db import backend as db_backend, get_conn
 
 # Nombres construidos por concatenación para que un futuro grep/sed global
 # no nos los toque por accidente.

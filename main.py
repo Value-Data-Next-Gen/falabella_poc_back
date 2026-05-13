@@ -29,8 +29,8 @@ for _p in (Path(__file__).resolve().parent / ".env",
         load_dotenv(_p)
         break
 
-from state import STATE
-from auth import (
+from core.state import STATE
+from core.auth import (
     empresas_router,
     router as auth_router,
 )
@@ -66,7 +66,7 @@ async def lifespan(_: FastAPI):
         max_instances=1, coalesce=True,
     )
     # VIP deadline checker (interval 60s)
-    from vip_deadline_cron import register_cron as register_vip_cron
+    from sims.vip_deadline_cron import register_cron as register_vip_cron
     register_vip_cron(scheduler)
 
     scheduler.start()
@@ -109,41 +109,42 @@ app.add_middleware(
 # ============================================================================
 # Routers
 # ============================================================================
-from seguimiento import router as seguimiento_router
-from notifications import router as notifications_router
-from preferences import router as preferences_router
-from vip import router as vip_router
-from priorities import router as priorities_router
-from plan_diario import router as plan_diario_router
-from watchlist import router as watchlist_router
-from live_generator import (
+from routers.seguimiento import router as seguimiento_router
+from routers.notifications import router as notifications_router
+from routers.preferences import router as preferences_router
+from routers.vip import router as vip_router
+from routers.priorities import router as priorities_router
+from routers.plan_diario import router as plan_diario_router
+from routers.watchlist import router as watchlist_router
+from sims.live_generator import (
     router as live_gen_router,
     start_scheduler as live_gen_start,
     stop_scheduler as live_gen_stop,
 )
-from mantenedores import router as mantenedores_router
-from me import router as me_router
-from comments import router as comments_router
-from empresa_contactos import router as empresa_contactos_router
-from motivo_classifier import router as motivo_classifier_router
-from comment_simulator import (
+from routers.mantenedores import router as mantenedores_router
+from routers.me import router as me_router
+from routers.comments import router as comments_router
+from routers.empresa_contactos import router as empresa_contactos_router
+from routers.motivo_classifier import router as motivo_classifier_router
+from sims.comment_simulator import (
     router as comment_sim_router,
     start_scheduler as comment_sim_start,
     stop_scheduler as comment_sim_stop,
 )
-from motivo_corrections import router as motivo_corrections_router
-from drivers_whatsapp import router as drivers_whatsapp_router
-from day_planning import router as day_planning_router
-from day_state import router as day_state_router
-from rutas import router as rutas_router
-from seed_admin import router as seed_admin_router
-from driver_sim import router as driver_sim_router, start_scheduler as driver_sim_start, stop_scheduler as driver_sim_stop
-from search import router as search_router
-from twilio_inbound import router as twilio_inbound_router, _legacy_router as twilio_legacy_router
-from whatsapp_onboarding import router as whatsapp_onboarding_router
-from agent_web import router as agent_web_router
+from routers.motivo_corrections import router as motivo_corrections_router
+from routers.drivers_whatsapp import router as drivers_whatsapp_router
+from routers.day_planning import router as day_planning_router
+from routers.day_state import router as day_state_router
+from routers.rutas import router as rutas_router
+from routers.seed_admin import router as seed_admin_router
+from sims.driver_sim import router as driver_sim_router, start_scheduler as driver_sim_start, stop_scheduler as driver_sim_stop
+from routers.search import router as search_router
+from routers.twilio_inbound import router as twilio_inbound_router, _legacy_router as twilio_legacy_router
+from routers.whatsapp_onboarding import router as whatsapp_onboarding_router
+from routers.agent_web import router as agent_web_router
+from routers.centros_distribucion import router as centros_distribucion_router
 # R7-F3: endpoints legacy extraídos de main.py (system/state/control/model/fleet)
-from legacy_routes import (
+from routers.legacy_routes import (
     system_router,
     control_router,
     model_router,
@@ -178,6 +179,7 @@ app.include_router(twilio_inbound_router)
 app.include_router(twilio_legacy_router)
 app.include_router(whatsapp_onboarding_router)
 app.include_router(agent_web_router)
+app.include_router(centros_distribucion_router)
 app.include_router(system_router)
 app.include_router(control_router)
 app.include_router(model_router)
