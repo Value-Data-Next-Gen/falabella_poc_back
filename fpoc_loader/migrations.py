@@ -129,4 +129,12 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("016_day_state_r3",              _wrap_quiet("fpoc_loader.migrate_day_state_r3")),
     ("017_split_multi_region_routes", _wrap_quiet("fpoc_loader.migrate_split_multi_region_routes")),
     ("018_driver_positions",          _wrap_quiet("fpoc_loader.migrate_driver_positions")),
+    # R7: migraciones que se aplicaron manualmente en sprints anteriores y
+    # quedaron sin registrar. Todas son idempotentes (IF NOT EXISTS / chequeo
+    # de columnas), así que en DBs existentes con la estructura ya creada se
+    # marcan como aplicadas sin ejecutar trabajo real.
+    ("019_drivers_whatsapp",          _wrap_quiet("fpoc_loader.migrate_drivers_whatsapp")),
+    ("020_empresa_contactos_table",   _wrap_quiet("fpoc_loader.migrate_empresa_contactos")),
+    ("021_motivo_corrections",        _wrap_quiet("fpoc_loader.migrate_motivo_corrections")),
+    ("022_vip_deadline",              _wrap_quiet("fpoc_loader.migrate_vip_deadline")),
 ]

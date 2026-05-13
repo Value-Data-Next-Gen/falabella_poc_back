@@ -531,23 +531,46 @@ class AppState:
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[auto-notify] error en {n['tracking_id']}: {e}")
 
+    def _is_day_running(self) -> bool:
+        """R7: True solo si fpoc.planificacion_imports.state = 'EN_CURSO'
+        para self.today. Si no hay row o el backend no responde, devuelve
+        False (fail-closed: si no podemos confirmar, no avanzamos)."""
+        if self.today is None:
+            return False
+        try:
+            from db import get_conn
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT state FROM fpoc.planificacion_imports WHERE fecha = ?",
+                    self.today.isoformat(),
+                )
+                r = cur.fetchone()
+                if r is None:
+                    return False
+                return str(r.state if hasattr(r, "state") else r[0]) == "EN_CURSO"
+        except Exception:  # noqa: BLE001
+            return False
+
     # ----- Mutations -----
     def tick(self) -> None:
         with self._lock:
             self._ticks += 1
+            # R7: el simulador solo avanza si el día activo está EN_CURSO.
+            # Si está BORRADOR / VALIDADO / CERRADO, el reloj queda congelado
+            # y el rollover automático al día siguiente está deshabilitado.
+            # El usuario controla las transiciones desde Planificación.
+            day_running = self._is_day_running()
+            if not day_running:
+                return
             if self.auto_advance and self.sim_clock is not None and self.today is not None:
                 day_end_dt = datetime.combine(self.today, DAY_END)
                 next_clock = self.sim_clock + timedelta(minutes=self.sim_minutes_per_tick)
                 if next_clock > day_end_dt + timedelta(minutes=30):
-                    # Rollover: avanzar al día siguiente con plan nuevo
-                    self.today = self.today + timedelta(days=1)
-                    self.day_seed += 1
-                    self.manual_incidents = {}
-                    self.auto_incidents = {}
-                    self.sim_clock = datetime.combine(self.today, DAY_START)
-                    self._regen_plan()
-                    EVENTS.emit("day_reset", self.sim_clock, {"new_day_seed": self.day_seed})
-                    self._refresh_snapshot(emit_events=False)
+                    # R7: NO auto-rollover. El día queda en su DAY_END hasta
+                    # que el usuario CERRE manualmente y abra uno nuevo.
+                    # Antes acá se hacía: today += 1; _regen_plan(); day_reset.
+                    self.sim_clock = day_end_dt + timedelta(minutes=30)
                     return
                 self.sim_clock = next_clock
 
