@@ -552,6 +552,35 @@ class AppState:
         except Exception:  # noqa: BLE001
             return False
 
+    def _cutoff_dt_for_today(self) -> datetime:
+        """R7: lee cutoff_time desde fpoc.day_config para self.today. Si no hay
+        config o falla, usa DAY_END (default 18:30) como fallback. Devuelve un
+        datetime combinado con self.today."""
+        from datetime import time as _t
+        default_cutoff = datetime.combine(self.today, DAY_END) if self.today else None
+        if self.today is None:
+            return default_cutoff  # type: ignore[return-value]
+        try:
+            from db import get_conn
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT cutoff_time FROM fpoc.day_config WHERE fecha = ?",
+                    self.today.isoformat(),
+                )
+                r = cur.fetchone()
+                if r is None or r[0] is None:
+                    return default_cutoff  # type: ignore[return-value]
+                raw = r[0] if not hasattr(r, "cutoff_time") else r.cutoff_time
+                if hasattr(raw, "hour"):
+                    cutoff_time = _t(raw.hour, raw.minute)
+                else:
+                    parts = str(raw).split(":")
+                    cutoff_time = _t(int(parts[0]), int(parts[1]))
+                return datetime.combine(self.today, cutoff_time)
+        except Exception:  # noqa: BLE001
+            return default_cutoff  # type: ignore[return-value]
+
     # ----- Mutations -----
     def tick(self) -> None:
         with self._lock:
@@ -564,13 +593,15 @@ class AppState:
             if not day_running:
                 return
             if self.auto_advance and self.sim_clock is not None and self.today is not None:
-                day_end_dt = datetime.combine(self.today, DAY_END)
+                # R7: cutoff configurable por día (fpoc.day_config.cutoff_time).
+                # Si el usuario no configuró nada cae a DAY_END=18:30 default.
+                cutoff_dt = self._cutoff_dt_for_today()
                 next_clock = self.sim_clock + timedelta(minutes=self.sim_minutes_per_tick)
-                if next_clock > day_end_dt + timedelta(minutes=30):
-                    # R7: NO auto-rollover. El día queda en su DAY_END hasta
-                    # que el usuario CERRE manualmente y abra uno nuevo.
-                    # Antes acá se hacía: today += 1; _regen_plan(); day_reset.
-                    self.sim_clock = day_end_dt + timedelta(minutes=30)
+                if next_clock > cutoff_dt:
+                    # R7: NO auto-rollover. El reloj se congela en el cutoff.
+                    # El usuario puede extender el cutoff (POST /day-state/extend)
+                    # o cerrar el día y abrir uno nuevo para continuar.
+                    self.sim_clock = cutoff_dt
                     return
                 self.sim_clock = next_clock
 

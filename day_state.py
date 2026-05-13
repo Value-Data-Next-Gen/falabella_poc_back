@@ -25,7 +25,7 @@ Cualquier transición no listada → 400.
 from __future__ import annotations
 
 import os
-from datetime import date as _date_cls
+from datetime import date as _date_cls, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -406,3 +406,99 @@ def reset_day_state(
         pass
     logger.info(f"[day-state] {fecha}: RESET → BORRADOR by user_id={user.user_id}")
     return _build_state(fecha, user)
+
+
+# =============================================================================
+# R7: extender el día — mueve cutoff_time +N minutos
+# =============================================================================
+class ExtendDayResponse(BaseModel):
+    fecha: str
+    previous_cutoff: Optional[str] = None
+    new_cutoff: str
+    pending_visits: int
+
+
+@router.post("/api/planificacion/day-state/extend", response_model=ExtendDayResponse)
+def extend_day(
+    fecha: str = Query(...),
+    minutes: int = Query(60, ge=15, le=240),
+    user: CurrentUser = Depends(current_user),
+) -> ExtendDayResponse:
+    """Extiende el cutoff del día +N minutos (default 60, máx 240).
+
+    Útil cuando llega la hora de cierre y aún quedan visitas pendientes.
+    Solo si el día está EN_CURSO. Devuelve el cutoff anterior y el nuevo,
+    más el conteo de visitas pendientes.
+    """
+    try:
+        _date_cls.fromisoformat(fecha)
+    except ValueError:
+        raise HTTPException(400, f"fecha inválida: {fecha}")
+
+    from datetime import time as _t, datetime as _dt
+    with get_conn() as cn:
+        cur = cn.cursor()
+        # Verificar estado EN_CURSO
+        cur.execute(
+            "SELECT state FROM fpoc.planificacion_imports WHERE fecha = ?", fecha,
+        )
+        row = cur.fetchone()
+        if row is None or str(row.state) != "EN_CURSO":
+            raise HTTPException(409, f"día {fecha} no está EN_CURSO")
+
+        # Leer cutoff actual (o default 18:30)
+        cur.execute(
+            "SELECT cutoff_time FROM fpoc.day_config WHERE fecha = ?", fecha,
+        )
+        cfg = cur.fetchone()
+        if cfg is not None and cfg[0] is not None:
+            raw = cfg[0]
+            if hasattr(raw, "hour"):
+                current_t = _t(raw.hour, raw.minute)
+            else:
+                parts = str(raw).split(":")
+                current_t = _t(int(parts[0]), int(parts[1]))
+        else:
+            current_t = _t(18, 30)
+        previous_str = f"{current_t.hour:02d}:{current_t.minute:02d}"
+
+        # Sumar minutos (sin pasar de 23:59)
+        base = _dt.combine(_date_cls.fromisoformat(fecha), current_t)
+        new_dt = base + timedelta(minutes=minutes)
+        if new_dt.date() != _date_cls.fromisoformat(fecha):
+            new_dt = _dt.combine(_date_cls.fromisoformat(fecha), _t(23, 59))
+        new_str = f"{new_dt.hour:02d}:{new_dt.minute:02d}:00"
+
+        # UPSERT en day_config
+        cur.execute("SELECT 1 FROM fpoc.day_config WHERE fecha = ?", fecha)
+        if cur.fetchone() is None:
+            cur.execute(
+                "INSERT INTO fpoc.day_config (fecha, cutoff_time) VALUES (?, ?)",
+                fecha, new_str,
+            )
+        else:
+            cur.execute(
+                "UPDATE fpoc.day_config SET cutoff_time = ? WHERE fecha = ?",
+                new_str, fecha,
+            )
+        cn.commit()
+
+        # Conteo pendientes
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM fpoc.simpli_visits "
+            "WHERE planned_date = ? AND status = 'pending'",
+            fecha,
+        )
+        pending = int(cur.fetchone().n or 0)
+
+    logger.info(
+        f"[day-state] {fecha}: cutoff extendido +{minutes}min "
+        f"({previous_str} → {new_dt.hour:02d}:{new_dt.minute:02d}) "
+        f"pendientes={pending} by user_id={user.user_id}"
+    )
+    return ExtendDayResponse(
+        fecha=fecha,
+        previous_cutoff=previous_str,
+        new_cutoff=f"{new_dt.hour:02d}:{new_dt.minute:02d}",
+        pending_visits=pending,
+    )
