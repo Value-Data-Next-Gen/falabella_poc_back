@@ -34,7 +34,12 @@ class MessageResponse(BaseModel):
 
 
 def _web_phone(user: CurrentUser) -> str:
-    """Phone sintético per-user para que el FSM tenga sesión propia."""
+    """Phone sintético per-user. Web NO usa phone real porque:
+      1. Ops y Admin pueden compartir phone en seed (caso real observado).
+      2. El JWT del web ya identifica al user con certeza — phone es info
+         redundante. El FSM bifurca por `identity.role` cuando channel='web'
+         (CR-011), no por phone lookup.
+    """
     return f"web:{user.user_id}"
 
 

@@ -1696,7 +1696,17 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PlanDiarioResponseNew"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PlanDiarioResponseLegacy"
+                    }
+                  ],
+                  "title": "Response Get Plan Diario Api Plan Diario Get"
+                }
               }
             }
           },
@@ -10023,6 +10033,46 @@
         ],
         "title": "AccessSummary"
       },
+      "AlertEvent": {
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "channel": {
+            "type": "string",
+            "title": "Channel"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "type",
+          "channel",
+          "target"
+        ],
+        "title": "AlertEvent",
+        "description": "CR-012 T0.3: evento histórico de alerta enviada para una visita.\n\nHidratado desde `fpoc_alert_dispatch_log` por tracking_id. El frontend lo\nmuestra en el slide-over de drill-down (Tarea 8) en orden cronológico\ndescendente. `acknowledged_at = None` y `sent_at` >10min atrás → estado\n'sin respuesta'."
+      },
       "AnticipatedAlert": {
         "properties": {
           "tracking_id": {
@@ -16088,6 +16138,781 @@
           "new_password"
         ],
         "title": "PasswordReset"
+      },
+      "PlanDiarioResponseLegacy": {
+        "properties": {
+          "planned_date": {
+            "type": "string",
+            "title": "Planned Date"
+          },
+          "sim_clock": {
+            "type": "string",
+            "title": "Sim Clock"
+          },
+          "empresas": {
+            "items": {
+              "$ref": "#/components/schemas/PlanEmpresaLegacy"
+            },
+            "type": "array",
+            "title": "Empresas"
+          }
+        },
+        "type": "object",
+        "required": [
+          "planned_date",
+          "sim_clock",
+          "empresas"
+        ],
+        "title": "PlanDiarioResponseLegacy"
+      },
+      "PlanDiarioResponseNew": {
+        "properties": {
+          "planned_date": {
+            "type": "string",
+            "title": "Planned Date"
+          },
+          "sim_clock": {
+            "type": "string",
+            "title": "Sim Clock"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "only_vip": {
+            "type": "boolean",
+            "title": "Only Vip"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "empresas": {
+            "items": {
+              "$ref": "#/components/schemas/PlanEmpresaNew"
+            },
+            "type": "array",
+            "title": "Empresas"
+          }
+        },
+        "type": "object",
+        "required": [
+          "planned_date",
+          "sim_clock",
+          "region",
+          "only_vip",
+          "source",
+          "empresas"
+        ],
+        "title": "PlanDiarioResponseNew"
+      },
+      "PlanDriverLegacy": {
+        "properties": {
+          "vehicle_id": {
+            "type": "integer",
+            "title": "Vehicle Id"
+          },
+          "vehicle_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vehicle Name"
+          },
+          "driver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Name"
+          },
+          "total_visits": {
+            "type": "integer",
+            "title": "Total Visits"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "red_visits": {
+            "type": "integer",
+            "title": "Red Visits"
+          },
+          "vip_visits": {
+            "type": "integer",
+            "title": "Vip Visits"
+          },
+          "high_priority": {
+            "type": "integer",
+            "title": "High Priority"
+          },
+          "visits": {
+            "items": {
+              "$ref": "#/components/schemas/PlanVisitLegacy"
+            },
+            "type": "array",
+            "title": "Visits"
+          }
+        },
+        "type": "object",
+        "required": [
+          "vehicle_id",
+          "total_visits",
+          "completed",
+          "pending",
+          "red_visits",
+          "vip_visits",
+          "high_priority",
+          "visits"
+        ],
+        "title": "PlanDriverLegacy"
+      },
+      "PlanEmpresaLegacy": {
+        "properties": {
+          "empresa_id": {
+            "type": "integer",
+            "title": "Empresa Id"
+          },
+          "nombre": {
+            "type": "string",
+            "title": "Nombre"
+          },
+          "total_visits": {
+            "type": "integer",
+            "title": "Total Visits"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "red_visits": {
+            "type": "integer",
+            "title": "Red Visits"
+          },
+          "vip_visits": {
+            "type": "integer",
+            "title": "Vip Visits"
+          },
+          "high_priority": {
+            "type": "integer",
+            "title": "High Priority"
+          },
+          "drivers": {
+            "items": {
+              "$ref": "#/components/schemas/PlanDriverLegacy"
+            },
+            "type": "array",
+            "title": "Drivers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "empresa_id",
+          "nombre",
+          "total_visits",
+          "completed",
+          "pending",
+          "red_visits",
+          "vip_visits",
+          "high_priority",
+          "drivers"
+        ],
+        "title": "PlanEmpresaLegacy"
+      },
+      "PlanEmpresaNew": {
+        "properties": {
+          "empresa_id": {
+            "type": "integer",
+            "title": "Empresa Id"
+          },
+          "empresa_nombre": {
+            "type": "string",
+            "title": "Empresa Nombre"
+          },
+          "total_visitas": {
+            "type": "integer",
+            "title": "Total Visitas"
+          },
+          "completadas": {
+            "type": "integer",
+            "title": "Completadas"
+          },
+          "pendientes": {
+            "type": "integer",
+            "title": "Pendientes"
+          },
+          "fallidas": {
+            "type": "integer",
+            "title": "Fallidas"
+          },
+          "en_riesgo": {
+            "type": "integer",
+            "title": "En Riesgo"
+          },
+          "red_visitas": {
+            "type": "integer",
+            "title": "Red Visitas",
+            "default": 0
+          },
+          "vip_visitas": {
+            "type": "integer",
+            "title": "Vip Visitas",
+            "default": 0
+          },
+          "high_priority": {
+            "type": "integer",
+            "title": "High Priority",
+            "default": 0
+          },
+          "rutas": {
+            "items": {
+              "$ref": "#/components/schemas/PlanRuta"
+            },
+            "type": "array",
+            "title": "Rutas"
+          },
+          "supervisor_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Phone"
+          },
+          "supervisor_phone_is_mock": {
+            "type": "boolean",
+            "title": "Supervisor Phone Is Mock",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "empresa_id",
+          "empresa_nombre",
+          "total_visitas",
+          "completadas",
+          "pendientes",
+          "fallidas",
+          "en_riesgo",
+          "rutas"
+        ],
+        "title": "PlanEmpresaNew"
+      },
+      "PlanRuta": {
+        "properties": {
+          "ruta_id": {
+            "type": "string",
+            "title": "Ruta Id"
+          },
+          "vehicle_id": {
+            "type": "integer",
+            "title": "Vehicle Id"
+          },
+          "vehicle_name": {
+            "type": "string",
+            "title": "Vehicle Name"
+          },
+          "plate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plate"
+          },
+          "patente": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patente"
+          },
+          "driver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Name"
+          },
+          "dotacion_estado": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dotacion Estado"
+          },
+          "dotacion_motivo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dotacion Motivo"
+          },
+          "operable": {
+            "type": "boolean",
+            "title": "Operable",
+            "default": true
+          },
+          "region": {
+            "type": "string",
+            "title": "Region",
+            "default": "RM"
+          },
+          "ct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ct"
+          },
+          "next_stop_order": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Stop Order"
+          },
+          "orden_actual": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orden Actual"
+          },
+          "total_visitas": {
+            "type": "integer",
+            "title": "Total Visitas"
+          },
+          "completadas": {
+            "type": "integer",
+            "title": "Completadas"
+          },
+          "pendientes": {
+            "type": "integer",
+            "title": "Pendientes"
+          },
+          "fallidas": {
+            "type": "integer",
+            "title": "Fallidas"
+          },
+          "en_riesgo": {
+            "type": "integer",
+            "title": "En Riesgo"
+          },
+          "progreso_pct": {
+            "type": "number",
+            "title": "Progreso Pct"
+          },
+          "red_visitas": {
+            "type": "integer",
+            "title": "Red Visitas",
+            "default": 0
+          },
+          "vip_visitas": {
+            "type": "integer",
+            "title": "Vip Visitas",
+            "default": 0
+          },
+          "high_priority": {
+            "type": "integer",
+            "title": "High Priority",
+            "default": 0
+          },
+          "visitas": {
+            "items": {
+              "$ref": "#/components/schemas/PlanVisit"
+            },
+            "type": "array",
+            "title": "Visitas"
+          },
+          "driver_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Phone"
+          },
+          "driver_phone_is_mock": {
+            "type": "boolean",
+            "title": "Driver Phone Is Mock",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "ruta_id",
+          "vehicle_id",
+          "vehicle_name",
+          "total_visitas",
+          "completadas",
+          "pendientes",
+          "fallidas",
+          "en_riesgo",
+          "progreso_pct",
+          "visitas"
+        ],
+        "title": "PlanRuta"
+      },
+      "PlanVisit": {
+        "properties": {
+          "tracking_id": {
+            "type": "string",
+            "title": "Tracking Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "cliente_nombre": {
+            "type": "string",
+            "title": "Cliente Nombre"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "comuna": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comuna"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude",
+            "default": 0.0
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude",
+            "default": 0.0
+          },
+          "lat": {
+            "type": "number",
+            "title": "Lat",
+            "default": 0.0
+          },
+          "lon": {
+            "type": "number",
+            "title": "Lon",
+            "default": 0.0
+          },
+          "window_start": {
+            "type": "string",
+            "title": "Window Start",
+            "default": ""
+          },
+          "window_end": {
+            "type": "string",
+            "title": "Window End",
+            "default": ""
+          },
+          "planned_arrival_time": {
+            "type": "string",
+            "title": "Planned Arrival Time",
+            "default": ""
+          },
+          "estimated_time_arrival": {
+            "type": "string",
+            "title": "Estimated Time Arrival",
+            "default": ""
+          },
+          "current_eta_cl": {
+            "type": "string",
+            "title": "Current Eta Cl",
+            "default": ""
+          },
+          "slack_min": {
+            "type": "number",
+            "title": "Slack Min",
+            "default": 0.0
+          },
+          "alert_slack": {
+            "type": "string",
+            "title": "Alert Slack",
+            "default": "GREEN"
+          },
+          "p_fallo": {
+            "type": "number",
+            "title": "P Fallo",
+            "default": 0.0
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "priority": {
+            "type": "string",
+            "title": "Priority",
+            "default": "normal"
+          },
+          "priority_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority Reason"
+          },
+          "is_vip": {
+            "type": "boolean",
+            "title": "Is Vip",
+            "default": false
+          },
+          "vip_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vip Tier"
+          },
+          "vip_deadline_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vip Deadline Time"
+          },
+          "alert_valuedata": {
+            "type": "boolean",
+            "title": "Alert Valuedata",
+            "default": false
+          },
+          "folio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folio"
+          },
+          "motivo_reportado": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Motivo Reportado"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          },
+          "alert_history": {
+            "items": {
+              "$ref": "#/components/schemas/AlertEvent"
+            },
+            "type": "array",
+            "title": "Alert History",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "tracking_id",
+          "order",
+          "title",
+          "cliente_nombre",
+          "address",
+          "region",
+          "status"
+        ],
+        "title": "PlanVisit"
+      },
+      "PlanVisitLegacy": {
+        "properties": {
+          "tracking_id": {
+            "type": "string",
+            "title": "Tracking Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          },
+          "window_start": {
+            "type": "string",
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "string",
+            "title": "Window End"
+          },
+          "planned_arrival_time": {
+            "type": "string",
+            "title": "Planned Arrival Time"
+          },
+          "estimated_time_arrival": {
+            "type": "string",
+            "title": "Estimated Time Arrival"
+          },
+          "slack_min": {
+            "type": "number",
+            "title": "Slack Min"
+          },
+          "alert_slack": {
+            "type": "string",
+            "title": "Alert Slack"
+          },
+          "p_fallo": {
+            "type": "number",
+            "title": "P Fallo"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "priority": {
+            "type": "string",
+            "title": "Priority"
+          },
+          "priority_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority Reason"
+          },
+          "is_vip": {
+            "type": "boolean",
+            "title": "Is Vip"
+          },
+          "alert_valuedata": {
+            "type": "boolean",
+            "title": "Alert Valuedata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tracking_id",
+          "order",
+          "title",
+          "address",
+          "latitude",
+          "longitude",
+          "window_start",
+          "window_end",
+          "planned_arrival_time",
+          "estimated_time_arrival",
+          "slack_min",
+          "alert_slack",
+          "p_fallo",
+          "status",
+          "priority",
+          "is_vip",
+          "alert_valuedata"
+        ],
+        "title": "PlanVisitLegacy"
       },
       "PreferencesResponse": {
         "properties": {

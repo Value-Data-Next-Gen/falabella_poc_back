@@ -20,6 +20,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from loguru import logger
 
 # Cargar .env antes de importar state/auth (que leen DB_*)
@@ -105,6 +106,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# CR-012 T0.1 — gzip para payloads grandes (plan-diario ~1.25 MB sin comprimir).
+# minimum_size evita comprimir respuestas chicas (auth, day-state). level 6 es
+# el sweet spot CPU/ratio para JSON repetitivo.
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
 
 # ============================================================================
 # Routers

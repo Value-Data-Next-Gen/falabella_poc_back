@@ -149,6 +149,71 @@ def _find_driver_by_phone(phone: str) -> Optional[dict]:
             "vehicle_name": r[3], "phone_e164": r[4]}
 
 
+def _persona_from_web_identity(identity: dict) -> Optional[dict]:
+    """[CR-011] Construye persona directamente del JWT del web. Evita phone
+    lookup ambiguo cuando varios users comparten phone en el seed.
+
+    Mapea roles del JWT:
+      - falabella_admin / falabella_ops → manager (con is_falabella=True)
+      - transport_manager → manager (con is_falabella=False)
+      - driver → driver
+    Devuelve None si el role no califica (cae al phone lookup tradicional).
+    """
+    role = str(identity.get("role") or "").lower()
+    user_id = identity.get("user_id")
+    name = identity.get("display_name") or "Usuario"
+    empresa_id = identity.get("empresa_id")
+    if role in ("falabella_admin", "falabella_ops", "transport_manager"):
+        # Resolver empresa_nombre para el render del menú
+        empresa_nombre = None
+        if empresa_id is not None:
+            try:
+                with get_conn() as cn:
+                    cur = cn.cursor()
+                    cur.execute(
+                        "SELECT nombre FROM fpoc_empresas_transporte WHERE empresa_id = ?",
+                        (empresa_id,),
+                    )
+                    r = cur.fetchone()
+                    if r is not None:
+                        empresa_nombre = str(r[0])
+            except Exception:  # noqa: BLE001
+                pass
+        return {
+            "kind": "manager",
+            "id": int(user_id) if user_id is not None else 0,
+            "user_id": int(user_id) if user_id is not None else 0,
+            "email": identity.get("email"),
+            "name": name,
+            "role": role,
+            "empresa_id": int(empresa_id) if empresa_id is not None else None,
+            "empresa_nombre": empresa_nombre,
+            "is_falabella": role in ("falabella_admin", "falabella_ops"),
+        }
+    if role == "driver" and identity.get("driver_id"):
+        # Buscar el driver completo en BD para tener vehicle_id/name
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT driver_id, name, vehicle_id, vehicle_name FROM fpoc_drivers "
+                    "WHERE driver_id = ? AND active = 1",
+                    (identity["driver_id"],),
+                )
+                r = cur.fetchone()
+                if r is not None:
+                    return {
+                        "kind": "driver",
+                        "id": str(r[0]),
+                        "name": str(r[1]),
+                        "vehicle_id": int(r[2]) if r[2] is not None else None,
+                        "vehicle_name": str(r[3]) if r[3] else None,
+                    }
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
 def _find_persona_by_phone(phone: str) -> Optional[dict]:
     """Busca el número en cascada: drivers → users → contactos.
 
@@ -565,26 +630,109 @@ def _render_driver_menu(driver: dict, sess: Optional["Session"] = None) -> str:
 
 
 def _render_manager_menu(persona: dict, sess: Optional["Session"] = None) -> str:
-    """Menú para transport_manager / falabella_admin / falabella_ops."""
+    """Menú dinámico según rol (CR-011):
+       - transport_manager → opciones 1-5 (su empresa) + Salir
+       - falabella_ops     → opciones 1-5 globales + 6 (todas las empresas)
+       - falabella_admin   → opciones 1-6 + 7 (regenerar día) + 8 (auditoría LLM)
+    """
+    role = str(persona.get("role") or "").lower()
+    is_admin = role == "falabella_admin"
+    is_ops = role == "falabella_ops"
+    is_falabella = is_admin or is_ops
     name = persona["name"]
     empresa_str = (
         f" · {persona['empresa_nombre']}" if persona.get("empresa_nombre")
         else " · vista global Falabella"
     )
-    role_label = "Falabella" if persona.get("is_falabella") else "Manager"
+    role_label = (
+        "Falabella Admin" if is_admin else
+        "Falabella Ops" if is_ops else
+        "Manager"
+    )
     saludo = _greeting()
     head = f"{saludo}, {name} 👋  ({role_label}{empresa_str})"
     summary = _manager_summary(persona)
     hint = _recent_action_hint(sess) if sess else None
-    return _wrap_menu(head, summary, hint, [
+    lines = [
         "¿Qué querés ver?",
         " 1️⃣  KPIs de hoy",
         " 2️⃣  Alertas críticas",
         " 3️⃣  Listar mis drivers",
         " 4️⃣  Buscar visita (TRK)",
         " 5️⃣  Reportar incidente",
-        " 9️⃣  Salir",
-    ])
+    ]
+    # Ops y Admin tienen vista global de empresas.
+    if is_falabella:
+        lines.append(" 6️⃣  Listar empresas de transporte")
+    # Admin tiene comandos destructivos/sensibles.
+    if is_admin:
+        lines.append(" 7️⃣  🔁 Regenerar día (BORRADOR → seed nuevo)")
+        lines.append(" 8️⃣  🔬 Auditoría LLM (correcciones pendientes)")
+    lines.append(" 9️⃣  Salir")
+    return _wrap_menu(head, summary, hint, lines)
+
+
+# [CR-011] Renders extra para falabella_admin / falabella_ops.
+def _render_empresas_list() -> str:
+    """Lista las empresas de transporte activas con su conteo de visitas hoy."""
+    try:
+        from core.db import get_conn
+        from datetime import date as _date_cls
+        today = _date_cls.today().isoformat()
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """SELECT e.empresa_id, e.nombre,
+                          (SELECT COUNT(*) FROM fpoc.simpli_visits v
+                           WHERE v.empresa_falsa = e.empresa_id
+                             AND v.planned_date = ?) AS visitas_hoy
+                   FROM fpoc.empresas_transporte e
+                   WHERE e.activo = 1
+                   ORDER BY visitas_hoy DESC, e.nombre""",
+                today,
+            )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[wa-agent] _render_empresas_list falló: {e}")
+        return "⚠️ No pude obtener la lista de empresas en este momento."
+    if not rows:
+        return "Sin empresas de transporte activas."
+    lines = ["🏢 *Empresas de transporte activas*", ""]
+    for r in rows[:15]:
+        visitas = int(r[2] or 0)
+        lines.append(f"  · {r[1]} — {visitas} visita{'s' if visitas != 1 else ''} hoy")
+    if len(rows) > 15:
+        lines.append(f"  …y {len(rows) - 15} más")
+    return "\n".join(lines)
+
+
+def _render_motivo_corrections_count() -> str:
+    """Resumen de correcciones del LLM pendientes (admin only)."""
+    try:
+        from core.db import get_conn
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """SELECT status, COUNT(*) FROM fpoc_motivo_corrections
+                   GROUP BY status"""
+            )
+            counts = {str(r[0]): int(r[1]) for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[wa-agent] _render_motivo_corrections_count falló: {e}")
+        return "⚠️ No pude consultar correcciones LLM."
+    pending = counts.get("pending", 0)
+    accepted = counts.get("accepted", 0)
+    rejected = counts.get("rejected", 0)
+    lines = [
+        "🔬 *Auditoría LLM — Correcciones de motivo*",
+        "",
+        f"  · 🟡 Pendientes:  {pending}",
+        f"  · ✅ Aceptadas:    {accepted}",
+        f"  · ❌ Rechazadas:   {rejected}",
+        "",
+        "Detalle en: Auditoría IA → Correcciones de motivo (app web).",
+    ]
+    return "\n".join(lines)
 
 
 def _render_manager_kpis(persona: dict) -> str:
@@ -780,8 +928,14 @@ def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -
 
     # Si no hay sesión activa o el usuario es nuevo: arrancamos en awaiting_role
     if sess.state == "idle":
-        # Auto-detect persona por phone → directo al menú correspondiente
-        persona = _find_persona_by_phone(phone)
+        # [CR-011] Bifurcación web por JWT: si el canal es 'web' y trae role
+        # válido en identity, usamos eso como source-of-truth (evita ambigüedad
+        # cuando varios users comparten phone_e164 en el seed). WhatsApp sigue
+        # con el phone lookup tradicional porque ahí solo tenemos el phone.
+        persona = _persona_from_web_identity(identity) if identity.get("channel") == "web" else None
+        if persona is None:
+            # Auto-detect persona por phone → directo al menú correspondiente
+            persona = _find_persona_by_phone(phone)
         if persona:
             kind = persona["kind"]
             if kind == "driver":
@@ -1370,9 +1524,38 @@ def _on_menu_manager(sess: Session, text: str, text_lower: str, identity: dict) 
         }
         sess.save()
         return "Decime el tracking_id (ej: TRK0600009) o '0' para cancelar:"
+    # [CR-011] Opciones extra para falabella_ops/admin.
+    role = str(persona.get("role") or "").lower()
+    is_admin = role == "falabella_admin"
+    is_ops = role == "falabella_ops"
+
+    if (is_ops or is_admin) and (text == "6" or "empresa" in text_lower):
+        return _render_empresas_list() + "\n\n('menu' para volver)"
+
+    if is_admin and (text == "7" or "regener" in text_lower):
+        # Admin-only. Lo dejamos como placeholder con TODO porque el endpoint
+        # /clean-and-regenerate requiere fecha + admin auth — para el FSM
+        # WA habría que ofrecer un confirm-flow. Aquí solo notificamos.
+        return (
+            "🔁 *Regenerar día*\n\n"
+            "Para regenerar el plan, andá a la app web:\n"
+            "→ Planificación → Día operativo → ⋮ → 🧹 'Limpiar + regenerar plan'\n\n"
+            "(WhatsApp no expone aún esta acción destructiva por seguridad).\n"
+            "'menu' para volver."
+        )
+
+    if is_admin and (text == "8" or "auditor" in text_lower or "llm" in text_lower):
+        return _render_motivo_corrections_count() + "\n\n('menu' para volver)"
+
     if text == "9" or text_lower in ("salir", "exit"):
         Session.delete(sess.phone)
         return "👋 Hasta luego."
+
+    # Mensaje de ayuda según el set de opciones disponibles
+    if is_admin:
+        return "No entendí. Elegí 1-8 o 9 (Salir). 'menu' para volver."
+    if is_ops:
+        return "No entendí. Elegí 1-6 o 9 (Salir). 'menu' para volver."
     return "No entendí. Elegí 1, 2, 3, 4, 5 o 9. 'menu' para volver."
 
 

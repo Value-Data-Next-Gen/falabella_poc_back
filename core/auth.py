@@ -50,6 +50,9 @@ class CurrentUser:
     empresa_id: Optional[int]
     empresa_nombre: Optional[str]
     driver_id: Optional[str] = None
+    # CR-011: phone real del user. Lo usa el agente web para reusar la
+    # detección por teléfono del FSM de WhatsApp (mismo flujo bi-canal).
+    phone_e164: Optional[str] = None
 
     @property
     def is_admin(self) -> bool:
@@ -153,7 +156,8 @@ def _load_user_by_id(user_id: int) -> Optional[dict]:
         cur.execute(
             """
             SELECT u.user_id, u.email, u.display_name, u.role,
-                   u.empresa_id, u.driver_id, u.activo, e.nombre AS empresa_nombre
+                   u.empresa_id, u.driver_id, u.activo, u.phone_e164,
+                   e.nombre AS empresa_nombre
             FROM fpoc.users u
             LEFT JOIN fpoc.empresas_transporte e ON u.empresa_id = e.empresa_id
             WHERE u.user_id = ?
@@ -172,6 +176,7 @@ def _load_user_by_id(user_id: int) -> Optional[dict]:
             "empresa_nombre": row.empresa_nombre,
             "driver_id": str(row.driver_id) if row.driver_id is not None else None,
             "activo": bool(row.activo),
+            "phone_e164": str(row.phone_e164) if row.phone_e164 is not None else None,
         }
 
 
@@ -233,6 +238,7 @@ def current_user(
         user_id=u["user_id"], email=u["email"], display_name=u["display_name"],
         role=u["role"], empresa_id=u["empresa_id"], empresa_nombre=u["empresa_nombre"],
         driver_id=u.get("driver_id"),
+        phone_e164=u.get("phone_e164"),
     )
 
 

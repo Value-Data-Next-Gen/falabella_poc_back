@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date as date_cls, datetime
-from typing import Optional
+from typing import Optional, Union
 
 import hashlib
 import math
@@ -84,6 +84,26 @@ def _comuna_to_latlon(comuna: Optional[str], tracking_id: Optional[str]) -> tupl
 # =============================================================================
 # Schemas — nueva estructura (Sprint 6: ruta_id como string)
 # =============================================================================
+class AlertEvent(BaseModel):
+    """CR-012 T0.3: evento histórico de alerta enviada para una visita.
+
+    Hidratado desde `fpoc_alert_dispatch_log` por tracking_id. El frontend lo
+    muestra en el slide-over de drill-down (Tarea 8) en orden cronológico
+    descendente. `acknowledged_at = None` y `sent_at` >10min atrás → estado
+    'sin respuesta'."""
+    timestamp: str       # ISO 8601 = alias de sent_at
+    type: str            # 'retraso_vip' | 'driver_sin_respuesta' | 'motivo_patron'
+    channel: str         # 'whatsapp' | 'sms' | 'in_app'
+    target: str          # 'cliente' | 'driver' | 'supervisor'
+    acknowledged_at: Optional[str] = None
+
+
+# Mock fallback cuando un driver/supervisor no tiene phone_e164 configurado.
+# El frontend respeta el flag is_mock para deshabilitar botones de WhatsApp
+# directo y mostrar tooltip "teléfono no configurado".
+_MOCK_PHONE = "+56 9 0000 0000"
+
+
 class PlanVisit(BaseModel):
     tracking_id: str
     order: int
@@ -114,6 +134,8 @@ class PlanVisit(BaseModel):
     folio: Optional[str] = None  # NEW Sprint 6: reference (siempre, destacado si VIP)
     motivo_reportado: Optional[str] = None
     severity: Optional[str] = None
+    # CR-012 T0.3: historial de alertas enviadas para esta visita.
+    alert_history: list[AlertEvent] = []
 
 
 class PlanRuta(BaseModel):
@@ -143,6 +165,11 @@ class PlanRuta(BaseModel):
     vip_visitas: int = 0
     high_priority: int = 0
     visitas: list[PlanVisit]
+    # CR-012 T0.3: teléfono del driver para acción "Contactar driver" del
+    # drawer de Operación. is_mock=True cuando fpoc_drivers.phone_e164 es NULL
+    # → el frontend deshabilita botón WhatsApp y muestra tooltip.
+    driver_phone: Optional[str] = None
+    driver_phone_is_mock: bool = False
 
 
 class PlanEmpresaNew(BaseModel):
@@ -157,6 +184,10 @@ class PlanEmpresaNew(BaseModel):
     vip_visitas: int = 0
     high_priority: int = 0
     rutas: list[PlanRuta]
+    # CR-012 T0.3: teléfono supervisor (escalamiento). Mock si la empresa no
+    # tiene supervisor_phone_e164 — el modal de escalamiento deshabilita Enviar.
+    supervisor_phone: Optional[str] = None
+    supervisor_phone_is_mock: bool = False
 
 
 class PlanDiarioResponseNew(BaseModel):
@@ -306,6 +337,66 @@ def _load_last_motivo(tids: list[str]) -> dict[str, tuple[str, str]]:
     return out
 
 
+def _load_driver_phones() -> dict[str, str]:
+    """CR-012 T0.3: driver name normalizado → phone_e164. Solo no-NULL.
+
+    Match por nombre porque `fpoc_simpli_visits.driver_name` no expone driver_id.
+    Caso: dos drivers con mismo nombre → gana el primero (improbable en POC).
+    """
+    out: dict[str, str] = {}
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT name, phone_e164 FROM fpoc.drivers "
+                "WHERE phone_e164 IS NOT NULL AND phone_e164 != ''"
+            )
+            for r in cur.fetchall():
+                key = str(r.name).strip().lower()
+                if key not in out:  # primero gana
+                    out[key] = str(r.phone_e164)
+    except Exception:
+        # Tabla recién migrada / sin datos. Vacío → todos los drivers serán mock.
+        pass
+    return out
+
+
+def _load_alert_history(tids: list[str]) -> dict[str, list[AlertEvent]]:
+    """CR-012 T0.3: tracking_id → lista cronológica ascendente de alertas
+    enviadas. Lee `fpoc.alert_dispatch_log`. Si la tabla no existe (caso
+    pre-migración) devuelve dict vacío y la API responde alert_history=[]."""
+    out: dict[str, list[AlertEvent]] = {}
+    if not tids:
+        return out
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            for i in range(0, len(tids), 500):
+                batch = tids[i:i + 500]
+                marks = ",".join(["?"] * len(batch))
+                cur.execute(
+                    f"""
+                    SELECT tracking_id, type, channel, target, sent_at, acknowledged_at
+                    FROM fpoc.alert_dispatch_log
+                    WHERE tracking_id IN ({marks})
+                    ORDER BY sent_at ASC
+                    """,
+                    *batch,
+                )
+                for r in cur.fetchall():
+                    ev = AlertEvent(
+                        timestamp=str(r.sent_at),
+                        type=str(r.type),
+                        channel=str(r.channel),
+                        target=str(r.target),
+                        acknowledged_at=str(r.acknowledged_at) if r.acknowledged_at else None,
+                    )
+                    out.setdefault(str(r.tracking_id), []).append(ev)
+    except Exception:
+        pass
+    return out
+
+
 def _load_dotacion(planned_date: str) -> tuple[dict[int, dict], dict[str, dict]]:
     """Daily availability by vehicle_id and by normalized driver_name."""
     by_vehicle: dict[int, dict] = {}
@@ -451,7 +542,28 @@ def _is_at_risk(row) -> bool:
 # =============================================================================
 # Endpoint principal
 # =============================================================================
-@router.get("")
+# CR-012 T0.3: response_model declarado como Union para que openapi.json
+# exponga ambos schemas (NEW y Legacy) — sin esto los nuevos campos no llegan
+# al frontend via gen-types. Pydantic distingue por presencia de `rutas`
+# (NEW, default) vs `drivers` (Legacy, opt-in) en empresas[].
+#
+# CONTRATO (CR-012 Fix V3):
+#   ?legacy=false (default) → PlanDiarioResponseNew (Sprint 6+: ruta_id como
+#                             entidad, alert_history, driver_phone, etc.).
+#                             Consumido por: KpiStrip, OperationsMap, MapaTab,
+#                             DriversAvancePanel, GanttPorParada, VisitaDetailDrawer.
+#   ?legacy=true            → PlanDiarioResponseLegacy (Sprint 1: Empresa→Drivers).
+#                             Consumido por: RouteOpsPanel (frontend/src/components/
+#                             RouteOpsPanel.tsx:93 — `plan-diario-legacy` queryKey).
+#                             Solo lo usa esa pantalla.
+#
+# TODO(deprecate-legacy): cuando RouteOpsPanel migre al shape NEW (estimado
+# 2026-Q3, ver ROADMAP), eliminar:
+#   1) la rama `if legacy:` de este handler,
+#   2) las clases `PlanVisitLegacy`, `PlanEmpresaLegacy`, `PlanDiarioResponseLegacy`,
+#   3) el query param `legacy: bool`,
+#   4) volver el response_model a `PlanDiarioResponseNew` directo.
+@router.get("", response_model=Union[PlanDiarioResponseNew, PlanDiarioResponseLegacy])
 def get_plan_diario(
     empresa_id: Optional[int] = Query(default=None),
     region: str = Query(default="all"),
@@ -498,11 +610,21 @@ def _build_new_from_real(
     """Lee fpoc_simpli_visits, agrupa por empresa → ruta_id, devuelve estructura nueva."""
     pd_iso = _resolve_planned_date(planned_date_q)
 
-    # Empresas catalog
+    # Empresas catalog + supervisor_phone_e164 (CR-012 T0.3)
     with get_conn() as cn:
         cur = cn.cursor()
-        cur.execute("SELECT empresa_id, nombre FROM fpoc.empresas_transporte WHERE activo = 1")
-        empresas_catalog = {int(r.empresa_id): r.nombre for r in cur.fetchall()}
+        cur.execute(
+            "SELECT empresa_id, nombre, supervisor_phone_e164 "
+            "FROM fpoc.empresas_transporte WHERE activo = 1"
+        )
+        empresas_catalog: dict[int, dict] = {}
+        for r in cur.fetchall():
+            sup_e164 = getattr(r, "supervisor_phone_e164", None)
+            empresas_catalog[int(r.empresa_id)] = {
+                "nombre": r.nombre,
+                "supervisor_phone": sup_e164 or _MOCK_PHONE,
+                "supervisor_phone_is_mock": not bool(sup_e164),
+            }
 
         # WHERE clauses
         where = ["planned_date = ?"]
@@ -586,6 +708,9 @@ def _build_new_from_real(
     priority_map = _load_priority_overrides(tids)
     motivo_map = _load_last_motivo(tids)
     dotacion_by_vehicle, dotacion_by_driver = _load_dotacion(pd_iso)
+    # CR-012 T0.3: phones + alert history (best-effort, mock si vacío)
+    driver_phones = _load_driver_phones()
+    alert_history_map = _load_alert_history(tids)
 
     # Filtro only_vip
     if only_vip:
@@ -667,6 +792,7 @@ def _build_new_from_real(
                     folio=folio,
                     motivo_reportado=motivo,
                     severity=sev,
+                    alert_history=alert_history_map.get(tid, []),
                 ))
 
             total = len(ruta_visits)
@@ -697,13 +823,15 @@ def _build_new_from_real(
             dotacion_motivo = dotacion.get("motivo") if dotacion else None
             operable = dotacion_estado in (None, "disponible", "reemplazo")
 
+            driver_full = sample["drivername"] or f"Driver {sample['patente']}"
+            driver_phone_real = driver_phones.get(driver_full.strip().lower())
             rutas_out.append(PlanRuta(
                 ruta_id=rid,
                 vehicle_id=sample["patente"],
                 vehicle_name=patente_str,
                 plate=patente_str,
                 patente=patente_str,
-                driver_name=sample["drivername"] or f"Driver {sample['patente']}",
+                driver_name=driver_full,
                 dotacion_estado=dotacion_estado,
                 dotacion_motivo=dotacion_motivo,
                 operable=operable,
@@ -721,6 +849,8 @@ def _build_new_from_real(
                 vip_visitas=r_vip_count,
                 high_priority=r_high,
                 visitas=visitas_out,
+                driver_phone=driver_phone_real or _MOCK_PHONE,
+                driver_phone_is_mock=not bool(driver_phone_real),
             ))
             e_total += total
             e_comp += comp
@@ -731,9 +861,10 @@ def _build_new_from_real(
             e_vip += r_vip_count
             e_high += r_high
 
+        emp_info = empresas_catalog.get(eid, {})
         out_empresas.append(PlanEmpresaNew(
             empresa_id=eid,
-            empresa_nombre=empresas_catalog.get(eid, f"Empresa {eid}"),
+            empresa_nombre=emp_info.get("nombre", f"Empresa {eid}"),
             total_visitas=e_total,
             completadas=e_comp,
             pendientes=e_pend,
@@ -743,6 +874,8 @@ def _build_new_from_real(
             vip_visitas=e_vip,
             high_priority=e_high,
             rutas=rutas_out,
+            supervisor_phone=emp_info.get("supervisor_phone", _MOCK_PHONE),
+            supervisor_phone_is_mock=emp_info.get("supervisor_phone_is_mock", True),
         ))
 
     sim_clock_iso = STATE.sim_clock.isoformat() if STATE.sim_clock else f"{pd_iso}T09:00:00"

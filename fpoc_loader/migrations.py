@@ -161,4 +161,7 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("020_empresa_contactos_table",   _wrap_sqlite_only("fpoc_loader.migrate_empresa_contactos")),
     ("021_motivo_corrections",        _wrap_sqlite_only("fpoc_loader.migrate_motivo_corrections")),
     ("022_vip_deadline",              _wrap_sqlite_only("fpoc_loader.migrate_vip_deadline")),
+    # CR-012 T0.3: alert_dispatch_log + supervisor_phone_e164 en empresas.
+    # Escrita bifurcada (sqlite + sqlserver) → _wrap_quiet la ejecuta en ambos.
+    ("023_alert_dispatch_phones",     _wrap_quiet("fpoc_loader.migrate_alert_dispatch")),
 ]
