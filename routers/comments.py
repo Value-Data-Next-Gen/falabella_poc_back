@@ -759,7 +759,7 @@ def _resolve_alert_targets(
             """
             SELECT user_id, phone_e164 FROM fpoc.users
             WHERE activo = 1 AND notify_whatsapp = 1
-              AND phone_e164 IS NOT NULL AND length(phone_e164) > 0
+              AND phone_e164 IS NOT NULL AND phone_e164 <> ''
               AND (role IN ('falabella_admin','falabella_ops') OR empresa_id = ?)
             """,
             empresa_id,
@@ -778,7 +778,7 @@ def _resolve_alert_targets(
             WHERE d.active = 1
               AND d.notify_whatsapp = 1
               AND d.opted_in_at IS NOT NULL
-              AND d.phone_e164 IS NOT NULL AND length(d.phone_e164) > 0
+              AND d.phone_e164 IS NOT NULL AND d.phone_e164 <> ''
             """
         )
         all_drivers = cur.fetchall()
