@@ -623,8 +623,8 @@ def _render_driver_menu(driver: dict, sess: Optional["Session"] = None) -> str:
         "¿Qué necesitás?",
         " 1️⃣  Ver mi ruta de hoy",
         " 2️⃣  Próxima visita pendiente",
-        " 3️⃣  Reportar incidente / motivo",
-        " 4️⃣  Hablar con coordinador",
+        " 3️⃣  ⚠️  No pude entregar / reportar problema",
+        " 4️⃣  🚨 Urgencia / hablar con coordinador",
         " 9️⃣  Salir",
     ])
 
@@ -1114,10 +1114,30 @@ def _on_menu_driver(sess: Session, text: str, text_lower: str, identity: dict) -
         return _render_route(driver) + "\n"
     if text == "2" or "próxima" in text_lower or "proxima" in text_lower or "siguiente" in text_lower:
         return _render_next_visit(driver)
-    if text == "3" or "reportar" in text_lower or "incidente" in text_lower:
+    if text == "3" or "reportar" in text_lower or "incidente" in text_lower or "no pude" in text_lower or "problema" in text_lower:
+        # Listar pendientes numeradas para que el driver elija con un solo dígito.
+        # Pedir tracking_id de 19 caracteres a mano en WA es impráctico.
+        pending = [v for v in _visits_for_vehicle(driver["vehicle_id"]) if v["status"] == "pending"]
+        if not pending:
+            return (
+                "✅ No tenés visitas pendientes ahora.\n"
+                "Si igual querés reportar algo, mandá 'menu' y elegí 4 (coordinador)."
+            )
+        # Guardamos la lista en context para que awaiting_tracking pueda mapear N → tracking_id
+        sess.context["pending_list"] = [v["tracking_id"] for v in pending[:9]]
         sess.state = "awaiting_tracking"
         sess.save()
-        return "Decime el tracking_id (ej: TRK0600009) o '0' para cancelar:"
+        lines = ["📋 Tus visitas pendientes:"]
+        for i, v in enumerate(pending[:9], 1):
+            comuna = v.get("comuna") or "-"
+            we = (v.get("window_end") or "")[:5]
+            risk_pct = int((v.get("p_fallo") or 0) * 100)
+            risk_emoji = "🔴" if risk_pct >= 50 else ("🟡" if risk_pct >= 20 else "🟢")
+            cliente = (v.get("title") or v.get("cliente_nombre") or "—")[:30]
+            lines.append(f" {i}️⃣  {risk_emoji} {cliente} · {comuna} · cierra {we}")
+        lines.append("")
+        lines.append("Elegí el número de la visita (1-9) o '0' para cancelar:")
+        return "\n".join(lines)
     if text == "4" or "coordinador" in text_lower or "humano" in text_lower:
         sess.reset()
         sess.save()
@@ -1144,11 +1164,37 @@ def _on_awaiting_tracking(sess: Session, text: str, text_lower: str, identity: d
     if text == "0":
         driver = sess.context.get("driver")
         sess.state = "menu_driver"
+        sess.context.pop("pending_list", None)
         sess.save()
         return _render_driver_menu(driver, sess) if driver else _render_role_menu(None)
+
+    # Si el driver eligió un número (1-9) y tenemos lista de pendientes guardada,
+    # mapeamos. Ahorra al chofer tener que tipear 19 dígitos.
+    pending_list = sess.context.get("pending_list") or []
+    if text.isdigit() and pending_list:
+        idx = int(text) - 1
+        if 0 <= idx < len(pending_list):
+            visit = _visit_by_tracking(pending_list[idx])
+            if visit is None:
+                return f"No pude resolver la visita #{text}. Mandá '0' para volver al menú."
+            # Continuar al flujo normal con el tracking resuelto
+            sess.state = "describing_incident"
+            sess.context["tracking_id"] = visit["tracking_id"]
+            sess.context.pop("pending_list", None)
+            sess.save()
+            risk_pct = int(visit["p_fallo"] * 100)
+            risk = "🟢" if risk_pct < 30 else ("🟡" if risk_pct < 50 else "🔴")
+            return (
+                f"Visita: {visit['title']}\n"
+                f"  {visit['comuna']} — Window {visit['window_end'][:5]}\n"
+                f"  Riesgo: {risk} {risk_pct}%\n\n"
+                "🤖 Contame qué pasó (con tus palabras) y la IA detecta el motivo.\n"
+                "Mandá '0' si preferís elegir de una lista, o 'menu' para cancelar."
+            )
+
     visit = _visit_by_tracking(text.upper().strip())
     if visit is None:
-        return f"No encuentro {text}. Pegá el tracking_id completo (ej TRK0600009) o '0' para cancelar."
+        return f"No encuentro '{text}'. Elegí un número de la lista (1-9) o '0' para cancelar."
     sess.state = "describing_incident"
     sess.context["tracking_id"] = visit["tracking_id"]
     sess.save()
