@@ -164,4 +164,7 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     # CR-012 T0.3: alert_dispatch_log + supervisor_phone_e164 en empresas.
     # Escrita bifurcada (sqlite + sqlserver) → _wrap_quiet la ejecuta en ambos.
     ("023_alert_dispatch_phones",     _wrap_quiet("fpoc_loader.migrate_alert_dispatch")),
+    # CR-013: copiloto_decisions — feedback del operador sobre sugerencias IA.
+    # Escrita bifurcada (sqlite + sqlserver) → _wrap_quiet la ejecuta en ambos.
+    ("024_copiloto_decisions",        _wrap_quiet("fpoc_loader.migrate_copiloto_decisions")),
 ]

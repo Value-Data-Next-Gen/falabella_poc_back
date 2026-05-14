@@ -38,3 +38,4 @@ data/
 !MANUAL_USUARIO.pdf
 MODELO.log
 PIPELINE.log
+*.log

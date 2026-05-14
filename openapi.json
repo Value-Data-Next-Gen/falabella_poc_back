@@ -8764,6 +8764,98 @@
         }
       }
     },
+    "/api/copiloto/decisions": {
+      "post": {
+        "tags": [
+          "copiloto"
+        ],
+        "summary": "Log Decision",
+        "operationId": "log_decision_api_copiloto_decisions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopilotoDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CopilotoDecisionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/whatsapp/escalate-supervisor": {
+      "post": {
+        "tags": [
+          "whatsapp-escalation"
+        ],
+        "summary": "Escalate Supervisor",
+        "operationId": "escalate_supervisor_api_whatsapp_escalate_supervisor_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalateSupervisorIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscalateSupervisorOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/health": {
       "get": {
         "tags": [
@@ -11817,6 +11909,75 @@
         "type": "object",
         "title": "ContactoUpdate"
       },
+      "CopilotoDecisionIn": {
+        "properties": {
+          "suggestion_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Suggestion Id"
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "escalate_supervisor",
+              "retry_driver_alert",
+              "review_visits",
+              "mark_incident",
+              "ignore"
+            ],
+            "title": "Intent"
+          },
+          "tracking_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Id"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
+          }
+        },
+        "type": "object",
+        "required": [
+          "suggestion_id",
+          "intent"
+        ],
+        "title": "CopilotoDecisionIn"
+      },
+      "CopilotoDecisionOut": {
+        "properties": {
+          "decision_id": {
+            "type": "integer",
+            "title": "Decision Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision_id",
+          "created_at"
+        ],
+        "title": "CopilotoDecisionOut"
+      },
       "DayClient": {
         "properties": {
           "tracking_id": {
@@ -14451,6 +14612,45 @@
           "uploaded_at"
         ],
         "title": "EntityDocOut"
+      },
+      "EscalateSupervisorIn": {
+        "properties": {
+          "tracking_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Tracking Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tracking_id"
+        ],
+        "title": "EscalateSupervisorIn"
+      },
+      "EscalateSupervisorOut": {
+        "properties": {
+          "dispatch_id": {
+            "type": "integer",
+            "title": "Dispatch Id"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Sent At"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dispatch_id",
+          "sent_at",
+          "dry_run"
+        ],
+        "title": "EscalateSupervisorOut"
       },
       "ExtendDayResponse": {
         "properties": {
