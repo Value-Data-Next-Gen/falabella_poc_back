@@ -721,7 +721,25 @@ async def webhook_inbound(
     # Si nada matcheó y el número ya estaba registrado, ack genérico
     if reply is None and identity.get("is_known"):
         reply = "Recibí tu mensaje. Escribí 'menu' para empezar o 'help' para comandos."
-    return _twiml(reply)
+
+    # WhatsApp Business Senders en Twilio NO aceptan TwiML inline para
+    # responder al inbound (a diferencia del sandbox). Hay que mandar el
+    # reply via outbound API. Solo respondemos TwiML vacío (200 OK) para
+    # acusar recibo a Twilio.
+    if reply:
+        try:
+            from routers.notifications import send_whatsapp
+            send_whatsapp(
+                body=reply,
+                targets=[(identity.get("user_id"), from_number)],
+                subject="Respuesta agente",
+                triggered_by="agent_reply",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[twilio_inbound] reply via outbound API falló: {e}")
+            # Fallback a TwiML por las dudas — en sandbox sí funciona
+            return _twiml(reply)
+    return _twiml(None)
 
 
 @router.get("/inbound/test")
