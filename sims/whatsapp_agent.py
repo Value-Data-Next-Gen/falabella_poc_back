@@ -1559,17 +1559,51 @@ def _on_menu_manager(sess: Session, text: str, text_lower: str, identity: dict) 
         sess.save()
         return "Pegá el tracking_id que querés inspeccionar (ej TRK0600009) o '0' para cancelar:"
     if text == "5" or "reportar" in text_lower or "incidente" in text_lower:
-        # Manager también puede reportar como driver. Reusamos awaiting_tracking.
-        sess.state = "awaiting_tracking"
-        # Cargamos un "driver virtual" con el manager para que persistencia funcione
+        # Manager también puede reportar. En vez de pedir tracking_id a mano
+        # (impráctico en WhatsApp), listamos las 9 visitas en mayor riesgo del
+        # scope del manager. Para admin/ops es todo el snapshot; para
+        # transport_manager solo los vehículos de su empresa.
+        from core.state import STATE
+        if STATE.snapshot_df is None:
+            return "El snapshot no está cargado todavía. Probá en unos segundos o mandá 'menu'."
+        df = STATE.snapshot_df
+        role = str(persona.get("role") or "").lower()
+        is_falabella = role in ("falabella_admin", "falabella_ops")
+        if not is_falabella and persona.get("empresa_id") is not None:
+            allowed = set(_vehicle_ids_for_empresa(int(persona["empresa_id"])))
+            df = df[df["vehicle_id"].isin(allowed)]
+        # Solo pendientes en riesgo (alert_valuedata=true o p_fallo >= 0.5)
+        risky = df[(df["status"] == "pending") &
+                   ((df.get("alert_valuedata", False) == True) | (df["p_fallo"] >= 0.5))]
+        # Top 9 ordenadas por p_fallo desc
+        top = risky.sort_values("p_fallo", ascending=False).head(9)
+        if top.empty:
+            return (
+                "✅ No hay visitas en riesgo en tu scope ahora.\n"
+                "Si querés reportar algo de una visita específica, mandá '4' para hablar con coordinador,\n"
+                "o mandá 'menu' para volver."
+            )
+        # Cargamos un "driver virtual" para que persistencia funcione + lista numerada
         sess.context["driver"] = {
             "driver_id": f"MGR-{persona['id']}",
             "name": persona["name"],
             "vehicle_id": None,
             "vehicle_name": persona.get("empresa_nombre", "manager"),
         }
+        sess.context["pending_list"] = [str(r["tracking_id"]) for _, r in top.iterrows()]
+        sess.state = "awaiting_tracking"
         sess.save()
-        return "Decime el tracking_id (ej: TRK0600009) o '0' para cancelar:"
+        lines = ["⚠️ Visitas en mayor riesgo en tu scope:"]
+        for i, (_, r) in enumerate(top.iterrows(), 1):
+            cliente = str(r.get("title") or r.get("vehicle_name") or "—")[:30]
+            comuna = str(r.get("comuna") or "-")
+            we = str(r.get("window_end") or "")[:5]
+            risk_pct = int((r.get("p_fallo") or 0) * 100)
+            risk_emoji = "🔴" if risk_pct >= 50 else "🟡"
+            lines.append(f" {i}️⃣  {risk_emoji} {cliente} · {comuna} · cierra {we} · p={risk_pct}%")
+        lines.append("")
+        lines.append("Elegí el número (1-9) o '0' para cancelar:")
+        return "\n".join(lines)
     # [CR-011] Opciones extra para falabella_ops/admin.
     role = str(persona.get("role") or "").lower()
     is_admin = role == "falabella_admin"
