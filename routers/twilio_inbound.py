@@ -266,7 +266,7 @@ def _cmd_status(tracking_id: str) -> str:
                 """
                 SELECT title, status, current_eta_cl, patente_falsa, planned_date
                 FROM fpoc.simpli_visits
-                WHERE CAST(id AS TEXT) = ?
+                WHERE CAST(id AS VARCHAR(32)) = ?
                 """,
                 (tid,),
             )

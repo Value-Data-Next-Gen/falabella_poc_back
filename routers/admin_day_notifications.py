@@ -419,7 +419,7 @@ def notify_eta_breach(
         cur.execute(
             "SELECT id, title, status, current_eta_cl, patente_falsa, "
             "       address, driver_name, comuna "
-            "FROM fpoc.simpli_visits WHERE CAST(id AS TEXT) = ?",
+            "FROM fpoc.simpli_visits WHERE CAST(id AS VARCHAR(32)) = ?",
             tid,
         )
         v_row = cur.fetchone()

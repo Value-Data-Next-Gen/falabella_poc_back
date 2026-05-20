@@ -296,7 +296,7 @@ def _find_driver_by_id_or_rut(token: str) -> Optional[dict]:
             "FROM fpoc_drivers "
             "WHERE active = 1 AND ("
             "  REPLACE(REPLACE(UPPER(driver_id), '-', ''), '.', '') = ? "
-            "  OR CAST(vehicle_id AS TEXT) = ?"
+            "  OR CAST(vehicle_id AS VARCHAR(32)) = ?"
             ")",
             (t, token.strip()),
         )
@@ -384,7 +384,7 @@ def _visit_by_tracking(tracking_id: str) -> Optional[dict]:
                        patente_falsa, empresa_falsa, driver_name, status,
                        current_eta_cl, ruta_id
                 FROM fpoc_simpli_visits
-                WHERE CAST(id AS TEXT) = ? OR ruta_id = ?
+                WHERE CAST(id AS VARCHAR(32)) = ? OR ruta_id = ?
                 """,
                 (tracking_id, tracking_id),
             )
