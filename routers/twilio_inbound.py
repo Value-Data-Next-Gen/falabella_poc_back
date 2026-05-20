@@ -522,8 +522,57 @@ def _cmd_kpis() -> str:
     )
 
 
-def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
-    """CR-014: activación user-initiated por wa.me link.
+def _first_name(full: Optional[str], fallback: Optional[str]) -> str:
+    """Primer token de un nombre completo. Si vacío, cae a fallback (ProfileName)
+    o a 'tú' como último recurso. Útil para variables {{1}} de templates."""
+    raw = (full or "").strip()
+    if raw:
+        return raw.split()[0]
+    raw = (fallback or "").strip()
+    if raw:
+        return raw.split()[0]
+    return "tú"
+
+
+def _send_activation_template(
+    *,
+    phone: str,
+    first_name: str,
+    user_id: Optional[int],
+    table: str,
+    row_id: str,
+) -> bool:
+    """Envía el template `vd_cuenta_activada` (Content SID configurable por env).
+
+    Devuelve True si el envío salió sin excepción, False en caso contrario.
+    `send_whatsapp` ya hace su propio logging de la entrega/error a través del
+    notifications_log, así que acá solo loggeamos a nivel INFO para correlación.
+    """
+    content_sid = os.environ.get(
+        "TWILIO_CONTENT_SID_CUENTA_ACTIVADA",
+        "HX13bdf3c0eaecfb740ec3f21760790c38",
+    )
+    try:
+        from routers.notifications import send_whatsapp
+        send_whatsapp(
+            content_sid=content_sid,
+            content_variables={"1": first_name},
+            targets=[(user_id, phone)],
+            subject="Cuenta activada",
+            triggered_by="activation",
+        )
+        logger.info(
+            f"[activation] template vd_cuenta_activada enviado a phone={phone} "
+            f"for {table}={row_id}"
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[twilio-inbound] vd_cuenta_activada falló: {e}")
+        return False
+
+
+def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> Optional[str]:
+    """CR-014 / hotfix: activación user-initiated por wa.me link.
 
     Busca el token en fpoc_users / fpoc_drivers / fpoc_empresa_contactos (en ese
     orden de prioridad — un user con login mandando ACTIVAR es más probable que
@@ -537,8 +586,19 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
       - drivers: active=1, notify_whatsapp=1, opted_in_at=CURRENT_TIMESTAMP
       - contactos: active=1, opted_in_at=CURRENT_TIMESTAMP
 
-    El reply se manda freeform porque este inbound es 100% user-initiated (no
-    es reply a un template) → Meta abre la ventana 24h.
+    Reply en caso de MATCH:
+      - El "✅ Cuenta activada" se envía via **template aprobado**
+        `vd_cuenta_activada` (Content SID en env `TWILIO_CONTENT_SID_CUENTA_ACTIVADA`).
+        Esto destraba el error 63112 para senders en warmup (Tier 0) cuyos
+        usuarios nuevos no tienen ventana 24h abierta. Devolvemos `None` para
+        que `webhook_inbound` NO mande otro freeform encima.
+      - Fallback freeform si el template no está approved aún o falla algo en
+        el envío: devolvemos el string viejo y dejamos que el caller lo mande
+        por freeform (puede pegar 63112 pero al menos lo intentamos y la DB
+        ya quedó actualizada).
+
+    Reply en caso de NO MATCH: string freeform tal cual antes. Edge case menor
+    (token inválido + usuario nuevo → 63112), aceptado para POC.
     """
     token_norm = token.strip().upper()
     if not token_norm:
@@ -556,7 +616,7 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
             r = cur.fetchone()
             if r is not None:
                 uid = int(r[0])
-                nombre = str(r[1] or "").strip() or (profile_name or "")
+                display_name = str(r[1] or "").strip()
                 cur.execute(
                     "UPDATE fpoc_users SET phone_e164 = ?, notify_whatsapp = 1, "
                     "activo = 1, activation_used_at = CURRENT_TIMESTAMP "
@@ -565,7 +625,13 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
                 )
                 cn.commit()
                 logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched user_id={uid} phone={phone}")
-                return f"✅ Cuenta activada, {nombre}! Mandá 'menu' para empezar."
+                first = _first_name(display_name, profile_name)
+                if _send_activation_template(
+                    phone=phone, first_name=first, user_id=uid,
+                    table="user_id", row_id=str(uid),
+                ):
+                    return None
+                return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
 
             # 2) drivers
             cur.execute(
@@ -576,7 +642,7 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
             r = cur.fetchone()
             if r is not None:
                 drv_id = str(r[0])
-                nombre = str(r[1] or "").strip() or (profile_name or "")
+                name = str(r[1] or "").strip()
                 cur.execute(
                     "UPDATE fpoc_drivers SET phone_e164 = ?, notify_whatsapp = 1, "
                     "opted_in_at = CURRENT_TIMESTAMP, active = 1, "
@@ -586,7 +652,13 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
                 )
                 cn.commit()
                 logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched driver_id={drv_id} phone={phone}")
-                return f"✅ Cuenta activada, {nombre}! Mandá 'menu' para empezar."
+                first = _first_name(name, profile_name)
+                if _send_activation_template(
+                    phone=phone, first_name=first, user_id=None,
+                    table="driver_id", row_id=drv_id,
+                ):
+                    return None
+                return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
 
             # 3) empresa_contactos
             cur.execute(
@@ -597,7 +669,7 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
             r = cur.fetchone()
             if r is not None:
                 cid = int(r[0])
-                nombre = str(r[1] or "").strip() or (profile_name or "")
+                nombre = str(r[1] or "").strip()
                 cur.execute(
                     "UPDATE fpoc_empresa_contactos SET phone_e164 = ?, "
                     "opted_in_at = CURRENT_TIMESTAMP, active = 1, "
@@ -608,7 +680,13 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
                 )
                 cn.commit()
                 logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched contact_id={cid} phone={phone}")
-                return f"✅ Cuenta activada, {nombre}! Mandá 'menu' para empezar."
+                first = _first_name(nombre, profile_name)
+                if _send_activation_template(
+                    phone=phone, first_name=first, user_id=None,
+                    table="contact_id", row_id=str(cid),
+                ):
+                    return None
+                return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[twilio-inbound] ACTIVAR {token_norm} falló: {e}")
         return "Tuvimos un problema activando tu cuenta. Pedile al admin un nuevo link."
