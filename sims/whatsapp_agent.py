@@ -308,11 +308,33 @@ def _find_driver_by_id_or_rut(token: str) -> Optional[dict]:
 
 
 def _visits_for_vehicle(vehicle_id: int) -> list[dict]:
-    """Visitas del día actual del snapshot, ordenadas por order asc."""
+    """Visitas del día actual del vehículo (fuente: fpoc.simpli_visits).
+
+    Migrado en CR sync-bot-data: antes leía `STATE.snapshot_df` (sintético ML),
+    ahora lee la tabla real para que los totales del bot coincidan con
+    `_driver_summary` y con el dashboard de seguimiento.
+
+    Si la DB falla, degradamos a snapshot_df para no romper el bot — pero
+    queda WARN para diagnóstico.
+    """
+    if vehicle_id is None:
+        return []
+    from sims._visits_db import visits_for_vehicle_today
+    visits = visits_for_vehicle_today(int(vehicle_id))
+    if visits:
+        return visits
+    # Fallback defensivo a snapshot_df solo si DB devolvió vacío genuino o
+    # cayó. Mantenemos el comportamiento previo para no degradar feature ML.
     from core.state import STATE
     if STATE.snapshot_df is None:
         return []
     df = STATE.snapshot_df[STATE.snapshot_df["vehicle_id"] == vehicle_id]
+    if df.empty:
+        return []
+    logger.warning(
+        f"[wa-agent] _visits_for_vehicle({vehicle_id}): DB devolvió 0 hoy, "
+        f"fallback a snapshot_df ({len(df)} filas)"
+    )
     df = df.sort_values("order")
     return [
         {
@@ -816,22 +838,35 @@ def _render_route(driver: dict) -> str:
         return "No tenés vehículo asignado para hoy."
     visits = _visits_for_vehicle(driver["vehicle_id"])
     if not visits:
-        return "No tenés visitas asignadas en el snapshot actual."
+        return "No tenés visitas asignadas para hoy."
     pending = [v for v in visits if v["status"] == "pending"]
     completed = [v for v in visits if v["status"] == "completed"]
-    alerts = [v for v in pending if v["alert_valuedata"]]
-    head = (
-        f"Tu ruta hoy ({driver['vehicle_name']}):\n"
-        f"• Total: {len(visits)}\n"
-        f"• Completadas: {len(completed)}\n"
-        f"• Pendientes: {len(pending)}\n"
-        f"• Alertas anticipadas: {len(alerts)}\n"
-    )
+    failed = [v for v in visits if v["status"] == "failed"]
+    # CR sync-bot-data: la fuente DB no tiene `alert_valuedata`/`p_fallo` (es
+    # feature exclusiva del simulador ML). Filtramos solo si el campo trae
+    # algo truthy — con DB todos son False y la sección de "En riesgo" no
+    # se muestra (consistente con `_driver_summary`).
+    alerts = [v for v in pending if v.get("alert_valuedata")]
+    lines = [
+        f"Tu ruta hoy ({driver['vehicle_name']}):",
+        f"• Total: {len(visits)}",
+        f"• Completadas: {len(completed)}",
+        f"• Pendientes: {len(pending)}",
+    ]
+    if failed:
+        lines.append(f"• Con problema: {len(failed)}")
     if alerts:
-        head += "\n⚠️ En riesgo:\n"
+        lines.append(f"• Alertas anticipadas: {len(alerts)}")
+        lines.append("")
+        lines.append("⚠️ En riesgo:")
         for v in alerts[:5]:
-            head += f"  · {v['tracking_id']} — {v['title'][:30]} ({int(v['p_fallo']*100)}%)\n"
-    return head + "\nEscribí '3' para reportar una visita, '2' para la próxima, o 'menu'."
+            p = v.get("p_fallo") or 0.0
+            lines.append(
+                f"  · {v['tracking_id']} — {v['title'][:30]} ({int(p*100)}%)"
+            )
+    lines.append("")
+    lines.append("Escribí '3' para reportar una visita, '2' para la próxima, o 'menu'.")
+    return "\n".join(lines)
 
 
 def _render_next_visit(driver: dict) -> str:
@@ -841,16 +876,24 @@ def _render_next_visit(driver: dict) -> str:
     if not pending:
         return "No tenés visitas pendientes 🎉. Mandá 'menu' para volver."
     v = pending[0]
-    risk = "🟢" if v["p_fallo"] < 0.3 else ("🟡" if v["p_fallo"] < 0.5 else "🔴")
-    return (
-        f"Próxima visita:\n"
-        f"  {v['tracking_id']} — {v['title']}\n"
-        f"  Comuna: {v['comuna']}\n"
-        f"  ETA: {v['eta'][:5]}  ·  Window end: {v['window_end'][:5]}\n"
-        f"  Riesgo: {risk} {int(v['p_fallo']*100)}%\n\n"
-        "¿Querés reportar algo de esta visita?\n"
-        "  Mandá 's' para sí, '2' para ver el resumen de la ruta, o 'menu'."
-    )
+    # CR sync-bot-data: p_fallo es None/0 cuando viene de DB. Solo mostramos
+    # el bloque de Riesgo si hay un valor real.
+    p = v.get("p_fallo")
+    eta = (v.get("eta") or "")[:5] or "—"
+    window_end = (v.get("window_end") or "")[:5] or "—"
+    lines = [
+        "Próxima visita:",
+        f"  {v['tracking_id']} — {v['title']}",
+        f"  Comuna: {v['comuna']}",
+        f"  ETA: {eta}  ·  Window end: {window_end}",
+    ]
+    if p:
+        risk = "🟢" if p < 0.3 else ("🟡" if p < 0.5 else "🔴")
+        lines.append(f"  Riesgo: {risk} {int(p*100)}%")
+    lines.append("")
+    lines.append("¿Querés reportar algo de esta visita?")
+    lines.append("  Mandá 's' para sí, '2' para ver el resumen de la ruta, o 'menu'.")
+    return "\n".join(lines)
 
 
 def _render_motivo_menu(visit: dict) -> str:

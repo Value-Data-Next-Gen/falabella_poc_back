@@ -249,22 +249,62 @@ _RE_KPIS = re.compile(r"^\s*kpis?\s*(hoy)?\s*$", re.IGNORECASE)
 
 
 def _cmd_status(tracking_id: str) -> str:
-    from core.state import STATE
-    if STATE.snapshot_df is None:
-        return "Backend no listo."
-    df = STATE.snapshot_df
-    matching = df[df["tracking_id"] == tracking_id]
-    if matching.empty:
-        return f"No encuentro {tracking_id}."
-    row = matching.iloc[0]
+    """Status de una visita por tracking_id (=fpoc.simpli_visits.id como str).
+
+    CR sync-bot-data: migrado de STATE.snapshot_df a fpoc.simpli_visits para
+    que el bot muestre datos consistentes con el dashboard. Sin alarmas ML
+    (`p_fallo` / `window_end`) — esos solo existen en el simulador ML.
+    """
+    tid = (tracking_id or "").strip()
+    if not tid:
+        return "Necesito un tracking_id para buscar."
+    try:
+        from core.db import get_conn as _gc
+        with _gc() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """
+                SELECT title, status, current_eta_cl, patente_falsa, planned_date
+                FROM fpoc.simpli_visits
+                WHERE CAST(id AS TEXT) = ?
+                """,
+                (tid,),
+            )
+            r = cur.fetchone()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[wa] _cmd_status({tid}) DB fail: {e}")
+        # Fallback defensivo: snapshot_df si lo hay (legacy TRK* sintéticos).
+        from core.state import STATE
+        if STATE.snapshot_df is None:
+            return f"No pude consultar {tid} ahora mismo."
+        df = STATE.snapshot_df
+        matching = df[df["tracking_id"] == tid]
+        if matching.empty:
+            return f"No encuentro {tid}."
+        row = matching.iloc[0]
+        return (
+            f"Visita {tid}\n"
+            f"Cliente: {row['title']}\n"
+            f"Vehículo: {row['vehicle_name']}\n"
+            f"Estado: {row['status']}\n"
+            f"ETA: {row['estimated_time_arrival']}"
+        )
+    if r is None:
+        return f"No encuentro {tid}."
+    title = r[0] or "—"
+    status = r[1] or "pending"
+    eta_raw = str(r[2]) if r[2] is not None else "—"
+    eta = eta_raw[:16] if eta_raw and eta_raw != "—" else "—"
+    patente = r[3]
+    vehicle_name = f"PAT-{patente}" if patente is not None else "—"
+    pd_str = str(r[4]) if r[4] is not None else "—"
     return (
-        f"Visita {tracking_id}\n"
-        f"Cliente: {row['title']}\n"
-        f"Vehículo: {row['vehicle_name']}\n"
-        f"Estado: {row['status']}\n"
-        f"ETA: {row['estimated_time_arrival']}\n"
-        f"Window end: {row['window_end']}\n"
-        f"Riesgo: {float(row['p_fallo'])*100:.0f}%"
+        f"Visita {tid}\n"
+        f"Cliente: {title}\n"
+        f"Vehículo: {vehicle_name}\n"
+        f"Estado: {status}\n"
+        f"ETA: {eta}\n"
+        f"Fecha plan: {pd_str}"
     )
 
 
@@ -531,19 +571,36 @@ def _day_not_active_reply() -> str:
 
 
 def _cmd_kpis() -> str:
-    from core.state import STATE
-    if STATE.snapshot_df is None:
-        return "Backend no listo."
-    df = STATE.snapshot_df
-    pending = int((df["status"] == "pending").sum())
-    alerts = int(df["alert_valuedata"].sum())
-    completed = int((df["status"] == "completed").sum())
+    """KPIs globales del día leídos de fpoc.simpli_visits.
+
+    CR sync-bot-data: migrado de STATE.snapshot_df para coherencia con el
+    dashboard. Se eliminan "Alertas anticipadas" (no existen en la fuente DB —
+    son una feature exclusiva del simulador ML). Se agrega "Con problema"
+    (status='failed') que sí está en la fuente real.
+    """
+    from sims._visits_db import kpis_today
+    from datetime import date as _date_cls
+    today = _date_cls.today().isoformat()
+    k = kpis_today()
+    if k["total"] == 0:
+        # Fallback defensivo a snapshot_df si DB no tiene plan_date=today
+        # (puede pasar en QA local con test data antigua).
+        from core.state import STATE
+        if STATE.snapshot_df is not None and len(STATE.snapshot_df) > 0:
+            df = STATE.snapshot_df
+            return (
+                f"KPIs hoy ({STATE.today.isoformat() if STATE.today else today}):\n"
+                f"• Visitas: {len(df)}\n"
+                f"• Pendientes: {int((df['status'] == 'pending').sum())}\n"
+                f"• Completadas: {int((df['status'] == 'completed').sum())}\n"
+                "_(fuente: simulador — sin datos en DB para hoy)_"
+            )
     return (
-        f"KPIs hoy ({STATE.today.isoformat() if STATE.today else '?'}):\n"
-        f"• Visitas: {len(df)}\n"
-        f"• Pendientes: {pending}\n"
-        f"• Completadas: {completed}\n"
-        f"• Alertas anticipadas: {alerts}"
+        f"KPIs hoy ({today}):\n"
+        f"• Visitas: {k['total']}\n"
+        f"• Pendientes: {k['pending']}\n"
+        f"• Completadas: {k['completed']}\n"
+        f"• Con problema: {k['failed']}"
     )
 
 
