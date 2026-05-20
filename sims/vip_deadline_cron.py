@@ -22,7 +22,7 @@ from typing import Optional
 
 from loguru import logger
 
-from routers.comments import _visit_region, _resolve_alert_targets
+from routers.comments import _visit_region, _resolve_alert_targets, _sanitize_template_var
 from core.db import get_conn
 from core.events import EVENTS
 from core.state import STATE
@@ -251,13 +251,44 @@ def check_vip_deadlines() -> dict:
                         visit_region=visit_region,
                     )
                     if targets:
-                        send_whatsapp(
-                            body=body,
-                            targets=targets,
-                            subject=f"VIP deadline {vip['deadline_time']} · {cliente}",
-                            tracking_id=tid,
-                            triggered_by="vip_deadline",
+                        subject_line = f"VIP deadline {vip['deadline_time']} · {cliente}"
+                        # Template Meta-approved vd_vip_deadline_v2 — 6 vars.
+                        # Fallback freeform (legacy) si no hay content_sid o el
+                        # send levanta excepción.
+                        content_sid = os.environ.get(
+                            "TWILIO_CONTENT_SID_VIP_DEADLINE",
+                            "HX679d07e0eb57dec69f27ef169adee32e",
                         )
+                        content_variables = {
+                            "1": _sanitize_template_var(cliente) or "—",
+                            "2": _sanitize_template_var(vip['deadline_time']) or "—",
+                            "3": _sanitize_template_var(mins_left) or "0",
+                            "4": _sanitize_template_var(f"{plate or '—'} ({vehicle_name or '—'})") or "—",
+                            "5": _sanitize_template_var(eta) or "—",
+                            "6": _sanitize_template_var(f"{slack:+.0f}") or "0",
+                        }
+                        used_template = False
+                        if content_sid:
+                            try:
+                                send_whatsapp(
+                                    content_sid=content_sid,
+                                    content_variables=content_variables,
+                                    targets=targets,
+                                    subject=subject_line,
+                                    tracking_id=tid,
+                                    triggered_by="vip_deadline",
+                                )
+                                used_template = True
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(f"[vip-deadline] template vd_vip_deadline_v2 falló, fallback freeform: {e}")
+                        if not used_template:
+                            send_whatsapp(
+                                body=body,
+                                targets=targets,
+                                subject=subject_line,
+                                tracking_id=tid,
+                                triggered_by="vip_deadline",
+                            )
                         # backfill de contact_id (best-effort)
                         try:
                             from routers.comments import _backfill_contact_id_in_log

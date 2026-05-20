@@ -526,23 +526,74 @@ class AppState:
                     self._autonotify_last_sent[phone] = now_wall
                 targets = filtered_targets
 
-                content_sid = _os.environ.get("TWILIO_CONTENT_SID", "")
                 vip_tag = " VIP" if vip else ""
-                if content_sid:
-                    # Modo template: mapeo de variables {{1}}={fecha} {{2}}={hora}.
-                    # Ajustar este mapping al template real si cambia.
-                    send_whatsapp(
-                        content_sid=content_sid,
-                        content_variables={
-                            "1": n["window_end"][:10] if n["window_end"] else "hoy",
-                            "2": n["eta"][:5] if n["eta"] else "",
-                        },
-                        targets=targets,
-                        subject=f"Alerta{vip_tag} {n['title']}",
-                        tracking_id=n["tracking_id"],
-                        triggered_by="vip" if vip else "auto_threshold",
-                    )
-                else:
+                # Template Meta-approved vd_alerta_motivo_v2 — 6 vars
+                # (severity, motivo, vehiculo, conductor, cliente, comentario).
+                # Mapeo desde el notif ML: severity fija HIGH para auto_threshold,
+                # motivo = "ETA EN RIESGO", comentario = riesgo + slack.
+                # Mantiene compat con TWILIO_CONTENT_SID viejo (2 vars) si no
+                # está el nuevo override + sender warmup todavía corriendo.
+                content_sid_new = _os.environ.get(
+                    "TWILIO_CONTENT_SID_ALERTA_MOTIVO",
+                    "HX6821f9cad06ce1980bee5ad410006e43",
+                )
+                content_sid_legacy = _os.environ.get("TWILIO_CONTENT_SID", "")
+                # Derivar driver_name best-effort desde STATE.drivers via vehicle_id
+                driver_name = "—"
+                try:
+                    vid = int(n.get("vehicle_id") or 0)
+                    drv = getattr(self, "drivers", None)
+                    if drv:
+                        d = drv.get(vid) if hasattr(drv, "get") else None
+                        if d:
+                            driver_name = str(getattr(d, "name", None) or (d.get("name") if isinstance(d, dict) else None) or "—")
+                except Exception:  # noqa: BLE001
+                    driver_name = "—"
+
+                from routers.comments import _sanitize_template_var as _sanvar  # local import
+
+                used_template = False
+                if content_sid_new:
+                    try:
+                        send_whatsapp(
+                            content_sid=content_sid_new,
+                            content_variables={
+                                "1": "HIGH",
+                                "2": _sanvar("ETA EN RIESGO"),
+                                "3": _sanvar(n.get("vehicle_name")) or "—",
+                                "4": _sanvar(driver_name) or "—",
+                                "5": _sanvar(n.get("title")) or "—",
+                                "6": _sanvar(
+                                    f"Riesgo {n['p_fallo']*100:.0f}% · Slack {n['slack_min']:.0f}min",
+                                    max_len=200,
+                                ),
+                            },
+                            targets=targets,
+                            subject=f"Alerta{vip_tag} {n['title']}",
+                            tracking_id=n["tracking_id"],
+                            triggered_by="vip" if vip else "auto_threshold",
+                        )
+                        used_template = True
+                    except Exception as _e:  # noqa: BLE001
+                        logger.warning(f"[auto-notify] template vd_alerta_motivo_v2 falló: {_e}")
+                if not used_template and content_sid_legacy:
+                    # Modo template legacy: mapeo de variables {{1}}={fecha} {{2}}={hora}.
+                    try:
+                        send_whatsapp(
+                            content_sid=content_sid_legacy,
+                            content_variables={
+                                "1": n["window_end"][:10] if n["window_end"] else "hoy",
+                                "2": n["eta"][:5] if n["eta"] else "",
+                            },
+                            targets=targets,
+                            subject=f"Alerta{vip_tag} {n['title']}",
+                            tracking_id=n["tracking_id"],
+                            triggered_by="vip" if vip else "auto_threshold",
+                        )
+                        used_template = True
+                    except Exception as _e:  # noqa: BLE001
+                        logger.warning(f"[auto-notify] template legacy falló: {_e}")
+                if not used_template:
                     body = (
                         f"[Falabella ValueData]{vip_tag} Alerta anticipada\n"
                         f"Cliente: {n['title']}\n"

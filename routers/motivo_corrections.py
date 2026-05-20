@@ -111,6 +111,8 @@ def _build_driver_correction_body(
 
 def _send_to_driver_if_optedin(
     *, driver_id: Optional[str], tracking_id: str, body: str,
+    motivo_reportado: Optional[str] = None,
+    motivo_sugerido: Optional[str] = None,
 ) -> Optional[str]:
     """Devuelve ISO timestamp si se intentó enviar (queued/dry_run/sent), None si no.
     Toda la info se loguea en `fpoc_notifications_log` con triggered_by='motivo_correction'."""
@@ -132,15 +134,40 @@ def _send_to_driver_if_optedin(
             return None
         if not (bool(r.notify_whatsapp) and r.opted_in_at and r.phone_e164):
             return None
-        # Driver válido: enviar (Twilio decide dry_run / send)
+        # Driver válido: enviar (Twilio decide dry_run / send).
+        # Template Meta-approved vd_revision_ia_v2 (2 vars: motivo_reportado, motivo_sugerido).
+        # Fallback freeform si el template falla — body legacy preserva razonamiento.
         from routers.notifications import send_whatsapp
-        send_whatsapp(
-            body=body,
-            targets=[(None, r.phone_e164)],
-            subject=f"Revisión IA · {tracking_id}",
-            tracking_id=tracking_id,
-            triggered_by="motivo_correction",
+        from routers.comments import _sanitize_template_var as _sanvar
+        content_sid = os.environ.get(
+            "TWILIO_CONTENT_SID_REVISION_IA",
+            "HXd49ad45c3dc35c4aa131ebcf3ab8522e",
         )
+        used_template = False
+        if content_sid:
+            try:
+                send_whatsapp(
+                    content_sid=content_sid,
+                    content_variables={
+                        "1": _sanvar(motivo_reportado) or "—",
+                        "2": _sanvar(motivo_sugerido) or "—",
+                    },
+                    targets=[(None, r.phone_e164)],
+                    subject=f"Revisión IA · {tracking_id}",
+                    tracking_id=tracking_id,
+                    triggered_by="motivo_correction",
+                )
+                used_template = True
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[motivo-corr] template vd_revision_ia_v2 falló (driver), fallback freeform: {e}")
+        if not used_template:
+            send_whatsapp(
+                body=body,
+                targets=[(None, r.phone_e164)],
+                subject=f"Revisión IA · {tracking_id}",
+                tracking_id=tracking_id,
+                triggered_by="motivo_correction",
+            )
         # Asociar driver_id en log (best-effort)
         try:
             with get_conn() as cn2:
@@ -251,6 +278,7 @@ def maybe_create_correction_from_comment(
         )
         ts = _send_to_driver_if_optedin(
             driver_id=driver_id, tracking_id=tracking_id, body=body,
+            motivo_reportado=motivo_reportado, motivo_sugerido=motivo_sugerido,
         )
         if ts:
             try:
@@ -275,23 +303,50 @@ def maybe_create_correction_from_comment(
                 motivo=motivo_sugerido, visit_region=visit_region,
             )
             if targets:
-                manager_body = (
-                    "🤖 *Revisión IA* — Falabella ValueData\n"
-                    f"*Tracking:* {tracking_id}\n"
-                    f"*Reportado:* {motivo_reportado}\n"
-                    f"*Sugerido:* {motivo_sugerido} (confianza {confianza})\n"
-                    f"*Razonamiento:* {razonamiento}\n\n"
-                    f"*Cliente:* {meta.get('title') or '—'}\n"
-                    f"*Vehículo:* {meta.get('vehicle_name') or '—'}\n"
-                    f"*Reportado por:* {user_display_name}\n\n"
-                    "Revisar en panel: Seguimiento IA → Correcciones de motivo."
+                manager_subject = f"Revisión IA · {motivo_reportado} → {motivo_sugerido}"
+                # Template Meta-approved vd_revision_ia_v2 (2 vars).
+                # El template body no distingue audiencia: las mismas 2 vars
+                # sirven para driver y para manager.
+                from routers.comments import _sanitize_template_var as _sanvar
+                content_sid = os.environ.get(
+                    "TWILIO_CONTENT_SID_REVISION_IA",
+                    "HXd49ad45c3dc35c4aa131ebcf3ab8522e",
                 )
-                send_whatsapp(
-                    body=manager_body, targets=targets,
-                    subject=f"Revisión IA · {motivo_reportado} → {motivo_sugerido}",
-                    tracking_id=tracking_id,
-                    triggered_by="motivo_correction",
-                )
+                used_template = False
+                if content_sid:
+                    try:
+                        send_whatsapp(
+                            content_sid=content_sid,
+                            content_variables={
+                                "1": _sanvar(motivo_reportado) or "—",
+                                "2": _sanvar(motivo_sugerido) or "—",
+                            },
+                            targets=targets,
+                            subject=manager_subject,
+                            tracking_id=tracking_id,
+                            triggered_by="motivo_correction",
+                        )
+                        used_template = True
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"[motivo-corr] template vd_revision_ia_v2 falló (manager), fallback freeform: {e}")
+                if not used_template:
+                    manager_body = (
+                        "🤖 *Revisión IA* — Falabella ValueData\n"
+                        f"*Tracking:* {tracking_id}\n"
+                        f"*Reportado:* {motivo_reportado}\n"
+                        f"*Sugerido:* {motivo_sugerido} (confianza {confianza})\n"
+                        f"*Razonamiento:* {razonamiento}\n\n"
+                        f"*Cliente:* {meta.get('title') or '—'}\n"
+                        f"*Vehículo:* {meta.get('vehicle_name') or '—'}\n"
+                        f"*Reportado por:* {user_display_name}\n\n"
+                        "Revisar en panel: Seguimiento IA → Correcciones de motivo."
+                    )
+                    send_whatsapp(
+                        body=manager_body, targets=targets,
+                        subject=manager_subject,
+                        tracking_id=tracking_id,
+                        triggered_by="motivo_correction",
+                    )
                 _backfill_contact_id_in_log(
                     tracking_id=tracking_id,
                     contact_ids_by_phone=contact_ids_by_phone,
@@ -491,6 +546,7 @@ def renotify_driver(correction_id: int, user: CurrentUser = Depends(current_user
     if os.environ.get("ENABLE_AUTO_NOTIFY", "false").lower() == "true":
         ts = _send_to_driver_if_optedin(
             driver_id=r.driver_id, tracking_id=r.tracking_id, body=body,
+            motivo_reportado=r.motivo_reportado, motivo_sugerido=r.motivo_sugerido,
         )
     if ts:
         with get_conn() as cn:

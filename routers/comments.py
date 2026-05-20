@@ -36,6 +36,25 @@ from core.state import STATE
 router = APIRouter(tags=["comments"])
 
 
+def _sanitize_template_var(value, max_len: int = 120) -> str:
+    """Normaliza un valor para usarlo como variable de un template de WhatsApp
+    aprobado por Meta. Meta valida (entre otras cosas) que las vars NO tengan
+    newlines, tabs, runs largos de whitespace ni excedan el límite de chars.
+    También recortamos backticks y caracteres de control bajos para evitar
+    triggers de detectores de spam/links.
+    """
+    if value is None:
+        return ""
+    s = str(value)
+    # Reemplazo de control chars (newlines/tabs) y collapse de whitespace.
+    s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = " ".join(s.split())
+    # Recortar a max_len conservando string limpia.
+    if len(s) > max_len:
+        s = s[: max_len - 1].rstrip() + "…"
+    return s
+
+
 # Catálogo alineado con el del cliente (Excel "Motivo no entrega HD", 11 motivos)
 # + 3 motivos internos extra: NO DESPACHA A LOCALIDAD, RIESGO FRAUDE, DETENCION URGENTE.
 MOTIVOS_CATALOGO: list[str] = [
@@ -942,15 +961,45 @@ def dispatch_comment_alert(
             )
             if targets:
                 subj_pref = (extra_subject + " · ") if extra_subject else ""
-                body = _build_alert_whatsapp_body(
-                    severity=severity, motivo=motivo, comentario=comentario,
-                    user_display_name=user_display_name, tracking_id=tracking_id, meta=meta,
+                subject_line = f"{subj_pref}Motivo {motivo} · {meta.get('vehicle_name','')} · {meta.get('plate') or ''}".strip()
+                # Template Meta-approved vd_alerta_motivo_v2 — 6 vars.
+                # Fallback freeform (legacy) si content_sid no está disponible o
+                # el send levanta excepción (preservamos el body para troubleshooting).
+                content_sid = os.environ.get(
+                    "TWILIO_CONTENT_SID_ALERTA_MOTIVO",
+                    "HX6821f9cad06ce1980bee5ad410006e43",
                 )
-                send_whatsapp(
-                    body=body, targets=targets,
-                    subject=f"{subj_pref}Motivo {motivo} · {meta.get('vehicle_name','')} · {meta.get('plate') or ''}".strip(),
-                    tracking_id=tracking_id, triggered_by=triggered_by,
-                )
+                content_variables = {
+                    "1": _sanitize_template_var(severity).upper() or "MEDIUM",
+                    "2": _sanitize_template_var(motivo) or "—",
+                    "3": _sanitize_template_var(meta.get("vehicle_name")) or "—",
+                    "4": _sanitize_template_var(meta.get("driver_name")) or "—",
+                    "5": _sanitize_template_var(meta.get("title")) or "—",
+                    "6": _sanitize_template_var(comentario, max_len=200) or "—",
+                }
+                used_template = False
+                if content_sid:
+                    try:
+                        send_whatsapp(
+                            content_sid=content_sid,
+                            content_variables=content_variables,
+                            targets=targets,
+                            subject=subject_line,
+                            tracking_id=tracking_id, triggered_by=triggered_by,
+                        )
+                        used_template = True
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"[comments] template vd_alerta_motivo_v2 falló, fallback freeform: {e}")
+                if not used_template:
+                    body = _build_alert_whatsapp_body(
+                        severity=severity, motivo=motivo, comentario=comentario,
+                        user_display_name=user_display_name, tracking_id=tracking_id, meta=meta,
+                    )
+                    send_whatsapp(
+                        body=body, targets=targets,
+                        subject=subject_line,
+                        tracking_id=tracking_id, triggered_by=triggered_by,
+                    )
                 _backfill_contact_id_in_log(
                     tracking_id=tracking_id, contact_ids_by_phone=contact_ids_by_phone,
                 )
@@ -1061,20 +1110,49 @@ def _persist_and_dispatch_comment(
                     visit_region=visit_region,
                 )
                 if targets:
-                    body = _build_alert_whatsapp_body(
-                        severity=severity,
-                        motivo=motivo,
-                        comentario=comentario,
-                        user_display_name=user_display_name,
-                        tracking_id=tracking_id,
-                        meta=meta,
+                    subject_line = f"Motivo {motivo} · {meta.get('vehicle_name','')} · {meta.get('plate') or ''}".strip()
+                    # Template Meta-approved vd_alerta_motivo_v2 — 6 vars.
+                    content_sid = os.environ.get(
+                        "TWILIO_CONTENT_SID_ALERTA_MOTIVO",
+                        "HX6821f9cad06ce1980bee5ad410006e43",
                     )
-                    send_whatsapp(
-                        body=body, targets=targets,
-                        subject=f"Motivo {motivo} · {meta.get('vehicle_name','')} · {meta.get('plate') or ''}".strip(),
-                        tracking_id=tracking_id,
-                        triggered_by="comment_alert",
-                    )
+                    content_variables = {
+                        "1": _sanitize_template_var(severity).upper() or "MEDIUM",
+                        "2": _sanitize_template_var(motivo) or "—",
+                        "3": _sanitize_template_var(meta.get("vehicle_name")) or "—",
+                        "4": _sanitize_template_var(meta.get("driver_name")) or "—",
+                        "5": _sanitize_template_var(meta.get("title")) or "—",
+                        "6": _sanitize_template_var(comentario, max_len=200) or "—",
+                    }
+                    used_template = False
+                    if content_sid:
+                        try:
+                            send_whatsapp(
+                                content_sid=content_sid,
+                                content_variables=content_variables,
+                                targets=targets,
+                                subject=subject_line,
+                                tracking_id=tracking_id,
+                                triggered_by="comment_alert",
+                            )
+                            used_template = True
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(f"[comments] template vd_alerta_motivo_v2 falló, fallback freeform: {e}")
+                    if not used_template:
+                        body = _build_alert_whatsapp_body(
+                            severity=severity,
+                            motivo=motivo,
+                            comentario=comentario,
+                            user_display_name=user_display_name,
+                            tracking_id=tracking_id,
+                            meta=meta,
+                        )
+                        send_whatsapp(
+                            body=body, targets=targets,
+                            subject=subject_line,
+                            tracking_id=tracking_id,
+                            triggered_by="comment_alert",
+                        )
                     # Patch posterior: send_whatsapp loguea con user_id=None para
                     # los contactos. Actualizamos las filas más recientes para
                     # poblar contact_id donde aplique.

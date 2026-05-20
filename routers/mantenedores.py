@@ -14,6 +14,7 @@ Endpoints (prefijo /api/admin):
 from __future__ import annotations
 
 import io
+import os
 from datetime import date
 from typing import Any, Literal, Optional
 
@@ -478,12 +479,38 @@ def whatsapp_invite(
             f"Si fue un error, ignorá y te damos de baja."
         )
 
-    res = send_whatsapp(
-        body=body,
-        targets=[(req.user_id, phone)],
-        subject="Invitación WhatsApp",
-        triggered_by="invite",
+    # Template Meta-approved vd_invitacion (1 var = nombre).
+    # Fallback freeform si el template falla — preserva body custom_message si
+    # el usuario lo proveyó.
+    content_sid = os.environ.get(
+        "TWILIO_CONTENT_SID_INVITACION",
+        "HXb810bbcc6365876cdade57471d7f85ca",
     )
+    res = None
+    # Si el usuario forzó un custom_message, NO podemos usar el template
+    # (template tiene texto fijo). En ese caso, mantener freeform.
+    use_template = bool(content_sid) and not req.custom_message
+    if use_template:
+        try:
+            from routers.comments import _sanitize_template_var as _sanvar
+            res = send_whatsapp(
+                content_sid=content_sid,
+                content_variables={"1": _sanvar(nombre) or "Usuario"},
+                targets=[(req.user_id, phone)],
+                subject="Invitación WhatsApp",
+                triggered_by="invite",
+            )
+        except Exception as e:  # noqa: BLE001
+            from loguru import logger as _log
+            _log.warning(f"[mantenedores] template vd_invitacion falló, fallback freeform: {e}")
+            res = None
+    if res is None:
+        res = send_whatsapp(
+            body=body,
+            targets=[(req.user_id, phone)],
+            subject="Invitación WhatsApp",
+            triggered_by="invite",
+        )
 
     cfg = TwilioConfig.from_env()
     sandbox_warning = None
