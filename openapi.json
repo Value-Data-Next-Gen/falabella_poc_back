@@ -9011,6 +9011,143 @@
         ]
       }
     },
+    "/api/admin/invitations": {
+      "get": {
+        "tags": [
+          "admin-invitations"
+        ],
+        "summary": "List Invitations",
+        "description": "Lista agregada de activaciones wa.me sobre users + drivers + contactos.\n\nDevuelve `items` ya filtrados+paginados, `total` con el conteo POST-filtro\n(pre-pagination) para que el frontend pueda mostrar \"X de Y\" y `summary`\ncon el desglose por state sobre el universo filtrado (sin aplicar `state`\npara que las pestañas/contadores no se cancelen entre sí).",
+        "operationId": "list_invitations_api_admin_invitations_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tipo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "user",
+                    "driver",
+                    "contacto"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tipo"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "activated",
+                    "no_link"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "empresa_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Empresa Id"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationsListOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "tags": [
@@ -15310,6 +15447,152 @@
           "extra_min"
         ],
         "title": "IncidentRequest"
+      },
+      "InvitationItem": {
+        "properties": {
+          "tipo": {
+            "type": "string",
+            "enum": [
+              "user",
+              "driver",
+              "contacto"
+            ],
+            "title": "Tipo"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "nombre": {
+            "type": "string",
+            "title": "Nombre"
+          },
+          "phone_e164": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone E164"
+          },
+          "empresa_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Id"
+          },
+          "empresa_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Nombre"
+          },
+          "rol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rol"
+          },
+          "activo": {
+            "type": "boolean",
+            "title": "Activo"
+          },
+          "activation_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Token"
+          },
+          "activation_link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Link"
+          },
+          "activation_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Used At"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "activated",
+              "no_link"
+            ],
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tipo",
+          "id",
+          "nombre",
+          "activo",
+          "state"
+        ],
+        "title": "InvitationItem"
+      },
+      "InvitationsListOut": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "summary": {
+            "type": "object",
+            "title": "Summary"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InvitationItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "summary",
+          "items"
+        ],
+        "title": "InvitationsListOut"
       },
       "LiveGenStats": {
         "properties": {

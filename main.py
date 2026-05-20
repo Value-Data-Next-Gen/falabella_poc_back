@@ -151,6 +151,7 @@ from routers.agent_web import router as agent_web_router
 from routers.centros_distribucion import router as centros_distribucion_router
 from routers.copiloto import router as copiloto_router
 from routers.whatsapp_escalation import router as whatsapp_escalation_router
+from routers.admin_invitations import router as admin_invitations_router
 # R7-F3: endpoints legacy extraídos de main.py (system/state/control/model/fleet)
 from routers.legacy_routes import (
     system_router,
@@ -190,6 +191,7 @@ app.include_router(agent_web_router)
 app.include_router(centros_distribucion_router)
 app.include_router(copiloto_router)
 app.include_router(whatsapp_escalation_router)
+app.include_router(admin_invitations_router)
 app.include_router(system_router)
 app.include_router(control_router)
 app.include_router(model_router)
