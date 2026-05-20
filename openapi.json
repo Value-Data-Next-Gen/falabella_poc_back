@@ -21302,6 +21302,19 @@
             "type": "string",
             "title": "Triggered By",
             "default": "manual"
+          },
+          "from_number": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Number",
+            "description": "Sender phone en E.164 con o sin prefijo `whatsapp:` (p.ej. `whatsapp:+56957018982` o `+56957018982`). Si se omite, se usa TWILIO_WHATSAPP_FROM. Útil para dual-sender: responder desde el mismo número al que el usuario escribió."
           }
         },
         "type": "object",

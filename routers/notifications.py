@@ -101,6 +101,16 @@ class WhatsAppRequest(BaseModel):
     tracking_id: Optional[str] = None
     subject: Optional[str] = None
     triggered_by: str = "manual"  # 'manual' | 'auto_threshold' | 'vip'
+    from_number: Optional[str] = Field(
+        default=None,
+        description=(
+            "Sender phone en E.164 con o sin prefijo `whatsapp:` "
+            "(p.ej. `whatsapp:+56957018982` o `+56957018982`). Si se omite, "
+            "se usa TWILIO_WHATSAPP_FROM. Útil para dual-sender: responder "
+            "desde el mismo número al que el usuario escribió."
+        ),
+        max_length=40,
+    )
 
     @model_validator(mode="after")
     def _at_least_one_payload(self):
@@ -233,14 +243,36 @@ def _resolve_recipients(cn, user_ids: list[int]) -> list[tuple[int, str]]:
     return [(int(r.user_id), r.phone_e164) for r in cur.fetchall()]
 
 
+def _normalize_from_number(raw: Optional[str]) -> Optional[str]:
+    """Normaliza un sender a formato `whatsapp:+E.164`. Acepta tanto
+    `whatsapp:+1234...` como `+1234...` o `1234...`. Devuelve None si raw es
+    vacío/None (para que el caller use el default config)."""
+    if not raw:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.startswith("whatsapp:"):
+        return s
+    if not s.startswith("+"):
+        s = "+" + s
+    return f"whatsapp:{s}"
+
+
 def _send_one(
     client, cfg: TwilioConfig, to_number: str,
     body: Optional[str], content_sid: Optional[str], content_variables: Optional[dict],
+    from_number: Optional[str] = None,
 ) -> tuple[str, Optional[str], Optional[str]]:
-    """Devuelve (status, twilio_sid, error_msg)."""
+    """Devuelve (status, twilio_sid, error_msg).
+
+    `from_number` opcional: si viene, override del sender (dual-sender). Si no,
+    usa `cfg.from_number` (TWILIO_WHATSAPP_FROM env var).
+    """
     to = to_number if to_number.startswith("whatsapp:") else f"whatsapp:{to_number}"
+    effective_from = _normalize_from_number(from_number) or cfg.from_number
     try:
-        kwargs: dict[str, Any] = {"from_": cfg.from_number, "to": to}
+        kwargs: dict[str, Any] = {"from_": effective_from, "to": to}
         if content_sid:
             kwargs["content_sid"] = content_sid
             if content_variables:
@@ -262,8 +294,16 @@ def send_whatsapp(
     subject: Optional[str] = None,
     tracking_id: Optional[str] = None,
     triggered_by: str = "manual",
+    from_number: Optional[str] = None,
 ) -> WhatsAppResponse:
-    """Core: envía a N destinatarios. Requiere body O content_sid."""
+    """Core: envía a N destinatarios. Requiere body O content_sid.
+
+    `from_number` opcional (dual-sender): si viene, override del sender Twilio
+    para esta llamada — útil cuando estamos respondiendo a un inbound y queremos
+    que el reply salga del MISMO sender al que el usuario escribió. Acepta
+    formato `whatsapp:+1234...` o `+1234...` (se normaliza). Si es None/vacío,
+    cae al default `TWILIO_WHATSAPP_FROM`.
+    """
     if not body and not content_sid:
         raise ValueError("send_whatsapp: body o content_sid requerido")
 
@@ -285,15 +325,26 @@ def send_whatsapp(
     # Snapshot para log: si es template y no hay body, guardamos una representación legible.
     body_for_log = body or f"[template:{content_sid}] {json.dumps(content_variables or {}, ensure_ascii=False)}"
 
+    # Sender efectivo (para logging — la tabla no tiene columna from_number).
+    effective_from = _normalize_from_number(from_number) or cfg.from_number
+
     with get_conn() as cn:
         for user_id, to_number in targets:
             if cfg.dry_run:
                 status, sid, err = "dry_run", None, None
-                logger.info(f"[notifications][dry-run] {to_number}: {body_for_log[:120]}")
+                logger.info(
+                    f"[notifications][dry-run] from={effective_from} to={to_number}: "
+                    f"{body_for_log[:120]}"
+                )
             else:
                 status, sid, err = _send_one(
                     client, cfg, to_number,
                     body=body, content_sid=content_sid, content_variables=content_variables,
+                    from_number=from_number,
+                )
+                logger.info(
+                    f"[notifications] sent from={effective_from} to={to_number} "
+                    f"status={status} sid={sid}"
                 )
 
             _log_notification(
@@ -352,6 +403,7 @@ def send(req: WhatsAppRequest, user: CurrentUser = Depends(current_user)) -> Wha
         subject=req.subject,
         tracking_id=req.tracking_id,
         triggered_by=req.triggered_by,
+        from_number=req.from_number,
     )
 
 

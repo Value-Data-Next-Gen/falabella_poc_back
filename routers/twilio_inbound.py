@@ -541,8 +541,12 @@ def _send_activation_template(
     user_id: Optional[int],
     table: str,
     row_id: str,
+    sender_to: Optional[str] = None,
 ) -> bool:
     """Envía el template `vd_cuenta_activada` (Content SID configurable por env).
+
+    `sender_to` (dual-sender): si viene, el reply sale desde ese sender (el
+    mismo al que el usuario escribió ACTIVAR). Si no, usa el default env.
 
     Devuelve True si el envío salió sin excepción, False en caso contrario.
     `send_whatsapp` ya hace su propio logging de la entrega/error a través del
@@ -560,6 +564,7 @@ def _send_activation_template(
             targets=[(user_id, phone)],
             subject="Cuenta activada",
             triggered_by="activation",
+            from_number=sender_to,
         )
         logger.info(
             f"[activation] template vd_cuenta_activada enviado a phone={phone} "
@@ -571,7 +576,12 @@ def _send_activation_template(
         return False
 
 
-def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> Optional[str]:
+def _cmd_activar(
+    token: str,
+    phone: str,
+    profile_name: Optional[str],
+    sender_to: Optional[str] = None,
+) -> Optional[str]:
     """CR-014 / hotfix: activación user-initiated por wa.me link.
 
     Busca el token en fpoc_users / fpoc_drivers / fpoc_empresa_contactos (en ese
@@ -629,6 +639,7 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> Optiona
                 if _send_activation_template(
                     phone=phone, first_name=first, user_id=uid,
                     table="user_id", row_id=str(uid),
+                    sender_to=sender_to,
                 ):
                     return None
                 return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
@@ -656,6 +667,7 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> Optiona
                 if _send_activation_template(
                     phone=phone, first_name=first, user_id=None,
                     table="driver_id", row_id=drv_id,
+                    sender_to=sender_to,
                 ):
                     return None
                 return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
@@ -684,6 +696,7 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> Optiona
                 if _send_activation_template(
                     phone=phone, first_name=first, user_id=None,
                     table="contact_id", row_id=str(cid),
+                    sender_to=sender_to,
                 ):
                     return None
                 return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
@@ -695,13 +708,24 @@ def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> Optiona
     return "No reconocí ese código. Pedile al admin un nuevo link de activación."
 
 
-def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str] = None) -> Optional[str]:
+def _dispatch(
+    body: str,
+    identity: dict,
+    phone: str,
+    profile_name: Optional[str] = None,
+    sender_to: Optional[str] = None,
+) -> Optional[str]:
     """Devuelve respuesta TwiML o None si no hay match.
 
     Prioridades:
       1) Compliance: opt-out (stop) — siempre gana.
       2) Comandos sueltos (power users): status/motivo/kpis/help/etc.
       3) Agente conversacional FSM (whatsapp_agent.handle).
+
+    `sender_to`: dual-sender. Es el número Twilio AL QUE el usuario escribió
+    (i.e. nuestro sender). Se propaga a comandos que disparan envíos outbound
+    (p.ej. `_cmd_activar` → template `vd_cuenta_activada`) para que el reply
+    salga desde el mismo sender. Si es None, los envíos caen al default env var.
     """
     if not body:
         return None
@@ -711,7 +735,7 @@ def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str]
     # freeform y listo.
     m = _RE_ACTIVAR.match(body)
     if m:
-        return _cmd_activar(m.group(1), phone, profile_name)
+        return _cmd_activar(m.group(1), phone, profile_name, sender_to=sender_to)
     # 1) Compliance: opt-out manda y termina cualquier sesión activa.
     if _RE_STOP.match(body):
         try:
@@ -842,7 +866,15 @@ async def webhook_inbound(
         _apply_status_callback(twilio_sid, msg_status)
         return _twiml(None)
 
+    # Twilio "From" = usuario que escribe; "To" = nuestro sender (al que escribió).
+    # Para dual-sender, capturamos `sender_to` para que el reply salga del MISMO
+    # número al que el usuario escribió (no del default env var). Si "To" viene
+    # vacío (caso raro, no debería pasar en webhooks reales pero sí en algunos
+    # tests/curls manuales), `sender_to` queda como "" y _normalize_from_number
+    # lo trata como None → fallback al TWILIO_WHATSAPP_FROM default.
     from_number = _normalize_phone(form.get("From", ""))
+    sender_to_raw = form.get("To", "")
+    sender_to = _normalize_phone(sender_to_raw) if sender_to_raw else ""
     body = (form.get("Body") or "").strip()
     profile_name = form.get("ProfileName")
     num_media = int(form.get("NumMedia") or 0)
@@ -851,7 +883,10 @@ async def webhook_inbound(
         urls = [form.get(f"MediaUrl{i}") for i in range(num_media) if form.get(f"MediaUrl{i}")]
         media_urls = "\n".join(urls) if urls else None
 
-    logger.info(f"[twilio-inbound] from={from_number} body={body!r} sid={twilio_sid} media={num_media}")
+    logger.info(
+        f"[twilio-inbound] from={from_number} to={sender_to or '(empty)'} "
+        f"body={body!r} sid={twilio_sid} media={num_media}"
+    )
 
     identity = _identify_phone(from_number)
 
@@ -896,7 +931,7 @@ async def webhook_inbound(
     )
 
     # Dispatch a comando si aplica (cae al agente FSM si no matchea ninguno)
-    reply = _dispatch(body, identity, from_number, profile_name)
+    reply = _dispatch(body, identity, from_number, profile_name, sender_to=sender_to or None)
     if reply is None and welcome is not None:
         reply = welcome
     # Si nada matcheó y el número ya estaba registrado, ack genérico
@@ -915,6 +950,9 @@ async def webhook_inbound(
                 targets=[(identity.get("user_id"), from_number)],
                 subject="Respuesta agente",
                 triggered_by="agent_reply",
+                # Dual-sender: el reply sale del MISMO sender al que el usuario
+                # escribió. Si sender_to viene vacío (raro), cae al default env.
+                from_number=sender_to or None,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[twilio_inbound] reply via outbound API falló: {e}")
