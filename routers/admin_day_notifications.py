@@ -22,7 +22,6 @@ responda con su justificación en lenguaje natural (ver
 """
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from typing import Optional
 
@@ -42,15 +41,13 @@ router = APIRouter(prefix="/api/admin", tags=["admin-day-notifications"])
 # ---------------------------------------------------------------------------
 
 # vd_alerta_motivo_v2 — 6 vars (severidad, motivo, vehiculo, conductor,
-# cliente, comentario). Aprobado por Meta. Mismo fallback hardcoded que el
-# resto del codebase (state.py, comments.py, vip_deadline_cron.py).
-_DEFAULT_ALERTA_MOTIVO_SID = "HX6821f9cad06ce1980bee5ad410006e43"
+# cliente, comentario). Aprobado por Meta. Centralizado en
+# `core.twilio_templates` (CR fixes-qa M7).
 
 
 def _alerta_motivo_sid() -> str:
-    return os.environ.get(
-        "TWILIO_CONTENT_SID_ALERTA_MOTIVO", _DEFAULT_ALERTA_MOTIVO_SID
-    )
+    from core.twilio_templates import alerta_motivo_sid
+    return alerta_motivo_sid()
 
 
 # ---------------------------------------------------------------------------

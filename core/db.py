@@ -383,11 +383,15 @@ class MssqlConn:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        # Alineado con SqliteConn (CR fixes-qa M3): NO commit automático.
+        # Los callers ya tienen `cn.commit()` explícito en cada path de
+        # escritura. Si una excepción burbujea, hacemos rollback.
+        # Beneficio: comportamiento consistente entre backends, evita commits
+        # silenciosos de transacciones a medio armar cuando un caller olvida
+        # llamar a commit() y NO está en un path de exception.
         try:
             if exc_type is not None:
                 self._raw.rollback()
-            else:
-                self._raw.commit()
         finally:
             self._raw.close()
 

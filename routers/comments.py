@@ -399,8 +399,12 @@ def _visit_meta(tracking_id: str) -> Optional[dict]:
             cur = cn.cursor()
             # Buscar CT por reference en fpoc_simpli_visits (datos reales)
             if reference:
+                # CAST AS NVARCHAR(50) (no `TEXT`) — Azure SQL no soporta `TEXT`
+                # como tipo target en CAST. El LIMIT 1 al final del query
+                # outer SÍ lo reescribe `core/db.py::_rewrite_sql_for_mssql`
+                # a `TOP 1`, así que es portable.
                 cur.execute(
-                    "SELECT ct FROM fpoc.simpli_visits WHERE CAST(reference AS TEXT) = ? LIMIT 1",
+                    "SELECT ct FROM fpoc.simpli_visits WHERE CAST(reference AS NVARCHAR(50)) = ? LIMIT 1",
                     reference.replace("FAL-", ""),
                 )
                 r = cur.fetchone()
@@ -893,14 +897,21 @@ def _backfill_contact_id_in_log(
         with get_conn() as cn:
             cur = cn.cursor()
             for phone, cid in contact_ids_by_phone.items():
+                # LIMIT en subquery NO lo reescribe `_rewrite_sql_for_mssql`
+                # (solo reescribe LIMIT al tail del query outer). Usar TOP 1
+                # explícito para que funcione en Azure SQL.
+                # En SQLite TOP no es estándar, pero en este path:
+                #   - El rewriter solo se aplica con backend=sqlserver
+                #   - SQLite SÍ soporta `TOP` desde 3.x? NO — no lo soporta.
+                # Workaround portable: usar IN con MAX(notification_id) que
+                # cumple la semántica "última fila" sin TOP/LIMIT.
                 cur.execute(
                     """
                     UPDATE fpoc_notifications_log
                     SET contact_id = ?
-                    WHERE notification_id IN (
-                        SELECT notification_id FROM fpoc_notifications_log
+                    WHERE notification_id = (
+                        SELECT MAX(notification_id) FROM fpoc_notifications_log
                         WHERE tracking_id = ? AND to_number = ? AND user_id IS NULL AND contact_id IS NULL
-                        ORDER BY notification_id DESC LIMIT 1
                     )
                     """,
                     cid, tracking_id, phone,
@@ -965,10 +976,8 @@ def dispatch_comment_alert(
                 # Template Meta-approved vd_alerta_motivo_v2 — 6 vars.
                 # Fallback freeform (legacy) si content_sid no está disponible o
                 # el send levanta excepción (preservamos el body para troubleshooting).
-                content_sid = os.environ.get(
-                    "TWILIO_CONTENT_SID_ALERTA_MOTIVO",
-                    "HX6821f9cad06ce1980bee5ad410006e43",
-                )
+                from core.twilio_templates import alerta_motivo_sid
+                content_sid = alerta_motivo_sid()
                 content_variables = {
                     "1": _sanitize_template_var(severity).upper() or "MEDIUM",
                     "2": _sanitize_template_var(motivo) or "—",
@@ -1112,10 +1121,8 @@ def _persist_and_dispatch_comment(
                 if targets:
                     subject_line = f"Motivo {motivo} · {meta.get('vehicle_name','')} · {meta.get('plate') or ''}".strip()
                     # Template Meta-approved vd_alerta_motivo_v2 — 6 vars.
-                    content_sid = os.environ.get(
-                        "TWILIO_CONTENT_SID_ALERTA_MOTIVO",
-                        "HX6821f9cad06ce1980bee5ad410006e43",
-                    )
+                    from core.twilio_templates import alerta_motivo_sid
+                    content_sid = alerta_motivo_sid()
                     content_variables = {
                         "1": _sanitize_template_var(severity).upper() or "MEDIUM",
                         "2": _sanitize_template_var(motivo) or "—",

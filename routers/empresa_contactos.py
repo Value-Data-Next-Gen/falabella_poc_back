@@ -60,10 +60,13 @@ PHONE_RE = re.compile(r"^\+\d{8,15}$")
 
 
 CSV_HEADERS = ["nombre", "rol", "phone_e164", "email", "severities", "motivos", "region"]
+# Placeholder genérico: SIN PII real (phones / emails reales fueron removidos
+# en el CR fixes-qa). Si el usuario copia el template tal cual va a fallar la
+# validación de phone — esperado, lo fuerza a poner sus propios datos.
 CSV_TEMPLATE_BODY = (
     ",".join(CSV_HEADERS)
     + "\n"
-    + "Jorge Cordero,jefe,+56939568904,jorge@valuedata.cl,critical;high;medium,,all\n"
+    + "Nombre Apellido,jefe,+56900000000,nombre@empresa.cl,critical;high;medium,,all\n"
 )
 
 
@@ -931,7 +934,10 @@ def audience_broadcast(
             status, sid, err = "disabled", None, None
         elif cfg.dry_run:
             status, sid, err = "dry_run", None, None
-            logger.info(f"[audience-broadcast][dry] {r.phone_e164}: {body[:120]}")
+            # PII masking — phone completo solo en API response, no en logs.
+            _p = str(r.phone_e164 or "")
+            _masked = f"{_p[:3]}...{_p[-4:]}" if len(_p) > 4 else "***"
+            logger.info(f"[audience-broadcast][dry] {_masked}: {body[:120]}")
         else:
             status, sid, err = _send_one(
                 client, cfg, r.phone_e164,

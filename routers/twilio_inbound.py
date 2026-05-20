@@ -46,6 +46,19 @@ router = APIRouter(prefix="/api/twilio", tags=["twilio-inbound"])
 # =============================================================================
 # Helpers
 # =============================================================================
+def _mask_phone(phone: Optional[str]) -> str:
+    """Devuelve '+56...XXXX' (últimos 4) para logging sin PII.
+
+    Helper local — si en el futuro lo usan más módulos, moverlo a `core/security.py`.
+    """
+    if not phone:
+        return "—"
+    p = str(phone)
+    if len(p) <= 4:
+        return "***"
+    return f"{p[:3]}...{p[-4:]}"
+
+
 def _normalize_phone(raw: str) -> str:
     """Quita prefijo whatsapp: y normaliza a E.164 con +."""
     p = (raw or "").strip()
@@ -634,10 +647,8 @@ def _send_activation_template(
     `send_whatsapp` ya hace su propio logging de la entrega/error a través del
     notifications_log, así que acá solo loggeamos a nivel INFO para correlación.
     """
-    content_sid = os.environ.get(
-        "TWILIO_CONTENT_SID_CUENTA_ACTIVADA",
-        "HX13bdf3c0eaecfb740ec3f21760790c38",
-    )
+    from core.twilio_templates import cuenta_activada_sid
+    content_sid = cuenta_activada_sid()
     try:
         from routers.notifications import send_whatsapp
         send_whatsapp(
@@ -649,7 +660,7 @@ def _send_activation_template(
             from_number=sender_to,
         )
         logger.info(
-            f"[activation] template vd_cuenta_activada enviado a phone={phone} "
+            f"[activation] template vd_cuenta_activada enviado a phone={_mask_phone(phone)} "
             f"for {table}={row_id}"
         )
         return True
@@ -716,7 +727,7 @@ def _cmd_activar(
                     (phone, uid),
                 )
                 cn.commit()
-                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched user_id={uid} phone={phone}")
+                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched user_id={uid} phone={_mask_phone(phone)}")
                 first = _first_name(display_name, profile_name)
                 if _send_activation_template(
                     phone=phone, first_name=first, user_id=uid,
@@ -744,7 +755,7 @@ def _cmd_activar(
                     (phone, drv_id),
                 )
                 cn.commit()
-                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched driver_id={drv_id} phone={phone}")
+                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched driver_id={drv_id} phone={_mask_phone(phone)}")
                 first = _first_name(name, profile_name)
                 if _send_activation_template(
                     phone=phone, first_name=first, user_id=None,
@@ -773,7 +784,7 @@ def _cmd_activar(
                     (phone, cid),
                 )
                 cn.commit()
-                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched contact_id={cid} phone={phone}")
+                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched contact_id={cid} phone={_mask_phone(phone)}")
                 first = _first_name(nombre, profile_name)
                 if _send_activation_template(
                     phone=phone, first_name=first, user_id=None,
@@ -786,7 +797,7 @@ def _cmd_activar(
         logger.warning(f"[twilio-inbound] ACTIVAR {token_norm} falló: {e}")
         return "Tuvimos un problema activando tu cuenta. Pedile al admin un nuevo link."
 
-    logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} no match (o ya usado) phone={phone}")
+    logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} no match (o ya usado) phone={_mask_phone(phone)}")
     return "No reconocí ese código. Pedile al admin un nuevo link de activación."
 
 

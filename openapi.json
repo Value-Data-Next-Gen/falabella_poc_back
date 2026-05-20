@@ -6633,6 +6633,7 @@
             }
           }
         },
+        "deprecated": true,
         "security": [
           {
             "HTTPBearer": []
@@ -9357,126 +9358,6 @@
         ]
       }
     },
-    "/api/control/incident": {
-      "post": {
-        "tags": [
-          "control"
-        ],
-        "summary": "Post Incident",
-        "operationId": "post_incident_api_control_incident_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/IncidentRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/control/reset": {
-      "post": {
-        "tags": [
-          "control"
-        ],
-        "summary": "Post Reset",
-        "operationId": "post_reset_api_control_reset_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ResetRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Req"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/control/freeze": {
-      "post": {
-        "tags": [
-          "control"
-        ],
-        "summary": "Post Freeze",
-        "description": "Congela el día: setea sim_clock al inicio (09:00) y pausa auto_advance.",
-        "operationId": "post_freeze_api_control_freeze_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
     "/api/control/start-day": {
       "post": {
         "tags": [
@@ -9501,50 +9382,6 @@
               }
             }
           }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/control/clock": {
-      "post": {
-        "tags": [
-          "control"
-        ],
-        "summary": "Post Clock",
-        "operationId": "post_clock_api_control_clock_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClockRequest"
-              }
-            }
-          },
-          "required": true
         },
         "responses": {
           "200": {
@@ -11921,46 +11758,6 @@
           "offset"
         ],
         "title": "ClientsPage"
-      },
-      "ClockRequest": {
-        "properties": {
-          "sim_clock": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sim Clock"
-          },
-          "offset_minutes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Offset Minutes"
-          },
-          "auto_advance": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Auto Advance"
-          }
-        },
-        "type": "object",
-        "title": "ClockRequest"
       },
       "CommentCreate": {
         "properties": {
@@ -15522,26 +15319,6 @@
         ],
         "title": "ImportXlsxResponse"
       },
-      "IncidentRequest": {
-        "properties": {
-          "vehicle_id": {
-            "type": "integer",
-            "title": "Vehicle Id"
-          },
-          "extra_min": {
-            "type": "number",
-            "maximum": 240.0,
-            "exclusiveMinimum": 0.0,
-            "title": "Extra Min"
-          }
-        },
-        "type": "object",
-        "required": [
-          "vehicle_id",
-          "extra_min"
-        ],
-        "title": "IncidentRequest"
-      },
       "InvitationItem": {
         "properties": {
           "tipo": {
@@ -18387,47 +18164,6 @@
           "priority"
         ],
         "title": "PrioritySetRequest"
-      },
-      "ResetRequest": {
-        "properties": {
-          "start_date": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Start Date"
-          },
-          "day_seed": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Day Seed"
-          },
-          "sim_minutes_per_tick": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 120.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sim Minutes Per Tick"
-          }
-        },
-        "type": "object",
-        "title": "ResetRequest"
       },
       "ResetResponse": {
         "properties": {

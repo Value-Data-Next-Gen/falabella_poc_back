@@ -139,10 +139,8 @@ def _send_to_driver_if_optedin(
         # Fallback freeform si el template falla — body legacy preserva razonamiento.
         from routers.notifications import send_whatsapp
         from routers.comments import _sanitize_template_var as _sanvar
-        content_sid = os.environ.get(
-            "TWILIO_CONTENT_SID_REVISION_IA",
-            "HXd49ad45c3dc35c4aa131ebcf3ab8522e",
-        )
+        from core.twilio_templates import revision_ia_sid
+        content_sid = revision_ia_sid()
         used_template = False
         if content_sid:
             try:
@@ -172,16 +170,19 @@ def _send_to_driver_if_optedin(
         try:
             with get_conn() as cn2:
                 cur2 = cn2.cursor()
+                # LIMIT en subquery no se reescribe a TOP por el rewriter
+                # (`_rewrite_sql_for_mssql` solo toca LIMIT al tail outer).
+                # Usar MAX(notification_id) para semántica "última fila"
+                # portable a Azure SQL + SQLite.
                 cur2.execute(
                     """
                     UPDATE fpoc_notifications_log
                     SET driver_id = ?
-                    WHERE notification_id IN (
-                        SELECT notification_id FROM fpoc_notifications_log
+                    WHERE notification_id = (
+                        SELECT MAX(notification_id) FROM fpoc_notifications_log
                         WHERE tracking_id = ? AND to_number = ?
                           AND user_id IS NULL AND contact_id IS NULL
                           AND driver_id IS NULL
-                        ORDER BY notification_id DESC LIMIT 1
                     )
                     """,
                     driver_id, tracking_id, r.phone_e164,
@@ -308,10 +309,8 @@ def maybe_create_correction_from_comment(
                 # El template body no distingue audiencia: las mismas 2 vars
                 # sirven para driver y para manager.
                 from routers.comments import _sanitize_template_var as _sanvar
-                content_sid = os.environ.get(
-                    "TWILIO_CONTENT_SID_REVISION_IA",
-                    "HXd49ad45c3dc35c4aa131ebcf3ab8522e",
-                )
+                from core.twilio_templates import revision_ia_sid
+                content_sid = revision_ia_sid()
                 used_template = False
                 if content_sid:
                     try:

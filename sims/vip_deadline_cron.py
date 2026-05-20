@@ -255,10 +255,8 @@ def check_vip_deadlines() -> dict:
                         # Template Meta-approved vd_vip_deadline_v2 — 6 vars.
                         # Fallback freeform (legacy) si no hay content_sid o el
                         # send levanta excepción.
-                        content_sid = os.environ.get(
-                            "TWILIO_CONTENT_SID_VIP_DEADLINE",
-                            "HX679d07e0eb57dec69f27ef169adee32e",
-                        )
+                        from core.twilio_templates import vip_deadline_sid
+                        content_sid = vip_deadline_sid()
                         content_variables = {
                             "1": _sanitize_template_var(cliente) or "—",
                             "2": _sanitize_template_var(vip['deadline_time']) or "—",

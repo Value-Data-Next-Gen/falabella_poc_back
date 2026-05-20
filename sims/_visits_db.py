@@ -190,3 +190,150 @@ def kpis_today_by_empresa(empresa_id: Optional[int]) -> dict:
         where_extra="AND empresa_falsa = ?",
         params=(int(empresa_id),),
     )
+
+
+def visits_for_empresa_today(empresa_id: Optional[int]) -> list[dict]:
+    """Visitas de hoy (planned_date = CURRENT_DATE) para una empresa.
+
+    Si `empresa_id` es None devuelve todas las visitas de hoy. Si la DB cae
+    devuelve [] y loggea WARN. Usado por las renders de manager del bot
+    (`_render_manager_kpis`, `_render_manager_alerts`, `_render_manager_drivers`).
+    """
+    today = _today_iso()
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            if empresa_id is None:
+                cur.execute(
+                    """
+                    SELECT id, title, comuna, status, current_eta_cl,
+                           patente_falsa, address, ruta_id, driver_name, region
+                    FROM fpoc.simpli_visits
+                    WHERE planned_date = ?
+                    ORDER BY id
+                    """,
+                    (today,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, title, comuna, status, current_eta_cl,
+                           patente_falsa, address, ruta_id, driver_name, region
+                    FROM fpoc.simpli_visits
+                    WHERE planned_date = ? AND empresa_falsa = ?
+                    ORDER BY id
+                    """,
+                    (today, int(empresa_id)),
+                )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[_visits_db] visits_for_empresa_today({empresa_id}) DB fail: {e}"
+        )
+        return []
+    return [_row_to_visit(r) for r in rows]
+
+
+def drivers_summary_today_by_empresa(empresa_id: Optional[int]) -> list[dict]:
+    """Resumen por vehículo (patente_falsa) para la empresa, día de hoy.
+
+    Devuelve list[{vehicle_id, driver_name, total, pending, completed, failed}]
+    ordenado por vehicle_id ASC. Si la DB cae devuelve []. Usado por
+    `_render_manager_drivers` del bot.
+    """
+    today = _today_iso()
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            if empresa_id is None:
+                cur.execute(
+                    """
+                    SELECT patente_falsa,
+                           MIN(driver_name) AS driver_name,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN status='pending'   THEN 1 ELSE 0 END) AS pending,
+                           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                           SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed
+                    FROM fpoc.simpli_visits
+                    WHERE planned_date = ? AND patente_falsa IS NOT NULL
+                    GROUP BY patente_falsa
+                    ORDER BY patente_falsa
+                    """,
+                    (today,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT patente_falsa,
+                           MIN(driver_name) AS driver_name,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN status='pending'   THEN 1 ELSE 0 END) AS pending,
+                           SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+                           SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed
+                    FROM fpoc.simpli_visits
+                    WHERE planned_date = ? AND empresa_falsa = ?
+                      AND patente_falsa IS NOT NULL
+                    GROUP BY patente_falsa
+                    ORDER BY patente_falsa
+                    """,
+                    (today, int(empresa_id)),
+                )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[_visits_db] drivers_summary_today_by_empresa({empresa_id}) "
+            f"DB fail: {e}"
+        )
+        return []
+    return [
+        {
+            "vehicle_id": int(r[0]),
+            "driver_name": str(r[1] or "—"),
+            "total": int(r[2] or 0),
+            "pending": int(r[3] or 0),
+            "completed": int(r[4] or 0),
+            "failed": int(r[5] or 0),
+        }
+        for r in rows
+    ]
+
+
+def visits_for_driver_name_today(driver_name: str) -> dict:
+    """Resumen agregado del día para un driver matcheado por `driver_name`
+    (no por driver_id). Devuelve `{total, ok, pending, failed}` o {} si DB cae.
+
+    Usado por `_driver_summary` del bot — antes filtraba por `driver_name`
+    inline; centralizado acá para no duplicar el patrón.
+    """
+    name = (driver_name or "").strip()
+    if not name:
+        return {}
+    today = _today_iso()
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS ok,
+                       SUM(CASE WHEN status='pending'   THEN 1 ELSE 0 END) AS pending,
+                       SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed
+                FROM fpoc.simpli_visits
+                WHERE planned_date = ? AND driver_name = ?
+                """,
+                (today, name),
+            )
+            r = cur.fetchone()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"[_visits_db] visits_for_driver_name_today({name}) DB fail: {e}"
+        )
+        return {}
+    if r is None:
+        return {}
+    return {
+        "total": int(r[0] or 0),
+        "ok": int(r[1] or 0),
+        "pending": int(r[2] or 0),
+        "failed": int(r[3] or 0),
+    }

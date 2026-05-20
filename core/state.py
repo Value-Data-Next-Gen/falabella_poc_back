@@ -533,10 +533,8 @@ class AppState:
                 # motivo = "ETA EN RIESGO", comentario = riesgo + slack.
                 # Mantiene compat con TWILIO_CONTENT_SID viejo (2 vars) si no
                 # está el nuevo override + sender warmup todavía corriendo.
-                content_sid_new = _os.environ.get(
-                    "TWILIO_CONTENT_SID_ALERTA_MOTIVO",
-                    "HX6821f9cad06ce1980bee5ad410006e43",
-                )
+                from core.twilio_templates import alerta_motivo_sid as _alerta_sid
+                content_sid_new = _alerta_sid()
                 content_sid_legacy = _os.environ.get("TWILIO_CONTENT_SID", "")
                 # Derivar driver_name best-effort desde STATE.drivers via vehicle_id
                 driver_name = "—"

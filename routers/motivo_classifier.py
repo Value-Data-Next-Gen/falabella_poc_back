@@ -288,11 +288,23 @@ def classify(req: ClassifyRequest, user: CurrentUser = Depends(current_user)) ->
 
 
 # R7: alias semántico pedido por el spec del frontend.
-@router.post("/api/llm/clasificar-motivo", response_model=ClassifyResponse)
+# DEPRECATED (CR fixes-qa L5): preferir POST /api/motivos/classify. Este alias
+# se removerá en una versión futura. Lo mantenemos por compatibilidad con
+# llamadas antiguas del frontend mientras se migran.
+@router.post(
+    "/api/llm/clasificar-motivo",
+    response_model=ClassifyResponse,
+    deprecated=True,
+)
 def clasificar_motivo(
     req: ClassifyRequest,
     user: CurrentUser = Depends(current_user),
 ) -> ClassifyResponse:
+    from loguru import logger
+    logger.warning(
+        "[motivo-classifier] POST /api/llm/clasificar-motivo está DEPRECATED. "
+        "Migrar el caller a POST /api/motivos/classify."
+    )
     return classify(req, user)
 
 

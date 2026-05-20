@@ -17,7 +17,7 @@ inspección de routes. El frontend no necesita ningún cambio.
 """
 from __future__ import annotations
 
-from datetime import date as _date, datetime as _dt, time as _time
+from datetime import datetime as _dt, time as _time
 from typing import Optional
 
 import numpy as np
@@ -35,10 +35,8 @@ from ml.pipeline import (
 from core.schemas import (
     AnticipatedAlert,
     ClientMaster,
-    ClockRequest,
     Driver,
     FeatureImportance,
-    IncidentRequest,
     KPIs,
     ModelMetrics,
     ShapFactor,
@@ -418,67 +416,19 @@ def get_model_importance(top_k: int = Query(default=15, ge=1, le=50)):
 
 
 # =============================================================================
-# control_router — /api/control/{incident,reset,freeze,start-day,clock}
+# control_router — /api/control/start-day
+#
+# CR fixes-qa M4: removidos `POST /freeze`, `POST /clock`, `POST /incident`,
+# `POST /reset`. Eran handlers huérfanos (frontend `_legacy/` ya no los importa).
+# Si en el futuro se necesitan, restaurarlos desde el historial git y re-agregar
+# los schemas `IncidentRequest` / `ClockRequest` al import.
 # =============================================================================
 control_router = APIRouter(prefix="/api/control", tags=["control"])
-
-
-@control_router.post("/incident")
-def post_incident(req: IncidentRequest, user: CurrentUser = Depends(current_user)):
-    _require_ready()
-    if not user.is_falabella:
-        allowed = set(STATE.vehicle_ids_for_empresa(user.empresa_id))
-        if req.vehicle_id not in allowed:
-            raise HTTPException(status_code=403, detail="vehicle fuera de tu empresa")
-    STATE.add_incident(req.vehicle_id, req.extra_min)
-    return {"status": "ok", "incidents": STATE.manual_incidents}
-
-
-class ResetRequest(BaseModel):
-    start_date: Optional[str] = None
-    day_seed: Optional[int] = None
-    sim_minutes_per_tick: Optional[int] = Field(default=None, ge=1, le=120)
-
-
-@control_router.post("/reset")
-def post_reset(req: ResetRequest | None = None, user: CurrentUser = Depends(current_user)):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="solo admin puede resetear")
-    _require_ready()
-    start_date = None
-    if req and req.start_date:
-        start_date = _date.fromisoformat(req.start_date)
-    STATE.reset_day(start_date=start_date, day_seed=req.day_seed if req else None)
-    if req and req.sim_minutes_per_tick is not None:
-        STATE.set_sim_minutes_per_tick(req.sim_minutes_per_tick)
-    return {
-        "status": "ok",
-        "today": STATE.today.isoformat() if STATE.today else None,
-        "day_seed": STATE.day_seed,
-        "sim_clock": STATE.sim_clock.isoformat(),
-        "sim_minutes_per_tick": STATE.sim_minutes_per_tick,
-    }
 
 
 class StartDayRequest(BaseModel):
     regen_plan: bool = False
     day_seed: Optional[int] = None
-
-
-@control_router.post("/freeze")
-def post_freeze(user: CurrentUser = Depends(current_user)):
-    """Congela el día: setea sim_clock al inicio (09:00) y pausa auto_advance."""
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="solo admin puede congelar el día")
-    _require_ready()
-    day_start_dt = _dt.combine(STATE.today, _time(9, 0))  # type: ignore[arg-type]
-    STATE.set_clock(sim_clock=day_start_dt)
-    STATE.set_auto_advance(False)
-    return {
-        "status": "frozen",
-        "sim_clock": STATE.sim_clock.isoformat(),
-        "auto_advance": STATE.auto_advance,
-    }
 
 
 @control_router.post("/start-day")
@@ -499,21 +449,6 @@ def post_start_day(req: StartDayRequest | None = None,
         "status": "running",
         "today": STATE.today.isoformat() if STATE.today else None,
         "day_seed": STATE.day_seed,
-        "sim_clock": STATE.sim_clock.isoformat(),
-        "auto_advance": STATE.auto_advance,
-    }
-
-
-@control_router.post("/clock")
-def post_clock(req: ClockRequest, user: CurrentUser = Depends(current_user)):
-    if not user.is_admin:
-        raise HTTPException(status_code=403, detail="solo admin puede cambiar el reloj")
-    _require_ready()
-    STATE.set_clock(sim_clock=req.sim_clock, offset_minutes=req.offset_minutes)
-    if req.auto_advance is not None:
-        STATE.set_auto_advance(req.auto_advance)
-    return {
-        "status": "ok",
         "sim_clock": STATE.sim_clock.isoformat(),
         "auto_advance": STATE.auto_advance,
     }

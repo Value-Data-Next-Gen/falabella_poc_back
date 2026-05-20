@@ -14,7 +14,6 @@ Endpoints (prefijo /api/admin):
 from __future__ import annotations
 
 import io
-import os
 from datetime import date
 from typing import Any, Literal, Optional
 
@@ -482,10 +481,8 @@ def whatsapp_invite(
     # Template Meta-approved vd_invitacion (1 var = nombre).
     # Fallback freeform si el template falla — preserva body custom_message si
     # el usuario lo proveyó.
-    content_sid = os.environ.get(
-        "TWILIO_CONTENT_SID_INVITACION",
-        "HXb810bbcc6365876cdade57471d7f85ca",
-    )
+    from core.twilio_templates import invitacion_sid
+    content_sid = invitacion_sid()
     res = None
     # Si el usuario forzó un custom_message, NO podemos usar el template
     # (template tiene texto fijo). En ese caso, mantener freeform.

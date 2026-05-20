@@ -31,6 +31,16 @@ from loguru import logger
 from core.db import get_conn
 
 
+def _mask_phone(phone: Optional[str]) -> str:
+    """Masking de phone para logs (CR fixes-qa L8): '+56...XXXX'."""
+    if not phone:
+        return "—"
+    p = str(phone)
+    if len(p) <= 4:
+        return "***"
+    return f"{p[:3]}...{p[-4:]}"
+
+
 # =============================================================================
 # Identity helpers — resuelven nombre/rol/empresa de cualquier número conocido
 # =============================================================================
@@ -569,7 +579,7 @@ def _load_alert_context(phone: str) -> Optional[dict]:
             return None
         return {"tracking_id": str(tid), "at": str(at)}
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"[llm_agent] _load_alert_context({phone}) failed: {e}")
+        logger.warning(f"[llm_agent] _load_alert_context({_mask_phone(phone)}) failed: {e}")
         return None
 
 
@@ -707,7 +717,7 @@ def chat(message: str, identity: dict, day_state: str, phone: str = "") -> str:
     summary = _summarize_identity(identity)
     ctx = {"identity": identity, "summary": summary, "phone": phone}
     logger.info(
-        f"[llm_agent] phone={phone} role={summary.get('role')} "
+        f"[llm_agent] phone={_mask_phone(phone)} role={summary.get('role')} "
         f"name={summary.get('name')} driver_id={summary.get('driver_id')} "
         f"empresa_id={summary.get('empresa_id')} day_state={day_state}"
     )
@@ -777,7 +787,7 @@ def chat(message: str, identity: dict, day_state: str, phone: str = "") -> str:
             content = (getattr(msg, "content", None) or "").strip()
             latency_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
-                f"[llm_agent] phone={phone} role={summary.get('role')} "
+                f"[llm_agent] phone={_mask_phone(phone)} role={summary.get('role')} "
                 f"model={deployment} tokens={total_tokens} tool={tool_called or '-'} "
                 f"latency_ms={latency_ms} len(reply)={len(content)}"
             )
@@ -858,7 +868,7 @@ def chat(message: str, identity: dict, day_state: str, phone: str = "") -> str:
     # Si terminamos el loop sin return (no debería pasar), devolver algo.
     latency_ms = int((time.monotonic() - t0) * 1000)
     logger.warning(
-        f"[llm_agent] loop terminó sin reply phone={phone} "
+        f"[llm_agent] loop terminó sin reply phone={_mask_phone(phone)} "
         f"tokens={total_tokens} tool={tool_called} latency_ms={latency_ms}"
     )
     return (

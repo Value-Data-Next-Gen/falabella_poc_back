@@ -286,7 +286,12 @@ def _find_persona_by_phone(phone: str) -> Optional[dict]:
 
 
 def _find_driver_by_id_or_rut(token: str) -> Optional[dict]:
-    """Acepta driver_id (D-001), RUT (12345678-9), o vehicle_id (22)."""
+    """Acepta driver_id (D-001) o vehicle_id (22).
+
+    NOTA: el nombre histórico menciona "RUT" por razones de compatibilidad,
+    pero `fpoc_drivers` NO tiene columna `rut` — la query solo matchea
+    driver_id (normalizado sin guiones/puntos) y vehicle_id como string.
+    """
     t = token.strip().upper().replace(".", "").replace("-", "")
     with get_conn() as cn:
         cur = cn.cursor()
@@ -459,21 +464,31 @@ def _vehicle_ids_for_empresa(empresa_id: Optional[int]) -> list[int]:
 
 
 def _empresa_kpis(empresa_id: Optional[int], is_falabella: bool) -> dict:
-    """Visitas/alertas del snapshot, scopeadas a la empresa (si manager) o
-    todas (si falabella_*)."""
-    from core.state import STATE
-    if STATE.snapshot_df is None:
+    """KPIs operativos del día por empresa (fuente: `fpoc.simpli_visits`).
+
+    Migrado en CR sync-bot-data: antes leía `STATE.snapshot_df` (sintético ML),
+    ahora lee la tabla real para coincidir con `_render_route` y el dashboard
+    de seguimiento (mismo principio que `_visits_for_vehicle`).
+
+    `alerts` / `alerts_critical` quedan en 0 — son features exclusivas del
+    simulador ML que no viven en DB. El render de manager las omite cuando
+    no hay alertas.
+    """
+    from sims._visits_db import kpis_today_by_empresa, kpis_today
+    if is_falabella or empresa_id is None:
+        k = kpis_today()
+    else:
+        k = kpis_today_by_empresa(empresa_id)
+    if not k:
         return {}
-    df = STATE.snapshot_df
-    if not is_falabella and empresa_id is not None:
-        allowed = set(_vehicle_ids_for_empresa(empresa_id))
-        df = df[df["vehicle_id"].isin(allowed)]
     return {
-        "total": int(len(df)),
-        "pending": int((df["status"] == "pending").sum()),
-        "completed": int((df["status"] == "completed").sum()),
-        "alerts": int(df["alert_valuedata"].sum()),
-        "alerts_critical": int(((df["alert_valuedata"]) & (df["p_fallo"] >= 0.7)).sum()),
+        "total": int(k.get("total", 0)),
+        "pending": int(k.get("pending", 0)),
+        "completed": int(k.get("completed", 0)),
+        "failed": int(k.get("failed", 0)),
+        # Alertas ML no aplican a DB real:
+        "alerts": 0,
+        "alerts_critical": 0,
     }
 
 
@@ -529,9 +544,16 @@ def _greeting() -> str:
 
 
 def _driver_summary(driver: dict) -> Optional[str]:
-    """Resumen 1-line de la jornada del driver para inyectar en el saludo."""
-    name = driver.get("name")
-    if not name:
+    """Resumen 1-line de la jornada del driver para inyectar en el saludo.
+
+    Filtra por `patente_falsa` (mapeado desde `driver.vehicle_id`), no por
+    `driver_name`. Patrón coherente con `_render_route` y `visits_for_driver_today`:
+    si dos drivers tienen el mismo nombre (común en datasets sintéticos)
+    contar por nombre infla totales. La resolución driver→vehicle ya está
+    hecha por `_find_driver_by_id_or_rut`.
+    """
+    vehicle_id = driver.get("vehicle_id")
+    if vehicle_id is None:
         return None
     try:
         from datetime import date as _date_cls
@@ -544,8 +566,8 @@ def _driver_summary(driver: dict) -> Optional[str]:
                           SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
                           SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
                    FROM fpoc.simpli_visits
-                   WHERE planned_date = ? AND driver_name = ?""",
-                today, name,
+                   WHERE planned_date = ? AND patente_falsa = ?""",
+                today, int(vehicle_id),
             )
             r = cur.fetchone()
         if not r or int(r.total or 0) == 0:
@@ -561,13 +583,17 @@ def _driver_summary(driver: dict) -> Optional[str]:
 
 
 def _manager_summary(persona: dict) -> Optional[str]:
-    """Resumen 1-line para el manager/admin: KPIs + VIP count."""
+    """Resumen 1-line para el manager/admin: KPIs (fuente DB) + VIP count
+    best-effort (sigue siendo snapshot porque VIP no es columna real de
+    simpli_visits — vive en `fpoc.vip_clients` matcheado por title).
+    """
     try:
         is_falabella = bool(persona.get("is_falabella"))
         k = _empresa_kpis(persona.get("empresa_id"), is_falabella)
         if not k:
             return None
-        # VIP count adicional desde el snapshot
+        # VIP count desde snapshot — feature ML, sin equivalente directo en DB.
+        # Si el snapshot no está listo, omitimos la métrica (no falla el render).
         vip_ct = 0
         try:
             from core.state import STATE
@@ -758,25 +784,38 @@ def _render_motivo_corrections_count() -> str:
 
 
 def _render_manager_kpis(persona: dict) -> str:
+    """KPIs del día de hoy (fuente DB `fpoc.simpli_visits`).
+    Migrado en CR fixes-qa para consistencia con `_render_route` y dashboard.
+    """
     is_falabella = bool(persona.get("is_falabella"))
     k = _empresa_kpis(persona.get("empresa_id"), is_falabella)
-    if not k:
-        return "Backend warming up, probá de nuevo en unos segundos."
+    if not k or k.get("total", 0) == 0:
+        return "Sin visitas planificadas para hoy."
     head = "📊 KPIs hoy"
     if persona.get("empresa_nombre"):
         head += f" — {persona['empresa_nombre']}"
-    return (
-        f"{head}\n"
-        f"• Visitas: {k['total']}\n"
-        f"• Pendientes: {k['pending']}\n"
-        f"• Completadas: {k['completed']}\n"
-        f"• Alertas anticipadas: {k['alerts']}\n"
-        f"• Alertas críticas (≥70%): {k['alerts_critical']}\n\n"
-        "Mandá '2' para ver las alertas, o 'menu' para volver."
-    )
+    lines = [
+        head,
+        f"• Visitas: {k['total']}",
+        f"• Pendientes: {k['pending']}",
+        f"• Completadas: {k['completed']}",
+    ]
+    if k.get("failed"):
+        lines.append(f"• Con problema: {k['failed']}")
+    lines.append("\nMandá '2' para alertas anticipadas (ML), o 'menu' para volver.")
+    return "\n".join(lines)
 
 
 def _render_manager_alerts(persona: dict, limit: int = 5) -> str:
+    """Top alertas anticipadas. SIGUE LEYENDO `STATE.snapshot_df` porque
+    `alert_valuedata` y `p_fallo` son features exclusivas del simulador ML
+    (no existen en `fpoc.simpli_visits`). Si en el futuro se computa p_fallo
+    sobre data real, migrar acá.
+
+    El scope de empresa también usa el mapping `vehicle_empresa_map` del
+    snapshot — el bot intencionalmente cruza ambas fuentes para esta vista
+    ML-only.
+    """
     from core.state import STATE
     if STATE.snapshot_df is None:
         return "Snapshot no listo."
@@ -799,36 +838,28 @@ def _render_manager_alerts(persona: dict, limit: int = 5) -> str:
 
 
 def _render_manager_drivers(persona: dict) -> str:
-    """Lista los drivers de la empresa con métricas básicas."""
-    from core.state import STATE
-    if STATE.snapshot_df is None:
-        return "Snapshot no listo."
+    """Lista vehículos / drivers de la empresa con métricas básicas del día.
+
+    Migrado a `fpoc.simpli_visits` (CR fixes-qa): antes leía
+    `STATE.snapshot_df`, lo que mezclaba IDs sintéticos con la realidad del
+    plan importado. Ahora muestra exactamente las patentes_falsa con visitas
+    planeadas para hoy.
+    """
+    from sims._visits_db import drivers_summary_today_by_empresa
     is_falabella = bool(persona.get("is_falabella"))
-    if is_falabella:
-        vehicles = list(STATE.vehicle_empresa_map.keys())
-    else:
-        vehicles = _vehicle_ids_for_empresa(persona.get("empresa_id"))
-    if not vehicles:
-        return "No hay vehículos asignados a tu empresa."
-    df = STATE.snapshot_df[STATE.snapshot_df["vehicle_id"].isin(vehicles)]
-    lines = ["🚚 Drivers / Vehículos:"]
-    for vid in sorted(vehicles):
-        sub = df[df["vehicle_id"] == vid]
-        if sub.empty:
-            continue
-        total = len(sub)
-        pending = int((sub["status"] == "pending").sum())
-        alerts = int(sub["alert_valuedata"].sum())
-        # Resolver nombre del driver
-        driver_name = "—"
-        for d in STATE.drivers:
-            if int(d.get("vehicle_id") or -1) == vid:
-                driver_name = d.get("name", "—")
-                break
-        v_name = str(sub.iloc[0]["vehicle_name"])
-        lines.append(f"  · {v_name}: {driver_name[:20]} — {total}vis ({pending}pend, {alerts}🔴)")
-    if len(lines) == 1:
-        return "Sin drivers activos en el snapshot."
+    empresa_id = None if is_falabella else persona.get("empresa_id")
+    rows = drivers_summary_today_by_empresa(empresa_id)
+    if not rows:
+        return "Sin vehículos con visitas planificadas hoy."
+    lines = ["🚚 Drivers / Vehículos hoy:"]
+    for r in rows:
+        v_name = f"PAT-{r['vehicle_id']}"
+        dname = (r.get("driver_name") or "—")[:20]
+        problem = f", {r['failed']}🔴" if r.get("failed") else ""
+        lines.append(
+            f"  · {v_name}: {dname} — {r['total']}vis "
+            f"({r['pending']}pend{problem})"
+        )
     lines.append("\n'menu' para volver.")
     return "\n".join(lines)
 

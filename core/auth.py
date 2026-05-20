@@ -27,9 +27,22 @@ from pydantic import BaseModel, EmailStr
 from core.db import get_conn
 
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me-for-prod")
+JWT_SECRET = os.environ.get("JWT_SECRET", "").strip()
 JWT_ALGO = "HS256"
 JWT_TTL_HOURS = int(os.environ.get("JWT_TTL_HOURS", "12"))
+
+# Fail-fast (CR fixes-qa H5): no permitimos arrancar con JWT_SECRET vacía o
+# con el placeholder histórico "dev-secret-change-me-for-prod" — los tokens
+# emitidos serían triviales de forjar. Si necesitás levantar local sin .env,
+# setealo en el shell antes de uvicorn (`export JWT_SECRET=...`).
+_LEGACY_DEFAULT = "dev-secret-change-me-for-prod"
+if not JWT_SECRET or JWT_SECRET == _LEGACY_DEFAULT:
+    raise RuntimeError(
+        "JWT_SECRET no configurado: setear env var con un secreto fuerte "
+        "(>=32 chars, random). Ejemplo: "
+        "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"` y "
+        "pegarlo en .env / Azure App Settings."
+    )
 
 security = HTTPBearer(auto_error=False)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
