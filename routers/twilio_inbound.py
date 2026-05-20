@@ -786,24 +786,14 @@ def _dispatch(
     from core.state import is_operational_day_active
     if not _is_admin_or_ops(identity) and not is_operational_day_active():
         return _day_not_active_reply()
-    if _RE_KPIS.match(body):
-        return _cmd_kpis()
-    m = _RE_STATUS.match(body)
-    if m:
-        return _cmd_status(m.group(1))
-    m = _RE_RUTA.match(body)
-    if m:
-        return _cmd_ruta(m.group(1))
-    m = _RE_FOLIO.match(body)
-    if m:
-        return _cmd_folio(m.group(1))
-    m = _RE_REAGENDAR.match(body)
-    if m:
-        return _cmd_reagendar(m.group(1), m.group(2), identity)
-    m = _RE_MOTIVO.match(body)
-    if m:
-        return _cmd_motivo(m.group(1), m.group(2), m.group(3), identity)
-    # 3) Agente conversacional (toma control si nada matcheó).
+    # CR-016: los comandos operativos (status, folio, ruta, kpis, motivo,
+    # reagendar) YA NO matchean por regex acá. Se delegan al agente híbrido
+    # (`sims.whatsapp_agent.handle` → `sims.llm_agent.chat` con tool-calling).
+    # Eso destraba lenguaje natural ("cómo va mi ruta?" en lugar de "ruta X")
+    # y tolera typos. Las regex (_RE_STATUS, _RE_RUTA, etc.) quedan declaradas
+    # en este módulo por si en el futuro queremos reactivar atajos directos,
+    # pero NO se evalúan en el flow principal.
+    # 3) Agente conversacional híbrido (FSM en sesión activa + LLM en idle).
     try:
         from sims.whatsapp_agent import handle as _agent_handle
         return _agent_handle(phone, body, profile_name, identity)

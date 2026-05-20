@@ -907,8 +907,49 @@ def _render_client_visit(visit: dict) -> str:
 # Handler principal del agente
 # =============================================================================
 def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -> Optional[str]:
-    """Dispatch del FSM. Retorna mensaje para enviar o None si el agente no quiere
-    tomar el control (ej. body parece comando legacy).
+    """Híbrido FSM + LLM (CR-016).
+
+    Estrategia:
+      1. Si la sesión ya está en un flujo FSM en curso (awaiting_*, choosing_*,
+         menu_*, etc), se mantiene en el FSM legacy para no romper conversaciones.
+      2. Si la sesión está idle/None → se delega al LLM (Azure OpenAI gpt-4o-mini
+         con tool-calling). Eso destraba lenguaje natural y typos.
+      3. Si el LLM falla (sin creds, timeout, exception) → fallback al FSM legacy.
+
+    Comandos de compliance (ACTIVAR, stop, help, info, humano, gracias) NO
+    llegan acá — los matchea `_dispatch` en `routers/twilio_inbound.py` antes.
+    """
+    sess = Session.load(phone)
+    text_lower = (body or "").strip().lower()
+
+    # Casos "menu/salir/hola" siempre van al FSM legacy: necesitan resetear sesión
+    # y mostrar el menú estructurado. El LLM no debería decidir esto.
+    if text_lower in (
+        "menu", "menú", "inicio", "volver", "start", "hola",
+        "salir", "exit", "bye", "chao",
+    ):
+        return _legacy_fsm_dispatch(phone, body, profile_name, identity)
+
+    # Si la sesión está en un flujo FSM en curso (no idle), seguimos en FSM.
+    # Esto evita romper conversaciones tipo "elegí motivo 1-6" en curso.
+    if sess.state and sess.state != "idle":
+        return _legacy_fsm_dispatch(phone, body, profile_name, identity)
+
+    # Sesión idle → delegamos al LLM. Si falla, caemos al FSM legacy.
+    try:
+        from sims.llm_agent import chat as _llm_chat
+        from core.state import is_operational_day_active
+        day_active = is_operational_day_active()
+        day_state = "EN_CURSO" if day_active else "BORRADOR"
+        return _llm_chat(body or "", identity, day_state, phone=phone)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[llm_agent] fallo, fallback al FSM viejo: {e}")
+        return _legacy_fsm_dispatch(phone, body, profile_name, identity)
+
+
+def _legacy_fsm_dispatch(phone: str, body: str, profile_name: Optional[str], identity: dict) -> Optional[str]:
+    """Dispatch del FSM clásico (pre-CR-016). Retorna mensaje para enviar o None si el
+    agente no quiere tomar el control (ej. body parece comando legacy).
     """
     text = (body or "").strip()
     text_lower = text.lower()
