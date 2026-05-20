@@ -505,6 +505,31 @@ def _cmd_thanks() -> str:
     return "👍"
 
 
+def _is_admin_or_ops(identity: dict) -> bool:
+    """True si el usuario está identificado como falabella_admin o falabella_ops.
+    Estos roles bypass el gate de día operativo (testing/debug).
+
+    Considera ambos shapes de identity:
+      - twilio inbound: `user_role` (poblado por _identify_phone via fpoc_users)
+      - agent_web: `role` (poblado por _identity_from_user con CurrentUser.role)
+    """
+    role = (identity.get("user_role") or identity.get("role") or "").lower()
+    return role in ("falabella_admin", "falabella_ops")
+
+
+def _day_not_active_reply() -> str:
+    """Mensaje WhatsApp (<280 chars) cuando el bot rechaza queries operativas
+    porque el día no está EN_CURSO/PAUSADO."""
+    return (
+        "El día operativo todavía no está iniciado. Cuando el equipo cargue el "
+        "plan y arranque la jornada podrás consultar visitas, rutas y reportar "
+        "motivos. Por ahora podés mandar:\n"
+        "• help — ver comandos\n"
+        "• humano — escalar a un coordinador\n"
+        "• stop — darte de baja"
+    )
+
+
 def _cmd_kpis() -> str:
     from core.state import STATE
     if STATE.snapshot_df is None:
@@ -753,6 +778,14 @@ def _dispatch(
         return _cmd_human(phone, identity)
     if _RE_THANKS.match(body):
         return _cmd_thanks()
+    # 2.5) Day-state gate (CR-015): a partir de acá los comandos exponen data
+    # operativa (snapshot del simulador o lecturas de simpli_visits). Si el día
+    # NO está EN_CURSO/PAUSADO y el usuario no es admin/ops, rechazamos para
+    # no mostrar data sintética como real. stop/help/info/humano/thanks/activar
+    # ya pasaron arriba y son compliance/meta — no se gatean.
+    from core.state import is_operational_day_active
+    if not _is_admin_or_ops(identity) and not is_operational_day_active():
+        return _day_not_active_reply()
     if _RE_KPIS.match(body):
         return _cmd_kpis()
     m = _RE_STATUS.match(body)

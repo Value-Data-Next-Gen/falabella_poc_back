@@ -924,6 +924,29 @@ def handle(phone: str, body: str, profile_name: Optional[str], identity: dict) -
         Session.delete(phone)
         # cae al cargar Session abajo, que vendrá idle y disparará auto-detect
 
+    # CR-015: Day-state gate. El FSM lee STATE.snapshot_df (plan sintético) y
+    # responde como si fuera operación real. Si el día está BORRADOR/VALIDADO/
+    # CERRADO, no exponemos esa data a transportistas/drivers/contactos.
+    # Admin y ops siempre pasan (testing/debug). Por el path normal este gate
+    # ya lo aplicó twilio_inbound._dispatch antes de llamar `handle`, pero lo
+    # repetimos acá como defensa en profundidad para callers directos.
+    role = (identity.get("user_role") or identity.get("role") or "").lower()
+    if role not in ("falabella_admin", "falabella_ops"):
+        try:
+            from core.state import is_operational_day_active
+            if not is_operational_day_active():
+                return (
+                    "El día operativo todavía no está iniciado. Cuando el equipo "
+                    "cargue el plan y arranque la jornada podrás consultar visitas, "
+                    "rutas y reportar motivos. Por ahora podés mandar:\n"
+                    "• help — ver comandos\n"
+                    "• humano — escalar a un coordinador\n"
+                    "• stop — darte de baja"
+                )
+        except Exception:  # noqa: BLE001
+            # fail-open: si el gate falla, dejamos pasar el FSM.
+            pass
+
     sess = Session.load(phone)
 
     # Si no hay sesión activa o el usuario es nuevo: arrancamos en awaiting_role

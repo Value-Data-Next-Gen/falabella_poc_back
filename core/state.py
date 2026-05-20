@@ -747,3 +747,37 @@ class AppState:
 
 
 STATE = AppState()
+
+
+# ============================================================================
+# Day-state gate (usado por WhatsApp bot, CR-015)
+# ============================================================================
+def is_operational_day_active() -> bool:
+    """True si el día operativo de hoy está EN_CURSO (o PAUSADO si existiera).
+
+    La fuente de verdad es la columna `state` de `fpoc.planificacion_imports`
+    para la fecha de hoy. Estados posibles (Ronda 3):
+      BORRADOR | VALIDADO | EN_CURSO | CERRADO
+    PAUSADO se mantiene en la whitelist por defensiva (alias futuro / Ronda 4).
+
+    Si no hay fila para hoy o la query falla (tabla no existe, DB caída) →
+    devolvemos True para no romper el bot. Las queries operativas son menos
+    riesgosas que romper el canal entero.
+    """
+    try:
+        from core.db import get_conn
+        today = date.today().isoformat()
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT state FROM fpoc.planificacion_imports WHERE fecha = ?",
+                today,
+            )
+            r = cur.fetchone()
+        if r is None:
+            return False
+        state = str(r[0]).upper() if r[0] is not None else ""
+        return state in ("EN_CURSO", "PAUSADO")
+    except Exception:  # noqa: BLE001
+        # Tabla no existe / DB caída → no gate (fail-open).
+        return True
