@@ -23,6 +23,7 @@ from __future__ import annotations
 import json as _json
 import os
 import time
+from datetime import datetime
 from typing import Any, Optional
 
 from loguru import logger
@@ -539,7 +540,44 @@ _TOOL_HANDLERS = {
 # =============================================================================
 # System prompt
 # =============================================================================
-def _build_system_prompt(summary: dict, day_state: str) -> str:
+def _load_alert_context(phone: str) -> Optional[dict]:
+    """Si la sesión WhatsApp del phone tiene un `last_alerted_tid` activo
+    (timestamp `last_alerted_at` < 1h en UTC), devuelve `{tid, at}` para
+    inyectarlo al system prompt. Si no, devuelve None.
+
+    Soporta múltiples alertas activas: el campo `last_alerted_tid` se
+    sobrescribe en cada nueva alerta (`POST /api/admin/notify-eta-breach`),
+    por lo que siempre prevalece la MÁS RECIENTE. Eso evita ambigüedad
+    cuando el driver responde con texto libre.
+    """
+    if not phone:
+        return None
+    try:
+        from sims.whatsapp_agent import Session  # noqa: WPS433
+        sess = Session.load(phone)
+        ctx = sess.context or {}
+        tid = ctx.get("last_alerted_tid")
+        at = ctx.get("last_alerted_at")
+        if not tid or not at:
+            return None
+        try:
+            ts = datetime.fromisoformat(str(at).replace("Z", "+00:00").split("+")[0])
+        except Exception:  # noqa: BLE001
+            return None
+        delta = datetime.utcnow() - ts
+        if delta.total_seconds() > 3600:  # 1h TTL
+            return None
+        return {"tracking_id": str(tid), "at": str(at)}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[llm_agent] _load_alert_context({phone}) failed: {e}")
+        return None
+
+
+def _build_system_prompt(
+    summary: dict,
+    day_state: str,
+    alert_context: Optional[dict] = None,
+) -> str:
     role = str(summary.get("role") or "anonimo").lower()
     name = summary.get("name") or "amigo"
     empresa_nombre = summary.get("empresa_nombre") or "(empresa no identificada)"
@@ -562,6 +600,22 @@ def _build_system_prompt(summary: dict, day_state: str) -> str:
         motivos = []
 
     motivos_str = ", ".join(motivos) if motivos else "(catálogo no disponible)"
+
+    # Si el driver recibió hace < 1h una alerta ETA (POST /api/admin/notify-eta-breach),
+    # se inyecta el tracking_id en el system prompt para que el LLM lo use al
+    # llamar `report_motivo` sin que el driver tenga que tipearlo.
+    alert_clause = ""
+    if alert_context and alert_context.get("tracking_id"):
+        _alert_tid = alert_context["tracking_id"]
+        alert_clause = (
+            "\n\nCONTEXTO ACTIVO: El usuario recibió hace poco una alerta sobre "
+            f"la visita TID:{_alert_tid}. Si el usuario responde con cualquier "
+            "texto que parezca una causa/justificación (ej: 'se me pinchó la "
+            "rueda', 'siniestro', 'no estaba en casa'), DEBES llamar la tool "
+            f"`report_motivo` usando tracking_id={_alert_tid}, inferiendo el "
+            "motivo del catálogo CATÁLOGO_MOTIVOS y poniendo el texto completo "
+            "como comentario."
+        )
 
     gate_clause = ""
     if not day_active and not is_admin:
@@ -613,6 +667,7 @@ def _build_system_prompt(summary: dict, day_state: str) -> str:
         "5. NO inventes tracking_ids, folios, ni datos. Si no tenés algo, "
         "preguntá."
         f"{gate_clause}"
+        f"{alert_clause}"
     )
 
 
@@ -669,7 +724,8 @@ def chat(message: str, identity: dict, day_state: str, phone: str = "") -> str:
     )
     deployment = creds["deployment"]
 
-    system_prompt = _build_system_prompt(summary, day_state)
+    alert_context = _load_alert_context(phone)
+    system_prompt = _build_system_prompt(summary, day_state, alert_context)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": message},

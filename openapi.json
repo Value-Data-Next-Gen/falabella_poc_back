@@ -9148,6 +9148,100 @@
         }
       }
     },
+    "/api/admin/notify-day-start": {
+      "post": {
+        "tags": [
+          "admin-day-notifications"
+        ],
+        "summary": "Notify Day Start",
+        "description": "Dispara un broadcast de inicio de jornada a todos los drivers opted-in\nde la(s) empresa(s) que tienen visitas hoy. Usa template aprobado\n`vd_alerta_motivo_v2` con `severidad=INFO` y `motivo=INICIO DE JORNADA`.",
+        "operationId": "notify_day_start_api_admin_notify_day_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotifyDayStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotifyDayStartResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/admin/notify-eta-breach": {
+      "post": {
+        "tags": [
+          "admin-day-notifications"
+        ],
+        "summary": "Notify Eta Breach",
+        "description": "Manual trigger para disparar alerta de atraso ETA en una visita\nespecífica (uso QA / demo). Persiste el `tracking_id` en la sesión\nWhatsApp del driver para que el LLM agent pueda enlazar la respuesta\nlibre del driver con el `report_motivo` correspondiente.",
+        "operationId": "notify_eta_breach_api_admin_notify_eta_breach_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotifyEtaBreachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotifyEtaBreachResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/health": {
       "get": {
         "tags": [
@@ -16563,6 +16657,299 @@
           "status"
         ],
         "title": "NotificationResult"
+      },
+      "NotifyDayStartDriverItem": {
+        "properties": {
+          "driver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Id"
+          },
+          "driver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Name"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "vehicle": {
+            "type": "string",
+            "title": "Vehicle"
+          },
+          "patente_falsa": {
+            "type": "integer",
+            "title": "Patente Falsa"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "skipped_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skipped Reason"
+          },
+          "twilio_sid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Twilio Sid"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "vehicle",
+          "patente_falsa",
+          "pending",
+          "completed",
+          "total",
+          "status"
+        ],
+        "title": "NotifyDayStartDriverItem"
+      },
+      "NotifyDayStartRequest": {
+        "properties": {
+          "fecha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fecha",
+            "description": "Fecha planificada (YYYY-MM-DD). Default: hoy."
+          },
+          "empresa_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Id",
+            "description": "Si se indica, filtra a esa empresa. None = todas."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Si true, no envía WhatsApp; solo lista los drivers candidatos.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "NotifyDayStartRequest"
+      },
+      "NotifyDayStartResponse": {
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "title": "Fecha"
+          },
+          "empresa_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Id"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "notifications_sent": {
+            "type": "integer",
+            "title": "Notifications Sent"
+          },
+          "notifications_skipped": {
+            "type": "integer",
+            "title": "Notifications Skipped"
+          },
+          "notifications_failed": {
+            "type": "integer",
+            "title": "Notifications Failed"
+          },
+          "skipped_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skipped Reasons"
+          },
+          "drivers": {
+            "items": {
+              "$ref": "#/components/schemas/NotifyDayStartDriverItem"
+            },
+            "type": "array",
+            "title": "Drivers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fecha",
+          "dry_run",
+          "notifications_sent",
+          "notifications_skipped",
+          "notifications_failed",
+          "skipped_reasons",
+          "drivers"
+        ],
+        "title": "NotifyDayStartResponse"
+      },
+      "NotifyEtaBreachRequest": {
+        "properties": {
+          "tracking_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Tracking Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tracking_id"
+        ],
+        "title": "NotifyEtaBreachRequest"
+      },
+      "NotifyEtaBreachResponse": {
+        "properties": {
+          "tracking_id": {
+            "type": "string",
+            "title": "Tracking Id"
+          },
+          "driver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Id"
+          },
+          "driver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Name"
+          },
+          "driver_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Phone"
+          },
+          "vehicle": {
+            "type": "string",
+            "title": "Vehicle"
+          },
+          "twilio_sid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Twilio Sid"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tracking_id",
+          "vehicle",
+          "status"
+        ],
+        "title": "NotifyEtaBreachResponse"
       },
       "OnboardListResponse": {
         "properties": {
