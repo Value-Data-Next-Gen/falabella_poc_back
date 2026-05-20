@@ -33,6 +33,7 @@ from fastapi.responses import PlainTextResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from core.activation import build_activation_link, gen_activation_token
 from core.auth import CurrentUser, current_user
 from core.db import get_conn
 from core.schemas import (
@@ -126,6 +127,9 @@ def _row_to_contacto(r) -> ContactoOut:
     updated_at = r.updated_at
     if hasattr(updated_at, "isoformat"):
         updated_at = updated_at.isoformat()
+    token = getattr(r, "activation_token", None)
+    used_at = getattr(r, "activation_used_at", None)
+    used_iso = used_at.isoformat() if hasattr(used_at, "isoformat") else (str(used_at) if used_at else None)
     return ContactoOut(
         contact_id=int(r.contact_id),
         empresa_id=int(r.empresa_id),
@@ -142,6 +146,9 @@ def _row_to_contacto(r) -> ContactoOut:
         created_by_user_id=int(r.created_by_user_id) if r.created_by_user_id is not None else None,
         created_at=created_at,
         updated_at=updated_at,
+        activation_token=token,
+        activation_link=build_activation_link(token) if token else None,
+        activation_used_at=used_iso,
     )
 
 
@@ -273,7 +280,8 @@ def list_contactos(empresa_id: int, user: CurrentUser = Depends(current_user)) -
             """
             SELECT contact_id, empresa_id, nombre, rol, phone_e164, email,
                    severities_in, motivos_in, region_filter, opted_in_at,
-                   active, notes, created_by_user_id, created_at, updated_at
+                   active, notes, created_by_user_id, created_at, updated_at,
+                   activation_token, activation_used_at
             FROM fpoc_empresa_contactos
             WHERE empresa_id = ? AND active = 1
             ORDER BY rol, nombre
@@ -314,26 +322,30 @@ def create_contacto(
         if cur.fetchone() is not None:
             raise HTTPException(409, f"ya existe un contacto activo con ese phone en empresa {empresa_id}")
 
+        # CR-014: token de activación para wa.me link (workaround error 63112).
+        activation_token = gen_activation_token()
         cur.execute(
             """
             INSERT INTO fpoc_empresa_contactos
               (empresa_id, nombre, rol, phone_e164, email,
                severities_in, motivos_in, region_filter,
-               opted_in_at, active, notes, created_by_user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+               opted_in_at, active, notes, created_by_user_id, activation_token)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?)
             """,
             empresa_id, req.nombre.strip(), rol, phone, (req.email or None),
             json.dumps(severities) if severities else None,
             json.dumps(motivos) if motivos else None,
             region, (req.notes or None),
             user.user_id,
+            activation_token,
         )
         cn.commit()
         cur.execute(
             """
             SELECT contact_id, empresa_id, nombre, rol, phone_e164, email,
                    severities_in, motivos_in, region_filter, opted_in_at,
-                   active, notes, created_by_user_id, created_at, updated_at
+                   active, notes, created_by_user_id, created_at, updated_at,
+                   activation_token, activation_used_at
             FROM fpoc_empresa_contactos
             WHERE contact_id = last_insert_rowid()
             """
@@ -395,7 +407,8 @@ def update_contacto(
             """
             SELECT contact_id, empresa_id, nombre, rol, phone_e164, email,
                    severities_in, motivos_in, region_filter, opted_in_at,
-                   active, notes, created_by_user_id, created_at, updated_at
+                   active, notes, created_by_user_id, created_at, updated_at,
+                   activation_token, activation_used_at
             FROM fpoc_empresa_contactos WHERE contact_id = ?
             """,
             contact_id,
@@ -425,6 +438,67 @@ def delete_contacto(
     return {"deleted": contact_id}
 
 
+class ActivationLinkOut(BaseModel):
+    token: str
+    link: str
+    used_at: Optional[str] = None
+    is_used: bool
+
+
+@router.get(
+    "/empresas/{empresa_id}/contactos/{contact_id}/activation-link",
+    response_model=ActivationLinkOut,
+)
+def get_contacto_activation_link(
+    empresa_id: int,
+    contact_id: int,
+    user: CurrentUser = Depends(current_user),
+) -> ActivationLinkOut:
+    """Devuelve (o regenera) el wa.me activation link del contacto.
+
+    Si el token ya está usado se regenera limpiando used_at — permite reenviar
+    el link a un contacto que ya activó pero perdió el WhatsApp.
+
+    Permisos: falabella_admin, falabella_ops, o transport_manager sobre
+    contactos de SU empresa.
+    """
+    # Permisos: scope empresa para transport_manager.
+    _scope_empresa(user, empresa_id)
+    if user.role not in ("falabella_admin", "falabella_ops", "transport_manager"):
+        raise HTTPException(403, "sin permisos para gestionar este contacto")
+
+    with get_conn() as cn:
+        _ensure_empresa_exists(cn, empresa_id)
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT activation_token, activation_used_at FROM fpoc_empresa_contactos "
+            "WHERE contact_id = ? AND empresa_id = ?",
+            contact_id, empresa_id,
+        )
+        r = cur.fetchone()
+        if r is None:
+            raise HTTPException(404, f"contact_id {contact_id} no encontrado en empresa {empresa_id}")
+        token = getattr(r, "activation_token", None)
+        used_at = getattr(r, "activation_used_at", None)
+        if not token or used_at is not None:
+            token = gen_activation_token()
+            cur.execute(
+                "UPDATE fpoc_empresa_contactos SET activation_token = ?, "
+                "activation_used_at = NULL, updated_at = CURRENT_TIMESTAMP "
+                "WHERE contact_id = ? AND empresa_id = ?",
+                token, contact_id, empresa_id,
+            )
+            cn.commit()
+            used_at = None
+    used_iso = used_at.isoformat() if hasattr(used_at, "isoformat") else (str(used_at) if used_at else None)
+    return ActivationLinkOut(
+        token=token,
+        link=build_activation_link(token),
+        used_at=used_iso,
+        is_used=used_at is not None,
+    )
+
+
 @router.post("/empresas/{empresa_id}/contactos/{contact_id}/opt-in", response_model=ContactoOut)
 def mark_opt_in(
     empresa_id: int,
@@ -448,7 +522,8 @@ def mark_opt_in(
             """
             SELECT contact_id, empresa_id, nombre, rol, phone_e164, email,
                    severities_in, motivos_in, region_filter, opted_in_at,
-                   active, notes, created_by_user_id, created_at, updated_at
+                   active, notes, created_by_user_id, created_at, updated_at,
+                   activation_token, activation_used_at
             FROM fpoc_empresa_contactos WHERE contact_id = ?
             """,
             contact_id,

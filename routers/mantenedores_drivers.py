@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from core.activation import build_activation_link, gen_activation_token
 from core.auth import CurrentUser
 from core.db import get_conn
 from routers.mantenedores_shared import (
@@ -73,10 +74,24 @@ class DriverOut(BaseModel):
     joined_at: Optional[str] = None
     active: bool
     is_problem_hidden: bool = False
+    # CR-014: activation token (wa.me link workaround para error 63112 de Meta).
+    activation_token: Optional[str] = None
+    activation_link: Optional[str] = None
+    activation_used_at: Optional[str] = None
+
+
+class ActivationLinkOut(BaseModel):
+    token: str
+    link: str
+    used_at: Optional[str] = None
+    is_used: bool
 
 
 def _driver_row(r) -> DriverOut:
     joined = r.joined_at
+    token = getattr(r, "activation_token", None)
+    used_at = getattr(r, "activation_used_at", None)
+    used_iso = used_at.isoformat() if hasattr(used_at, "isoformat") else (str(used_at) if used_at else None)
     return DriverOut(
         driver_id=r.driver_id, name=r.name, phone=r.phone, license=r.license,
         empresa_id=int(r.empresa_id) if r.empresa_id is not None else None,
@@ -87,6 +102,9 @@ def _driver_row(r) -> DriverOut:
         joined_at=joined.isoformat() if hasattr(joined, "isoformat") else (joined or None),
         active=bool(r.active),
         is_problem_hidden=bool(r.is_problem_hidden),
+        activation_token=token,
+        activation_link=build_activation_link(token) if token else None,
+        activation_used_at=used_iso,
     )
 
 
@@ -99,7 +117,8 @@ def fetch_driver(driver_id: str) -> DriverOut:
                        e.nombre AS empresa_nombre,
                        d.vehicle_id, d.vehicle_name,
                        d.rating, d.deliveries_30d, d.fail_rate_30d, d.joined_at, d.active,
-                       d.is_problem_hidden
+                       d.is_problem_hidden,
+                       d.activation_token, d.activation_used_at
                 FROM fpoc.drivers d
                 LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = d.empresa_id
                 WHERE d.driver_id = ?""",
@@ -122,7 +141,8 @@ def list_drivers(user: CurrentUser = Depends(require_fleet_access)) -> list[Driv
                        e.nombre AS empresa_nombre,
                        d.vehicle_id, d.vehicle_name,
                        d.rating, d.deliveries_30d, d.fail_rate_30d, d.joined_at, d.active,
-                       d.is_problem_hidden
+                       d.is_problem_hidden,
+                       d.activation_token, d.activation_used_at
                 FROM fpoc.drivers d
                 LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = d.empresa_id
                 {where}
@@ -135,19 +155,23 @@ def list_drivers(user: CurrentUser = Depends(require_fleet_access)) -> list[Driv
 @router.post("/drivers", response_model=DriverOut)
 def create_driver(req: DriverIn, user: CurrentUser = Depends(require_fleet_access)) -> DriverOut:
     enforce_fleet_empresa(user, req.empresa_id)
+    # CR-014: token de activación para evitar el bloqueo 63112 de Meta.
+    activation_token = gen_activation_token()
     with get_conn() as cn:
         cur = cn.cursor()
         try:
             cur.execute(
                 """INSERT INTO fpoc.drivers
                     (driver_id, name, phone, license, empresa_id, vehicle_id, vehicle_name,
-                     rating, deliveries_30d, fail_rate_30d, joined_at, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     rating, deliveries_30d, fail_rate_30d, joined_at, active,
+                     activation_token)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 req.driver_id, req.name, req.phone, req.license,
                 req.empresa_id, req.vehicle_id, req.vehicle_name,
                 req.rating, req.deliveries_30d, req.fail_rate_30d,
                 req.joined_at.isoformat() if req.joined_at else None,
                 1 if req.active else 0,
+                activation_token,
             )
             cn.commit()
         except Exception as e:  # noqa: BLE001
@@ -155,6 +179,45 @@ def create_driver(req: DriverIn, user: CurrentUser = Depends(require_fleet_acces
             raise HTTPException(409, f"driver_id duplicado o datos inválidos: {e}")
     refresh_state_maestros()
     return fetch_driver(req.driver_id)
+
+
+@router.get("/drivers/{driver_id}/activation-link", response_model=ActivationLinkOut)
+def get_driver_activation_link(
+    driver_id: str,
+    user: CurrentUser = Depends(require_fleet_access),
+) -> ActivationLinkOut:
+    """Devuelve (o regenera) el wa.me activation link del driver.
+
+    Si el token ya está usado, se regenera limpiando used_at. transport_manager
+    solo puede pedirlo para drivers de SU empresa (enforce vía existing.empresa_id).
+    """
+    existing = fetch_driver(driver_id)  # 404 si no existe
+    enforce_fleet_empresa(user, existing.empresa_id)
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT activation_token, activation_used_at FROM fpoc.drivers WHERE driver_id = ?",
+            driver_id,
+        )
+        r = cur.fetchone()
+        token = getattr(r, "activation_token", None) if r else None
+        used_at = getattr(r, "activation_used_at", None) if r else None
+        if not token or used_at is not None:
+            token = gen_activation_token()
+            cur.execute(
+                "UPDATE fpoc.drivers SET activation_token = ?, activation_used_at = NULL "
+                "WHERE driver_id = ?",
+                token, driver_id,
+            )
+            cn.commit()
+            used_at = None
+    used_iso = used_at.isoformat() if hasattr(used_at, "isoformat") else (str(used_at) if used_at else None)
+    return ActivationLinkOut(
+        token=token,
+        link=build_activation_link(token),
+        used_at=used_iso,
+        is_used=used_at is not None,
+    )
 
 
 @router.put("/drivers/{driver_id}", response_model=DriverOut)

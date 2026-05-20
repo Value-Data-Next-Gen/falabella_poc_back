@@ -167,4 +167,7 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     # CR-013: copiloto_decisions — feedback del operador sobre sugerencias IA.
     # Escrita bifurcada (sqlite + sqlserver) → _wrap_quiet la ejecuta en ambos.
     ("024_copiloto_decisions",        _wrap_quiet("fpoc_loader.migrate_copiloto_decisions")),
+    # CR-014: activation_token + activation_used_at en users/drivers/contactos.
+    # Habilita wa.me activation links (workaround del error 63112 de Meta).
+    ("025_activation_tokens",         _wrap_quiet("fpoc_loader.migrate_activation_tokens")),
 ]

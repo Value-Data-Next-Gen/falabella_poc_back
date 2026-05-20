@@ -222,6 +222,7 @@ def _log_inbound(
 # =============================================================================
 # Command parser
 # =============================================================================
+_RE_ACTIVAR = re.compile(r"^\s*ACTIVAR\s+([A-Z0-9]{6,16})\s*$", re.IGNORECASE)
 _RE_STATUS = re.compile(r"^\s*status\s+(\S+)\s*$", re.IGNORECASE)
 _RE_RUTA = re.compile(r"^\s*ruta\s+(R-\d+-\d+|\S+)\s*$", re.IGNORECASE)
 _RE_FOLIO = re.compile(r"^\s*folio\s+(\S+)\s*$", re.IGNORECASE)
@@ -521,6 +522,101 @@ def _cmd_kpis() -> str:
     )
 
 
+def _cmd_activar(token: str, phone: str, profile_name: Optional[str]) -> str:
+    """CR-014: activación user-initiated por wa.me link.
+
+    Busca el token en fpoc_users / fpoc_drivers / fpoc_empresa_contactos (en ese
+    orden de prioridad — un user con login mandando ACTIVAR es más probable que
+    un driver, y ambos más probables que un contacto). El primer match con
+    activation_used_at IS NULL gana.
+
+    Side-effects sobre el row encontrado:
+      - phone_e164 = <from_phone> (sobreescribe el placeholder con el real)
+      - activation_used_at = CURRENT_TIMESTAMP
+      - users: activo=1, notify_whatsapp=1
+      - drivers: active=1, notify_whatsapp=1, opted_in_at=CURRENT_TIMESTAMP
+      - contactos: active=1, opted_in_at=CURRENT_TIMESTAMP
+
+    El reply se manda freeform porque este inbound es 100% user-initiated (no
+    es reply a un template) → Meta abre la ventana 24h.
+    """
+    token_norm = token.strip().upper()
+    if not token_norm:
+        return "No reconocí ese código. Pedile al admin un nuevo link de activación."
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+
+            # 1) users
+            cur.execute(
+                "SELECT user_id, display_name FROM fpoc_users "
+                "WHERE activation_token = ? AND activation_used_at IS NULL",
+                (token_norm,),
+            )
+            r = cur.fetchone()
+            if r is not None:
+                uid = int(r[0])
+                nombre = str(r[1] or "").strip() or (profile_name or "")
+                cur.execute(
+                    "UPDATE fpoc_users SET phone_e164 = ?, notify_whatsapp = 1, "
+                    "activo = 1, activation_used_at = CURRENT_TIMESTAMP "
+                    "WHERE user_id = ?",
+                    (phone, uid),
+                )
+                cn.commit()
+                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched user_id={uid} phone={phone}")
+                return f"✅ Cuenta activada, {nombre}! Mandá 'menu' para empezar."
+
+            # 2) drivers
+            cur.execute(
+                "SELECT driver_id, name FROM fpoc_drivers "
+                "WHERE activation_token = ? AND activation_used_at IS NULL",
+                (token_norm,),
+            )
+            r = cur.fetchone()
+            if r is not None:
+                drv_id = str(r[0])
+                nombre = str(r[1] or "").strip() or (profile_name or "")
+                cur.execute(
+                    "UPDATE fpoc_drivers SET phone_e164 = ?, notify_whatsapp = 1, "
+                    "opted_in_at = CURRENT_TIMESTAMP, active = 1, "
+                    "activation_used_at = CURRENT_TIMESTAMP "
+                    "WHERE driver_id = ?",
+                    (phone, drv_id),
+                )
+                cn.commit()
+                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched driver_id={drv_id} phone={phone}")
+                return f"✅ Cuenta activada, {nombre}! Mandá 'menu' para empezar."
+
+            # 3) empresa_contactos
+            cur.execute(
+                "SELECT contact_id, nombre FROM fpoc_empresa_contactos "
+                "WHERE activation_token = ? AND activation_used_at IS NULL",
+                (token_norm,),
+            )
+            r = cur.fetchone()
+            if r is not None:
+                cid = int(r[0])
+                nombre = str(r[1] or "").strip() or (profile_name or "")
+                cur.execute(
+                    "UPDATE fpoc_empresa_contactos SET phone_e164 = ?, "
+                    "opted_in_at = CURRENT_TIMESTAMP, active = 1, "
+                    "activation_used_at = CURRENT_TIMESTAMP, "
+                    "updated_at = CURRENT_TIMESTAMP "
+                    "WHERE contact_id = ?",
+                    (phone, cid),
+                )
+                cn.commit()
+                logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched contact_id={cid} phone={phone}")
+                return f"✅ Cuenta activada, {nombre}! Mandá 'menu' para empezar."
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[twilio-inbound] ACTIVAR {token_norm} falló: {e}")
+        return "Tuvimos un problema activando tu cuenta. Pedile al admin un nuevo link."
+
+    logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} no match (o ya usado) phone={phone}")
+    return "No reconocí ese código. Pedile al admin un nuevo link de activación."
+
+
 def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str] = None) -> Optional[str]:
     """Devuelve respuesta TwiML o None si no hay match.
 
@@ -531,7 +627,14 @@ def _dispatch(body: str, identity: dict, phone: str, profile_name: Optional[str]
     """
     if not body:
         return None
-    # 1) Compliance primero: opt-out manda y termina cualquier sesión activa.
+    # 0) CR-014: activación por wa.me link. Va ANTES de cualquier otro check
+    # porque puede ser el primerísimo mensaje del usuario y necesita abrir la
+    # ventana 24h sin pasar por templates ni FSM. Si matchea, devolvemos
+    # freeform y listo.
+    m = _RE_ACTIVAR.match(body)
+    if m:
+        return _cmd_activar(m.group(1), phone, profile_name)
+    # 1) Compliance: opt-out manda y termina cualquier sesión activa.
     if _RE_STOP.match(body):
         try:
             from sims.whatsapp_agent import Session as _WaSession

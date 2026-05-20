@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr, Field
 
+from core.activation import build_activation_link, gen_activation_token
 from core.auth import CurrentUser, current_user, require_admin
 from core.db import get_conn
 
@@ -71,12 +72,24 @@ class UserOut(BaseModel):
     notify_whatsapp: bool
     created_at: Optional[str] = None
     last_login: Optional[str] = None
+    # CR-014: activation token (wa.me link workaround para error 63112 de Meta).
+    activation_token: Optional[str] = None
+    activation_link: Optional[str] = None
+    activation_used_at: Optional[str] = None
+
+
+class ActivationLinkOut(BaseModel):
+    token: str
+    link: str
+    used_at: Optional[str] = None
+    is_used: bool
 
 
 def _user_row(r) -> UserOut:
     def _iso(v):
         if v is None: return None
         return v.isoformat() if hasattr(v, "isoformat") else str(v)
+    token = getattr(r, "activation_token", None)
     return UserOut(
         user_id=int(r.user_id), email=r.email, display_name=r.display_name,
         role=r.role,
@@ -89,6 +102,9 @@ def _user_row(r) -> UserOut:
         notify_whatsapp=bool(r.notify_whatsapp),
         created_at=_iso(r.created_at),
         last_login=_iso(r.last_login),
+        activation_token=token,
+        activation_link=build_activation_link(token) if token else None,
+        activation_used_at=_iso(getattr(r, "activation_used_at", None)),
     )
 
 
@@ -96,6 +112,7 @@ _USER_SELECT = """
     SELECT u.user_id, u.email, u.display_name, u.role, u.empresa_id,
            u.driver_id, u.activo, u.phone_e164, u.notify_whatsapp,
            u.created_at, u.last_login,
+           u.activation_token, u.activation_used_at,
            e.nombre AS empresa_nombre,
            d.name AS driver_name
     FROM fpoc.users u
@@ -149,6 +166,8 @@ def create_user(req: UserIn, user: CurrentUser = Depends(current_user)) -> UserO
             if int(row.empresa_id) != req.empresa_id:
                 raise HTTPException(400, "driver_id no pertenece a la empresa indicada")
     email_lower = req.email.lower()
+    # CR-014: token de activación para evitar el bloqueo 63112 de Meta (wa.me link).
+    activation_token = gen_activation_token()
     with get_conn() as cn:
         cur = cn.cursor()
         try:
@@ -156,12 +175,13 @@ def create_user(req: UserIn, user: CurrentUser = Depends(current_user)) -> UserO
                 """
                 INSERT INTO fpoc.users
                   (email, password_hash, display_name, role, empresa_id, driver_id, activo,
-                   phone_e164, notify_whatsapp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   phone_e164, notify_whatsapp, activation_token)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 email_lower, bcrypt.hash(req.password), req.display_name,
                 req.role, req.empresa_id, req.driver_id, 1 if req.activo else 0,
                 req.phone_e164, 1 if req.notify_whatsapp else 0,
+                activation_token,
             )
             cn.commit()
         except Exception as e:  # noqa: BLE001
@@ -169,6 +189,46 @@ def create_user(req: UserIn, user: CurrentUser = Depends(current_user)) -> UserO
             raise HTTPException(409, f"email duplicado o datos inválidos: {e}")
         cur.execute(_USER_SELECT + " WHERE u.email = ?", email_lower)
         return _user_row(cur.fetchone())
+
+
+@router.get("/users/{user_id}/activation-link", response_model=ActivationLinkOut)
+def get_user_activation_link(
+    user_id: int,
+    _: CurrentUser = Depends(require_admin),
+) -> ActivationLinkOut:
+    """Devuelve (o regenera) el wa.me activation link de un user.
+
+    Si el token está usado (activation_used_at IS NOT NULL) se regenera uno
+    nuevo y se limpia used_at — el admin puede reenviar el link cuando quiera.
+    Solo admin/ops pueden llamar (require_admin gatea falabella_admin).
+    """
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT activation_token, activation_used_at FROM fpoc.users WHERE user_id = ?",
+            user_id,
+        )
+        r = cur.fetchone()
+        if r is None:
+            raise HTTPException(404, "user no encontrado")
+        token = getattr(r, "activation_token", None)
+        used_at = getattr(r, "activation_used_at", None)
+        if not token or used_at is not None:
+            token = gen_activation_token()
+            cur.execute(
+                "UPDATE fpoc.users SET activation_token = ?, activation_used_at = NULL "
+                "WHERE user_id = ?",
+                token, user_id,
+            )
+            cn.commit()
+            used_at = None
+    used_iso = used_at.isoformat() if hasattr(used_at, "isoformat") else (str(used_at) if used_at else None)
+    return ActivationLinkOut(
+        token=token,
+        link=build_activation_link(token),
+        used_at=used_iso,
+        is_used=used_at is not None,
+    )
 
 
 @router.put("/users/{user_id}", response_model=UserOut)

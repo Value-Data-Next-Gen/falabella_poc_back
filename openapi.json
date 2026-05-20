@@ -2250,6 +2250,55 @@
         ]
       }
     },
+    "/api/admin/users/{user_id}/activation-link": {
+      "get": {
+        "tags": [
+          "admin-maestros",
+          "admin-maestros"
+        ],
+        "summary": "Get User Activation Link",
+        "description": "Devuelve (o regenera) el wa.me activation link de un user.\n\nSi el token está usado (activation_used_at IS NOT NULL) se regenera uno\nnuevo y se limpia used_at — el admin puede reenviar el link cuando quiera.\nSolo admin/ops pueden llamar (require_admin gatea falabella_admin).",
+        "operationId": "get_user_activation_link_api_admin_users__user_id__activation_link_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivationLinkOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/users/{user_id}": {
       "put": {
         "tags": [
@@ -2488,6 +2537,55 @@
             "HTTPBearer": []
           }
         ]
+      }
+    },
+    "/api/admin/drivers/{driver_id}/activation-link": {
+      "get": {
+        "tags": [
+          "admin-maestros",
+          "admin-maestros"
+        ],
+        "summary": "Get Driver Activation Link",
+        "description": "Devuelve (o regenera) el wa.me activation link del driver.\n\nSi el token ya está usado, se regenera limpiando used_at. transport_manager\nsolo puede pedirlo para drivers de SU empresa (enforce vía existing.empresa_id).",
+        "operationId": "get_driver_activation_link_api_admin_drivers__driver_id__activation_link_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "driver_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Driver Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivationLinkOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/admin/drivers/{driver_id}": {
@@ -5918,6 +6016,63 @@
                 "schema": {
                   "type": "object",
                   "title": "Response Delete Contacto Api Empresa Contactos Empresas  Empresa Id  Contactos  Contact Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/empresa-contactos/empresas/{empresa_id}/contactos/{contact_id}/activation-link": {
+      "get": {
+        "tags": [
+          "empresa-contactos"
+        ],
+        "summary": "Get Contacto Activation Link",
+        "description": "Devuelve (o regenera) el wa.me activation link del contacto.\n\nSi el token ya está usado se regenera limpiando used_at — permite reenviar\nel link a un contacto que ya activó pero perdió el WhatsApp.\n\nPermisos: falabella_admin, falabella_ops, o transport_manager sobre\ncontactos de SU empresa.",
+        "operationId": "get_contacto_activation_link_api_empresa_contactos_empresas__empresa_id__contactos__contact_id__activation_link_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "empresa_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Empresa Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Contact Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivationLinkOut"
                 }
               }
             }
@@ -10125,6 +10280,40 @@
         ],
         "title": "AccessSummary"
       },
+      "ActivationLinkOut": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "link": {
+            "type": "string",
+            "title": "Link"
+          },
+          "used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used At"
+          },
+          "is_used": {
+            "type": "boolean",
+            "title": "Is Used"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "link",
+          "is_used"
+        ],
+        "title": "ActivationLinkOut"
+      },
       "AlertEvent": {
         "properties": {
           "timestamp": {
@@ -11780,6 +11969,39 @@
               }
             ],
             "title": "Updated At"
+          },
+          "activation_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Token"
+          },
+          "activation_link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Link"
+          },
+          "activation_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Used At"
           }
         },
         "type": "object",
@@ -13612,6 +13834,39 @@
             "type": "boolean",
             "title": "Is Problem Hidden",
             "default": false
+          },
+          "activation_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Token"
+          },
+          "activation_link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Link"
+          },
+          "activation_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Used At"
           }
         },
         "type": "object",
@@ -19235,6 +19490,39 @@
               }
             ],
             "title": "Last Login"
+          },
+          "activation_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Token"
+          },
+          "activation_link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Link"
+          },
+          "activation_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Used At"
           }
         },
         "type": "object",

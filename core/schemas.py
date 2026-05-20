@@ -250,6 +250,10 @@ class ContactoOut(BaseModel):
     created_by_user_id: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    # CR-014: activation token (wa.me link workaround para error 63112 de Meta).
+    activation_token: Optional[str] = None
+    activation_link: Optional[str] = None
+    activation_used_at: Optional[str] = None
 
 
 class ContactoCreate(BaseModel):
