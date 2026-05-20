@@ -27,6 +27,164 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from core.db import get_conn
+
+
+# =============================================================================
+# Identity helpers — resuelven nombre/rol/empresa de cualquier número conocido
+# =============================================================================
+def _lookup_user_name(user_id: Optional[int]) -> Optional[str]:
+    """Devuelve display_name del user_id (fpoc.users) o None."""
+    if not user_id:
+        return None
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT display_name FROM fpoc.users WHERE user_id = ?",
+                (int(user_id),),
+            )
+            r = cur.fetchone()
+        if r is None:
+            return None
+        return str(r[0]) if r[0] is not None else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[llm_agent] _lookup_user_name({user_id}) falló: {e}")
+        return None
+
+
+def _lookup_driver(driver_id: Optional[str]) -> tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
+    """Devuelve (name, empresa_id, vehicle_id, vehicle_name) del driver o tupla de Nones."""
+    if not driver_id:
+        return (None, None, None, None)
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT name, empresa_id, vehicle_id, vehicle_name "
+                "FROM fpoc.drivers WHERE driver_id = ? AND active = 1",
+                (str(driver_id),),
+            )
+            r = cur.fetchone()
+        if r is None:
+            return (None, None, None, None)
+        name = str(r[0]) if r[0] is not None else None
+        empresa_id = int(r[1]) if r[1] is not None else None
+        vehicle_id = int(r[2]) if r[2] is not None else None
+        vehicle_name = str(r[3]) if r[3] is not None else None
+        return (name, empresa_id, vehicle_id, vehicle_name)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[llm_agent] _lookup_driver({driver_id}) falló: {e}")
+        return (None, None, None, None)
+
+
+def _lookup_contact(contact_id: Optional[int]) -> tuple[Optional[str], Optional[int]]:
+    """Devuelve (nombre, empresa_id) del contacto o tupla de Nones."""
+    if not contact_id:
+        return (None, None)
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT nombre, empresa_id FROM fpoc.empresa_contactos "
+                "WHERE contact_id = ? AND active = 1",
+                (int(contact_id),),
+            )
+            r = cur.fetchone()
+        if r is None:
+            return (None, None)
+        name = str(r[0]) if r[0] is not None else None
+        empresa_id = int(r[1]) if r[1] is not None else None
+        return (name, empresa_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[llm_agent] _lookup_contact({contact_id}) falló: {e}")
+        return (None, None)
+
+
+def _lookup_empresa_nombre(empresa_id: Optional[int]) -> Optional[str]:
+    if not empresa_id:
+        return None
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT nombre FROM fpoc.empresas_transporte WHERE empresa_id = ?",
+                (int(empresa_id),),
+            )
+            r = cur.fetchone()
+        if r is None:
+            return None
+        return str(r[0]) if r[0] is not None else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[llm_agent] _lookup_empresa_nombre({empresa_id}) falló: {e}")
+        return None
+
+
+def _summarize_identity(identity: dict) -> dict:
+    """Resume la identidad cruda de `_identify_phone` en un dict canónico que
+    se inyecta al system prompt y a los tool handlers.
+
+    Prioridad: user (rol explicito) > driver > contacto > anónimo.
+    Un mismo número puede estar simultáneamente en las 3 tablas (ej Gonzalo:
+    DRV-003 + contacto 5 + posiblemente user). Tomamos user primero porque su
+    `role` es lo más informativo para el LLM.
+    """
+    identity = identity or {}
+    user_role = identity.get("user_role")  # transport_manager / falabella_admin / falabella_ops
+    user_id = identity.get("user_id")
+    driver_id = identity.get("driver_id")
+    contact_id = identity.get("contact_id")
+
+    name: Optional[str] = None
+    role_label: str
+    empresa_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+    vehicle_name: Optional[str] = None
+
+    # Si es driver: SIEMPRE resolvemos vehicle/empresa desde fpoc.drivers para
+    # tener los datos completos disponibles a las tools (get_route).
+    if driver_id:
+        d_name, d_empresa, vehicle_id, vehicle_name = _lookup_driver(driver_id)
+        if d_name:
+            name = d_name
+        if d_empresa is not None:
+            empresa_id = d_empresa
+
+    if user_role:
+        role_label = str(user_role)
+        u_name = _lookup_user_name(user_id)
+        if u_name:
+            name = u_name
+        if identity.get("user_empresa_id") is not None:
+            empresa_id = identity.get("user_empresa_id")
+    elif driver_id:
+        role_label = "driver"
+    elif contact_id:
+        role_label = "contacto"
+        c_name, c_empresa = _lookup_contact(contact_id)
+        if c_name:
+            name = c_name
+        if c_empresa is not None and empresa_id is None:
+            empresa_id = c_empresa
+    else:
+        role_label = "anonimo"
+
+    empresa_nombre = _lookup_empresa_nombre(empresa_id)
+
+    summary = {
+        "name": name or "amigo",
+        "role": role_label,
+        "is_admin_or_ops": role_label in ("falabella_admin", "falabella_ops"),
+        "empresa_id": empresa_id,
+        "empresa_nombre": empresa_nombre,
+        "driver_id": driver_id,
+        "contact_id": contact_id,
+        "user_id": user_id,
+        "vehicle_id": vehicle_id,
+        "vehicle_name": vehicle_name,
+    }
+    return summary
+
 
 # =============================================================================
 # Configuración Azure OpenAI (mismo patrón que routers/motivo_classifier.py)
@@ -241,21 +399,52 @@ def _tool_get_route(args: dict, ctx: dict) -> str:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[llm_agent] _cmd_ruta falló: {e}")
             return f"No pude obtener la ruta {ruta_id}."
-    # Si no, intentamos resumir la ruta del driver del usuario.
-    identity = ctx.get("identity") or {}
-    driver_id = (args.get("driver_id") or "").strip() or identity.get("driver_id")
+
+    summary = ctx.get("summary") or {}
+    arg_driver_id = (args.get("driver_id") or "").strip()
+    # Prioridad: arg LLM explícito > driver_id del summary (caller es driver)
+    driver_id: Optional[str] = arg_driver_id or summary.get("driver_id")
+
     if not driver_id:
-        # Manager sin ruta_id explícita → devolver KPIs como mejor alternativa
-        return _tool_get_kpis({}, ctx)
-    try:
-        from sims.whatsapp_agent import (
-            _find_driver_by_id_or_rut,
-            _render_route,
+        # No es driver y no pidió uno: si es admin/ops devolvemos KPIs como
+        # mejor alternativa; si no, decimos que no identificamos su ruta.
+        if summary.get("is_admin_or_ops"):
+            return _tool_get_kpis({}, ctx)
+        return (
+            "No identifico tu ruta — debe haber un driver asociado a tu número. "
+            "Si sos conductor, pedile al coordinador que vincule tu WhatsApp."
         )
-        driver = _find_driver_by_id_or_rut(str(driver_id))
-        if driver is None:
-            return f"No encuentro al driver {driver_id}."
-        return _render_route(driver)
+
+    # Si el LLM mandó un driver_id distinto al del summary, lo resolvemos por DB.
+    # Si coincide con el del summary, reutilizamos los datos ya cacheados (evita
+    # ida y vuelta a DB y evita el bug de CAST(vehicle_id AS TEXT) que tiene
+    # _find_driver_by_id_or_rut en whatsapp_agent).
+    if arg_driver_id and arg_driver_id != (summary.get("driver_id") or ""):
+        name, empresa_id, vehicle_id, vehicle_name = _lookup_driver(arg_driver_id)
+        if name is None and empresa_id is None and vehicle_id is None:
+            return f"No encuentro al driver {arg_driver_id}."
+    else:
+        name = summary.get("name")
+        vehicle_id = summary.get("vehicle_id")
+        vehicle_name = summary.get("vehicle_name")
+
+    if vehicle_id is None:
+        return (
+            f"El driver {driver_id} no tiene vehículo asignado para hoy. "
+            "Pedile al coordinador que asigne un vehículo."
+        )
+
+    # Construimos el dict que _render_route espera (mismo shape que arma el
+    # FSM driver flow en whatsapp_agent._on_awaiting_driver_id).
+    driver_dict = {
+        "driver_id": str(driver_id),
+        "name": name or "",
+        "vehicle_id": int(vehicle_id),
+        "vehicle_name": str(vehicle_name) if vehicle_name else f"PAT-{vehicle_id}",
+    }
+    try:
+        from sims.whatsapp_agent import _render_route
+        return _render_route(driver_dict)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[llm_agent] get_route falló: {e}")
         return "No pude leer tu ruta en este momento."
@@ -350,12 +539,21 @@ _TOOL_HANDLERS = {
 # =============================================================================
 # System prompt
 # =============================================================================
-def _build_system_prompt(identity: dict, day_state: str) -> str:
-    role = str(identity.get("role") or identity.get("user_role") or "guest").lower()
-    name = identity.get("display_name") or identity.get("name") or "amigo"
-    empresa_nombre = identity.get("empresa_nombre") or "(empresa no identificada)"
-    is_admin = role in ("falabella_admin", "falabella_ops")
+def _build_system_prompt(summary: dict, day_state: str) -> str:
+    role = str(summary.get("role") or "anonimo").lower()
+    name = summary.get("name") or "amigo"
+    empresa_nombre = summary.get("empresa_nombre") or "(empresa no identificada)"
+    is_admin = bool(summary.get("is_admin_or_ops"))
     day_active = day_state in ("EN_CURSO", "PAUSADO")
+    driver_id = summary.get("driver_id")
+    extra_ids: list[str] = []
+    if driver_id:
+        extra_ids.append(f"driver_id={driver_id}")
+    if summary.get("vehicle_name"):
+        extra_ids.append(f"vehículo={summary['vehicle_name']}")
+    if summary.get("contact_id"):
+        extra_ids.append(f"contact_id={summary['contact_id']}")
+    ids_clause = f" ({'; '.join(extra_ids)})" if extra_ids else ""
 
     try:
         from routers.comments import MOTIVOS_CATALOGO
@@ -380,8 +578,8 @@ def _build_system_prompt(identity: dict, day_state: str) -> str:
     return (
         f"Sos un asistente de Falabella ValueData (torre de control logística "
         f"de última milla en Chile). Hablás por WhatsApp con {name}, rol "
-        f"'{role}' de la empresa '{empresa_nombre}'. Estado del día operativo: "
-        f"{day_state}.\n\n"
+        f"'{role}' de la empresa '{empresa_nombre}'{ids_clause}. Estado del día "
+        f"operativo: {day_state}.\n\n"
         "TONO Y FORMATO:\n"
         "- Cordial, breve, profesional. Español de Chile.\n"
         "- Cada respuesta < 280 caracteres si es posible.\n"
@@ -451,7 +649,13 @@ def chat(message: str, identity: dict, day_state: str, phone: str = "") -> str:
         raise RuntimeError("Azure OpenAI sin credenciales configuradas")
 
     t0 = time.monotonic()
-    ctx = {"identity": identity, "phone": phone}
+    summary = _summarize_identity(identity)
+    ctx = {"identity": identity, "summary": summary, "phone": phone}
+    logger.info(
+        f"[llm_agent] phone={phone} role={summary.get('role')} "
+        f"name={summary.get('name')} driver_id={summary.get('driver_id')} "
+        f"empresa_id={summary.get('empresa_id')} day_state={day_state}"
+    )
 
     try:
         from openai import AzureOpenAI
@@ -465,7 +669,7 @@ def chat(message: str, identity: dict, day_state: str, phone: str = "") -> str:
     )
     deployment = creds["deployment"]
 
-    system_prompt = _build_system_prompt(identity, day_state)
+    system_prompt = _build_system_prompt(summary, day_state)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": message},
@@ -517,7 +721,7 @@ def chat(message: str, identity: dict, day_state: str, phone: str = "") -> str:
             content = (getattr(msg, "content", None) or "").strip()
             latency_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
-                f"[llm_agent] phone={phone} role={identity.get('role') or identity.get('user_role')} "
+                f"[llm_agent] phone={phone} role={summary.get('role')} "
                 f"model={deployment} tokens={total_tokens} tool={tool_called or '-'} "
                 f"latency_ms={latency_ms} len(reply)={len(content)}"
             )
