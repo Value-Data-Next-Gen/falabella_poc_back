@@ -20,8 +20,8 @@ import os
 # Asegurar que backend/ esté en path cuando se corre desde scripts/
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from twilio_inbound import _dispatch  # noqa: E402
-from whatsapp_agent import Session  # noqa: E402
+from routers.twilio_inbound import _dispatch  # noqa: E402
+from sims.whatsapp_agent import Session  # noqa: E402
 
 
 PHONE = "smoke:+test"

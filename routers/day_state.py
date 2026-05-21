@@ -384,15 +384,11 @@ def transition_day_state(
                 start_sim(req.fecha)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[day-state] driver_sim.start_sim falló: {e}")
-            # R7: auto-arrancar el comment_simulator. Sin esto el panel
-            # Auditoría IA → Alertas IA queda vacío aunque el día esté
-            # EN_CURSO porque nadie genera comentarios alertables.
-            try:
-                from sims.comment_simulator import SIM as COMMENT_SIM
-                COMMENT_SIM.enabled = True
-                logger.info(f"[day-state] comment_simulator auto-enabled para {req.fecha}")
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[day-state] comment_sim auto-enable falló: {e}")
+            # R7 (deprecado por CR limpieza): NO auto-encender comment_simulator.
+            # Generaba alertas sinteticas que se mezclaban con alertas reales
+            # del backend (motivo critico, eta breach, etc) creando ruido en
+            # WhatsApp para los drivers reales. Si se necesita simulator para
+            # el panel Auditoria IA, encenderlo manual via /api/comment-sim/toggle.
         elif target == "CERRADO":
             LIVE_STATE.enabled = False
             try:
