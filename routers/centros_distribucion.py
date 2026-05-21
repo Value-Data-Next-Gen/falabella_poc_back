@@ -1,7 +1,7 @@
 """Centros de distribución por región.
 
 Lectura simple. La creación/edición pasa por el script
-`backend/scripts/seed_centros_distribucion.py` o por SQL directo — no se
+`aux/scripts/backend/seed_centros_distribucion.py` o por SQL directo — no se
 expone API de mutación en este POC.
 """
 from __future__ import annotations
