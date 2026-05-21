@@ -300,8 +300,8 @@ def create_driver_capacitacion(
             cn.rollback()
             raise HTTPException(400, f"error guardando capacitación: {e}")
         cur.execute(
-            "SELECT TOP 1" + _CAP_SELECT.split("SELECT", 1)[1] +
-            " WHERE c.driver_id = ? AND c.modulo_id = ? ORDER BY c.cap_id DESC",
+            _CAP_SELECT +
+            " WHERE c.driver_id = ? AND c.modulo_id = ? ORDER BY c.cap_id DESC LIMIT 1",
             driver_id, req.modulo_id,
         )
         return _cap_row(cur.fetchone())

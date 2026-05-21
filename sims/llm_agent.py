@@ -428,8 +428,7 @@ def _tool_get_route(args: dict, ctx: dict) -> str:
 
     # Si el LLM mandó un driver_id distinto al del summary, lo resolvemos por DB.
     # Si coincide con el del summary, reutilizamos los datos ya cacheados (evita
-    # ida y vuelta a DB y evita el bug de CAST(vehicle_id AS TEXT) que tiene
-    # _find_driver_by_id_or_rut en whatsapp_agent).
+    # ida y vuelta a DB).
     if arg_driver_id and arg_driver_id != (summary.get("driver_id") or ""):
         name, empresa_id, vehicle_id, vehicle_name = _lookup_driver(arg_driver_id)
         if name is None and empresa_id is None and vehicle_id is None:

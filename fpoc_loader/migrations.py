@@ -170,4 +170,8 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     # CR-014: activation_token + activation_used_at en users/drivers/contactos.
     # Habilita wa.me activation links (workaround del error 63112 de Meta).
     ("025_activation_tokens",         _wrap_quiet("fpoc_loader.migrate_activation_tokens")),
+    # Validator fix #1: region/comuna/ruta_id en fpoc.simpli_visits — antes
+    # vivían SOLO en _legacy/bootstrap_azure_schema.py, quedaban huérfanas
+    # para deploys Azure nuevos. No-op en SQLite (ya están en sqlite_schema.sql).
+    ("026_simpli_columns",            _wrap_quiet("fpoc_loader.migrate_simpli_columns")),
 ]

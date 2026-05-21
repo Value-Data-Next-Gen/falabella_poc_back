@@ -340,10 +340,11 @@ def _cmd_folio(folio: str) -> str:
         with _gc() as cn:
             cur = cn.cursor()
             cur.execute(
-                "SELECT TOP 1 id, title, comuna, region, ruta_id, driver_name, "
+                "SELECT id, title, comuna, region, ruta_id, driver_name, "
                 "patente_falsa, status, current_eta_cl, planned_date, address "
                 "FROM fpoc.simpli_visits WHERE reference = ? "
-                "ORDER BY planned_date DESC",
+                "ORDER BY planned_date DESC "
+                "LIMIT 1",
                 ref_int,
             )
             r = cur.fetchone()

@@ -228,10 +228,11 @@ async def upload_my_document(
         )
         cn.commit()
         cur.execute(
-            """SELECT TOP 1 doc_id, tipo, filename, file_size, uploaded_at, expires_at, notes
+            """SELECT doc_id, tipo, filename, file_size, uploaded_at, expires_at, notes
                 FROM fpoc.driver_documents
                 WHERE driver_id = ? AND blob_path = ?
-                ORDER BY doc_id DESC""",
+                ORDER BY doc_id DESC
+                LIMIT 1""",
             user.driver_id, blob_path,
         )
         r = cur.fetchone()

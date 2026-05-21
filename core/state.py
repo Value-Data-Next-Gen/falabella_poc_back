@@ -625,8 +625,9 @@ class AppState:
             with get_conn() as cn:
                 cur = cn.cursor()
                 cur.execute(
-                    "SELECT TOP 1 fecha FROM fpoc.planificacion_imports "
-                    "WHERE state = 'EN_CURSO' ORDER BY started_at DESC"
+                    "SELECT fecha FROM fpoc.planificacion_imports "
+                    "WHERE state = 'EN_CURSO' ORDER BY started_at DESC "
+                    "LIMIT 1"
                 )
                 r = cur.fetchone()
                 if r is None:

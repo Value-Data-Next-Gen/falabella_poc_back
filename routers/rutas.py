@@ -342,7 +342,7 @@ def folios_del_dia(
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            f"""SELECT TOP ({limit}) v.id, v.ruta_id, v.patente_falsa, v.driver_name,
+            f"""SELECT v.id, v.ruta_id, v.patente_falsa, v.driver_name,
                        v.empresa_falsa, et.nombre AS empresa_nombre,
                        v."order", v.title, v.address, v.comuna, v.region,
                        v.reference, v.status, v.current_eta_cl,
@@ -350,7 +350,8 @@ def folios_del_dia(
                 FROM fpoc.simpli_visits v
                 LEFT JOIN fpoc.empresas_transporte et ON et.empresa_id = v.empresa_falsa
                 WHERE {' AND '.join(where)}
-                ORDER BY v.ruta_id, v."order", v.id""",
+                ORDER BY v.ruta_id, v."order", v.id
+                LIMIT {int(limit)}""",
             *params,
         )
         rows = cur.fetchall()

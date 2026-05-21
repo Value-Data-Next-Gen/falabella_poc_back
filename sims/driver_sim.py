@@ -282,9 +282,10 @@ def _init_positions(fecha_iso: str) -> None:
                 lat, lon = cd
             else:
                 cur.execute(
-                    """SELECT TOP 1 comuna FROM fpoc.simpli_visits
+                    """SELECT comuna FROM fpoc.simpli_visits
                        WHERE patente_falsa = ? AND ruta_id = ? AND planned_date = ?
-                       ORDER BY [order]""",
+                       ORDER BY [order]
+                       LIMIT 1""",
                     pat, rid, fecha_iso,
                 )
                 cm_row = cur.fetchone()
@@ -361,11 +362,12 @@ def _process_date(fecha_iso: str, sim_clock: datetime) -> None:
             # Buscar el próximo stop pendiente para ESTA ruta (no la patente entera).
             # Si la patente atiende varias rutas, cada una procesa solo lo suyo.
             cur.execute(
-                """SELECT TOP 1 id, [order], comuna, current_eta_cl
+                """SELECT id, [order], comuna, current_eta_cl
                    FROM fpoc.simpli_visits
                    WHERE patente_falsa = ? AND ruta_id = ? AND planned_date = ?
                      AND status = 'pending'
-                   ORDER BY [order]""",
+                   ORDER BY [order]
+                   LIMIT 1""",
                 patente, ruta_id, fecha_iso,
             )
             ns = cur.fetchone()

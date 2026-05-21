@@ -1282,14 +1282,15 @@ def day_clients(
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            f"""SELECT TOP (?) s.title, s.id, s.comuna, s.ruta_id, s.driver_name,
+            f"""SELECT s.title, s.id, s.comuna, s.ruta_id, s.driver_name,
                        (CASE WHEN v.vip_id IS NULL THEN 0 ELSE 1 END) AS is_vip
                 FROM fpoc.simpli_visits s
                 LEFT JOIN fpoc.vip_clients v
                     ON v.active = 1 AND v.match_type = 'title' AND v.match_value = s.title
                 WHERE s.planned_date = ?{scope_where}{q_where}
-                ORDER BY s.title""",
-            limit, *params,
+                ORDER BY s.title
+                LIMIT ?""",
+            *params, limit,
         )
         out: list[DayClient] = []
         seen: set[str] = set()

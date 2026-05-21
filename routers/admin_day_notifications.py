@@ -171,6 +171,18 @@ def notify_day_start(
 
     fecha = req.fecha or _today_iso()
 
+    # Validar empresa_id antes de gastar queries — un operador con typo
+    # (ej. {"empresa_id": 99999}) recibía 200 con drivers:[] y se creía OK.
+    if req.empresa_id is not None:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT 1 FROM fpoc.empresas_transporte WHERE empresa_id = ?",
+                req.empresa_id,
+            )
+            if not cur.fetchone():
+                raise HTTPException(404, f"Empresa {req.empresa_id} no existe")
+
     # 1) Agrupar visitas del día por patente_falsa (proxy vehicle_id).
     where_extra = ""
     params: list = [fecha]
@@ -229,7 +241,8 @@ def notify_day_start(
                 "SELECT driver_id, name, phone_e164, notify_whatsapp, opted_in_at, active "
                 "FROM fpoc.drivers "
                 "WHERE vehicle_id = ? AND active = 1 "
-                "ORDER BY opted_in_at DESC",
+                "ORDER BY opted_in_at DESC "
+                "LIMIT 1",
                 patente,
             )
             d_row = cur.fetchone()
@@ -311,7 +324,8 @@ def notify_day_start(
                     "SELECT title FROM fpoc.simpli_visits "
                     "WHERE planned_date = ? AND patente_falsa = ? "
                     "  AND LOWER(status) = 'pending' "
-                    "ORDER BY \"order\" ASC, id ASC",
+                    "ORDER BY \"order\" ASC, id ASC "
+                    "LIMIT 1",
                     fecha, patente,
                 )
                 r = cur.fetchone()

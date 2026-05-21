@@ -372,7 +372,8 @@ def _insert_batch_minimal(cn, target_date: date) -> int:
     """
     cur = cn.cursor()
     cur.execute(
-        "SELECT TOP 1 empresa_id, nombre FROM fpoc.empresas_transporte WHERE activo = 1"
+        "SELECT empresa_id, nombre FROM fpoc.empresas_transporte "
+        "WHERE activo = 1 LIMIT 1"
     )
     e = cur.fetchone()
     if e is None:
@@ -381,9 +382,9 @@ def _insert_batch_minimal(cn, target_date: date) -> int:
 
     # Driver: primero activo de esa empresa. Fallback sintético.
     cur.execute(
-        "SELECT TOP 1 name, vehicle_id FROM fpoc.drivers "
+        "SELECT name, vehicle_id FROM fpoc.drivers "
         "WHERE active = 1 AND empresa_id = ? AND name IS NOT NULL "
-        "AND vehicle_id IS NOT NULL ORDER BY vehicle_id",
+        "AND vehicle_id IS NOT NULL ORDER BY vehicle_id LIMIT 1",
         empresa_id,
     )
     d = cur.fetchone()
