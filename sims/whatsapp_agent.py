@@ -1544,6 +1544,52 @@ def _on_awaiting_comentario(sess: Session, text: str, text_lower: str, identity:
         sess.save()
         return "Algo salió mal con el flujo, volvé a empezar mandando 'menu'."
     comentario = "" if text_lower == "skip" else text
+    skip_review = not comentario or len(comentario) < 10
+
+    # Revisión LLM: si el driver dejó comentario real, comparamos con motivo elegido.
+    # Si el classifier sugiere un motivo distinto con alta/media confianza, le
+    # proponemos al driver cambiarlo antes de persistir.
+    if not skip_review:
+        try:
+            from routers.motivo_classifier import _classify_llm
+            empresa_id = None
+            persona = sess.context.get("persona") or {}
+            if persona.get("empresa_id"):
+                empresa_id = int(persona["empresa_id"])
+            elif sess.context.get("driver"):
+                from core.state import STATE
+                vid = sess.context["driver"].get("vehicle_id")
+                if vid is not None:
+                    empresa_id = STATE.vehicle_empresa_map.get(int(vid))
+            ia = _classify_llm(comentario, empresa_id)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[wa-agent] LLM review falló (sigue sin revisión): {e}")
+            ia = None
+        if (
+            ia
+            and ia.get("motivo")
+            and ia["motivo"] != motivo
+            and (ia.get("confianza") or "").lower() in ("alta", "media")
+        ):
+            sess.context["proposed_motivo"] = ia["motivo"]
+            sess.context["original_motivo"] = motivo
+            sess.context["proposed_confianza"] = ia.get("confianza", "?")
+            sess.context["proposed_razonamiento"] = ia.get("razonamiento", "")
+            sess.context["comentario_libre"] = comentario
+            sess.state = "confirming_motivo_revision"
+            sess.save()
+            return (
+                f"🤖 Releí tu comentario y noté algo:\n\n"
+                f"• Motivo que elegiste: *{motivo}*\n"
+                f"• Por tu comentario, encajaría mejor: *{ia['motivo']}*\n"
+                f"  ({ia.get('razonamiento','')[:120]})\n\n"
+                f"¿Cambiar al motivo sugerido?\n"
+                f" 1️⃣  Sí, cambiar a *{ia['motivo']}*\n"
+                f" 2️⃣  No, dejar *{motivo}*\n"
+                f" 0️⃣  Editar mi comentario"
+            )
+
+    # Sin discrepancia o comentario corto → persistir como antes.
     if not comentario:
         comentario = f"(sin comentario adicional, reportado via WhatsApp por {sess.identified_id or sess.phone})"
     try:
@@ -1567,6 +1613,107 @@ def _on_awaiting_comentario(sess: Session, text: str, text_lower: str, identity:
     sess.context.pop("motivo", None)
     sess.save()
     return _render_done_motivo(tid, motivo)
+
+
+def _on_confirming_motivo_revision(sess: Session, text: str, text_lower: str, identity: dict) -> str:
+    """Driver elegió motivo del menú + dejó comentario. LLM detectó que el
+    comentario sugiere otro motivo. Pregunta al driver si cambia o mantiene.
+    """
+    tid = sess.context.get("tracking_id")
+    original_motivo = sess.context.get("original_motivo")
+    proposed_motivo = sess.context.get("proposed_motivo")
+    comentario = sess.context.get("comentario_libre") or ""
+    confianza = sess.context.get("proposed_confianza", "?")
+    razonamiento = sess.context.get("proposed_razonamiento", "")
+
+    if not tid or not original_motivo or not proposed_motivo:
+        sess.reset()
+        sess.save()
+        return "Algo salió mal con la revisión. Mandá 'menu'."
+
+    def _cleanup_review_ctx():
+        for k in (
+            "proposed_motivo", "original_motivo", "proposed_confianza",
+            "proposed_razonamiento", "comentario_libre", "motivo",
+        ):
+            sess.context.pop(k, None)
+
+    # Opción 1: aceptar la sugerencia del LLM.
+    if text == "1" or text_lower in ("si", "sí", "ok", "cambiar"):
+        try:
+            from routers.comments import _persist_and_dispatch_comment
+            actor = sess.identified_id or sess.phone
+            _persist_and_dispatch_comment(
+                tracking_id=tid,
+                motivo=proposed_motivo,
+                comentario=f"{comentario} [LLM-revisado: original {original_motivo} → {proposed_motivo}, conf={confianza}]",
+                user_id=identity.get("user_id"),
+                user_display_name=str(actor),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[wa-agent] persist revisado fallo: {e}")
+            sess.state = "menu_driver"
+            sess.save()
+            return f"❌ No pude registrar: {e}\nMandá 'menu'."
+        sess.state = "done_motivo"
+        _cleanup_review_ctx()
+        sess.save()
+        return _render_done_motivo(tid, proposed_motivo) + "\n\n(motivo actualizado según tu comentario 🤖)"
+
+    # Opción 2: mantener el motivo original. Registramos correction para audit.
+    if text == "2" or "no" in text_lower or text_lower in ("mantener", "dejar"):
+        try:
+            from routers.comments import _persist_and_dispatch_comment
+            actor = sess.identified_id or sess.phone
+            _persist_and_dispatch_comment(
+                tracking_id=tid,
+                motivo=original_motivo,
+                comentario=comentario,
+                user_id=identity.get("user_id"),
+                user_display_name=str(actor),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[wa-agent] persist original fallo: {e}")
+            sess.state = "menu_driver"
+            sess.save()
+            return f"❌ No pude registrar: {e}\nMandá 'menu'."
+        # Audit log: el driver rechazó la sugerencia LLM. Queda para que
+        # el admin revise manualmente en /api/motivo-corrections.
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO fpoc_motivo_corrections
+                      (comment_id, tracking_id, motivo_reportado, motivo_sugerido,
+                       confianza, razonamiento, driver_id, status, region)
+                    VALUES (NULL, ?, ?, ?, ?, ?, ?, 'pending_review', NULL)
+                    """,
+                    (tid, original_motivo, proposed_motivo, confianza,
+                     f"Driver mantuvo motivo. LLM sugería: {razonamiento}",
+                     sess.identified_id or sess.phone),
+                )
+                cn.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[wa-agent] correction audit log fallo: {e}")
+        sess.state = "done_motivo"
+        _cleanup_review_ctx()
+        sess.save()
+        return _render_done_motivo(tid, original_motivo) + "\n\n(quedó tu motivo. Un coordinador puede revisar después.)"
+
+    # Opción 0: volver a editar comentario.
+    if text == "0":
+        sess.state = "awaiting_comentario"
+        for k in ("proposed_motivo", "original_motivo", "proposed_confianza",
+                  "proposed_razonamiento", "comentario_libre"):
+            sess.context.pop(k, None)
+        sess.save()
+        return (
+            "OK, contame de nuevo qué pasó (con más detalle):\n"
+            "(o mandá 'skip' para registrar sin comentario)"
+        )
+
+    return "Elegí 1 (cambiar al sugerido), 2 (mantener tu motivo) o 0 (editar comentario)."
 
 
 def _on_done_motivo(sess: Session, text: str, text_lower: str, identity: dict) -> str:
@@ -1802,6 +1949,7 @@ _STATE_HANDLERS = {
     "confirming_ia_motivo": _on_confirming_ia_motivo,
     "choosing_motivo": _on_choosing_motivo,
     "awaiting_comentario": _on_awaiting_comentario,
+    "confirming_motivo_revision": _on_confirming_motivo_revision,
     "done_motivo": _on_done_motivo,
     "awaiting_client_tracking": _on_awaiting_client_tracking,
     "menu_cliente": _on_menu_cliente,

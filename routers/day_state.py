@@ -385,6 +385,18 @@ def transition_day_state(
             logger.info(f"[day-state] {req.fecha}: buffer eventos limpiado ({n} evt)")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[day-state] EVENTS.reset falló: {e}")
+    elif target == "CERRADO":
+        # Disparar resumen WhatsApp a driver + managers + admins.
+        try:
+            from routers.admin_day_notifications import dispatch_day_close_summary
+            resp = dispatch_day_close_summary(req.fecha, triggered_by="day_close_auto")
+            logger.info(
+                f"[day-state] {req.fecha} CERRADO: dispatch summary → "
+                f"drivers={resp.drivers_notified} mgrs={resp.manager_messages_sent} "
+                f"admins={resp.admin_messages_sent}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[day-state] dispatch_day_close_summary fallo: {e}")
 
     logger.info(
         f"[day-state] {req.fecha}: {current.state} → {target} by user_id={user.user_id}"

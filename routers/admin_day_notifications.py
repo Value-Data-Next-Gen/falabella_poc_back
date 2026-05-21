@@ -456,14 +456,16 @@ def dispatch_eta_breach(
     if patente is None:
         raise HTTPException(409, f"Visita {tid} sin patente_falsa asignada")
 
-    # 2) Resolver driver activo para esa patente.
+    # 2) Resolver driver activo para esa patente + empresa.
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(
-            "SELECT driver_id, name, phone_e164, notify_whatsapp, opted_in_at "
-            "FROM fpoc.drivers "
-            "WHERE vehicle_id = ? AND active = 1 "
-            "ORDER BY opted_in_at DESC",
+            "SELECT d.driver_id, d.name, d.phone_e164, d.notify_whatsapp, d.opted_in_at, "
+            "       d.empresa_id, e.nombre AS empresa_nombre "
+            "FROM fpoc.drivers d "
+            "LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = d.empresa_id "
+            "WHERE d.vehicle_id = ? AND d.active = 1 "
+            "ORDER BY d.opted_in_at DESC",
             patente,
         )
         d_row = cur.fetchone()
@@ -478,6 +480,8 @@ def dispatch_eta_breach(
     phone = str(d_row[2]).strip() if d_row[2] else ""
     notify_flag = bool(d_row[3]) if d_row[3] is not None else False
     opted_in_at = d_row[4]
+    driver_empresa_id = int(d_row[5]) if d_row[5] is not None else None
+    driver_empresa_nombre = str(d_row[6] or "—")
 
     if not phone or not phone.startswith("+"):
         raise HTTPException(
@@ -535,6 +539,22 @@ def dispatch_eta_breach(
         error = str(e)[:300]
         status = "failed"
 
+    # 5) Broadcast a supervisors (managers + admins). Freeform, no template.
+    body_sup = (
+        f"🚨 *Atraso* · {driver_empresa_nombre}\n"
+        f"{driver_name} ({vehicle_label}) demorado en \"{cliente_part}\".\n"
+        f"ETA reportada: {eta_short or '—'}. Bot le pidió motivo al chofer."
+    )
+    try:
+        _notify_supervisors(
+            driver_empresa_id, body_sup,
+            subject=f"Atraso ETA · {driver_empresa_nombre}",
+            tracking_id=tid,
+            triggered_by=triggered_by,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[notify-eta-breach] supervisors fallo TID={tid}: {e}")
+
     return NotifyEtaBreachResponse(
         tracking_id=tid,
         driver_id=driver_id,
@@ -576,6 +596,246 @@ class VisitCompletedResponse(BaseModel):
     completed_count: int
     total_count: int
     detail: str
+
+
+class DayCloseSummaryResponse(BaseModel):
+    fecha: str
+    drivers_notified: int
+    manager_messages_sent: int
+    admin_messages_sent: int
+    detail: str
+
+
+def _notify_supervisors(
+    empresa_id: Optional[int],
+    body_text: str,
+    *,
+    subject: str,
+    tracking_id: Optional[str],
+    triggered_by: str,
+) -> tuple[int, int]:
+    """Envía freeform body_text a:
+      - managers de la empresa (rol jefe/coordinador, opted-in)
+      - admin Falabella cross-empresa (rol admin/falabella/...)
+
+    Devuelve (manager_count, admin_count) — cuántos envíos OK.
+    Errores por receptor se loggean como WARNING y no propagan.
+    """
+    from routers.notifications import send_whatsapp
+
+    manager_count = 0
+    admin_count = 0
+
+    # 1) Managers de la empresa.
+    if empresa_id is not None:
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT contact_id, nombre, phone_e164 "
+                    "FROM fpoc.empresa_contactos "
+                    "WHERE empresa_id = ? AND active = 1 "
+                    "  AND LOWER(COALESCE(rol,'')) IN ('jefe','coordinador') "
+                    "  AND phone_e164 IS NOT NULL AND opted_in_at IS NOT NULL",
+                    empresa_id,
+                )
+                mgrs = list(cur.fetchall())
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[notify-supervisors] mgrs empresa {empresa_id} fallo: {e}")
+            mgrs = []
+        for m in mgrs:
+            phone = str(m[2] or "").strip()
+            if not phone.startswith("+"):
+                continue
+            try:
+                send_whatsapp(
+                    body=body_text,
+                    targets=[(None, phone)],
+                    subject=subject,
+                    tracking_id=tracking_id,
+                    triggered_by=f"{triggered_by}_mgr",
+                )
+                manager_count += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[notify-supervisors] mgr {m[0]} fallo: {e}")
+
+    # 2) Admins Falabella cross-empresa.
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT contact_id, nombre, phone_e164 "
+                "FROM fpoc.empresa_contactos "
+                "WHERE active = 1 "
+                "  AND phone_e164 IS NOT NULL AND opted_in_at IS NOT NULL "
+                "  AND LOWER(COALESCE(rol,'')) IN ('admin','falabella','falabella_admin','falabella_ops')"
+            )
+            admins = list(cur.fetchall())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[notify-supervisors] admins fallo: {e}")
+        admins = []
+    for a in admins:
+        phone = str(a[2] or "").strip()
+        if not phone.startswith("+"):
+            continue
+        try:
+            send_whatsapp(
+                body=body_text,
+                targets=[(None, phone)],
+                subject=subject,
+                tracking_id=tracking_id,
+                triggered_by=f"{triggered_by}_admin",
+            )
+            admin_count += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[notify-supervisors] admin {a[0]} fallo: {e}")
+
+    return manager_count, admin_count
+
+
+def dispatch_day_close_summary(
+    fecha: str,
+    *,
+    triggered_by: str = "day_close_manual",
+) -> DayCloseSummaryResponse:
+    """Cuando se cierra el día (BORRADOR/CERRADO transition), envía resumen
+    por WhatsApp a:
+      - Cada driver opted-in: stats personales (X/Y OK, atrasos, motivos).
+      - Cada manager de empresa: stats agregadas de su flota.
+      - Cada admin Falabella cross-empresa: stats globales.
+
+    Freeform body. Si el receptor no tiene ventana 24h abierta, send_whatsapp
+    fallará pero se loggea como warning sin bloquear al resto.
+    """
+    from routers.notifications import send_whatsapp
+
+    drivers_notified = 0
+    manager_messages = 0
+    admin_messages = 0
+
+    # 1) Stats por driver (con su empresa).
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT d.driver_id, d.name, d.phone_e164, d.notify_whatsapp, "
+            "       d.opted_in_at, d.empresa_id, e.nombre AS empresa_nombre, "
+            "       SUM(CASE WHEN LOWER(v.status)='completed' THEN 1 ELSE 0 END) AS ok_, "
+            "       SUM(CASE WHEN LOWER(v.status)='failed'    THEN 1 ELSE 0 END) AS fail_, "
+            "       COUNT(*) AS total_ "
+            "FROM fpoc.simpli_visits v "
+            "JOIN fpoc.drivers d ON d.vehicle_id = v.patente_falsa "
+            "LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = d.empresa_id "
+            "WHERE v.planned_date = ? AND d.active = 1 "
+            "GROUP BY d.driver_id, d.name, d.phone_e164, d.notify_whatsapp, "
+            "         d.opted_in_at, d.empresa_id, e.nombre",
+            fecha,
+        )
+        driver_rows = list(cur.fetchall())
+
+    # 1a) Enviar resumen al driver.
+    empresa_agg: dict[int, dict] = {}  # empresa_id → {nombre, ok, fail, total, drivers: []}
+    for row in driver_rows:
+        driver_id = str(row[0]) if row[0] else "?"
+        driver_name = str(row[1] or "—")
+        phone = str(row[2] or "").strip()
+        notify = bool(row[3]) if row[3] is not None else False
+        optin = row[4]
+        emp_id = int(row[5]) if row[5] is not None else None
+        emp_nombre = str(row[6] or "—")
+        ok = int(row[7] or 0)
+        fail = int(row[8] or 0)
+        total = int(row[9] or 0)
+        pct = int(round(100 * ok / max(1, total)))
+
+        # Acumular para summary por empresa
+        if emp_id is not None:
+            agg = empresa_agg.setdefault(emp_id, {
+                "nombre": emp_nombre, "ok": 0, "fail": 0, "total": 0, "drivers": []
+            })
+            agg["ok"] += ok
+            agg["fail"] += fail
+            agg["total"] += total
+            agg["drivers"].append({"name": driver_name, "ok": ok, "fail": fail, "total": total})
+
+        if not phone.startswith("+") or not notify or optin is None:
+            continue
+        body_driver = (
+            f"🌙 *Día cerrado* — {fecha}\n"
+            f"Tu resultado: *{ok}/{total} OK* ({pct}%)"
+            + (f" · {fail} fallidas" if fail > 0 else "")
+            + "\n¡Buen trabajo! Te avisamos cuando empiece el próximo turno."
+        )
+        try:
+            send_whatsapp(
+                body=body_driver,
+                targets=[(None, phone)],
+                subject=f"Día cerrado · {fecha}",
+                tracking_id=None,
+                triggered_by=triggered_by,
+            )
+            drivers_notified += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[day-close] driver {driver_id} fallo: {e}")
+
+    # 2) Resumen por empresa → manager(es).
+    for emp_id, agg in empresa_agg.items():
+        ok = agg["ok"]; fail = agg["fail"]; total = agg["total"]
+        pct = int(round(100 * ok / max(1, total)))
+        body_mgr = (
+            f"🌙 *Cierre {fecha}* · {agg['nombre']}\n"
+            f"Total flota: *{ok}/{total} OK* ({pct}%)"
+            + (f" · {fail} fallidas" if fail > 0 else "")
+            + "\n"
+            + "\n".join(
+                f" • {d['name']}: {d['ok']}/{d['total']}" for d in agg["drivers"][:10]
+            )
+        )
+        mgr_n, _ = _notify_supervisors(
+            emp_id, body_mgr,
+            subject=f"Cierre {fecha} · {agg['nombre']}",
+            tracking_id=None,
+            triggered_by=triggered_by,
+        )
+        manager_messages += mgr_n
+
+    # 3) Resumen global cross-empresa para admin Falabella.
+    if empresa_agg:
+        total_ok = sum(a["ok"] for a in empresa_agg.values())
+        total_total = sum(a["total"] for a in empresa_agg.values())
+        total_fail = sum(a["fail"] for a in empresa_agg.values())
+        pct_global = int(round(100 * total_ok / max(1, total_total)))
+        body_admin = (
+            f"🌙 *Cierre {fecha} · Vista Falabella*\n"
+            f"Global: *{total_ok}/{total_total} OK* ({pct_global}%) · "
+            f"{total_fail} fallidas\n"
+            + "Por empresa:\n"
+            + "\n".join(
+                f" • {a['nombre']}: {a['ok']}/{a['total']}"
+                for a in empresa_agg.values()
+            )
+        )
+        # Admins reciben con empresa_id=None (cross-empresa).
+        _, adm_n = _notify_supervisors(
+            None, body_admin,
+            subject=f"Cierre {fecha} · Global",
+            tracking_id=None,
+            triggered_by=triggered_by,
+        )
+        admin_messages += adm_n
+
+    detail = (
+        f"drivers={drivers_notified} mgrs={manager_messages} "
+        f"admins={admin_messages} empresas={len(empresa_agg)}"
+    )
+    logger.info(f"[day-close-summary] {fecha} {detail}")
+
+    return DayCloseSummaryResponse(
+        fecha=fecha,
+        drivers_notified=drivers_notified,
+        manager_messages_sent=manager_messages,
+        admin_messages_sent=admin_messages,
+        detail=detail,
+    )
 
 
 def dispatch_visit_completed(
@@ -684,84 +944,17 @@ def dispatch_visit_completed(
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[visit-completed] driver {driver_id} envio fallo: {e}")
 
-    # 4) Contactos de la empresa con rol jefe/coordinador (managers que
-    # reciben alertas operativas).
-    manager_notified = 0
-    if empresa_id is not None:
-        try:
-            with get_conn() as cn:
-                cur = cn.cursor()
-                cur.execute(
-                    "SELECT c.contact_id, c.nombre, c.phone_e164, c.opted_in_at "
-                    "FROM fpoc.empresa_contactos c "
-                    "WHERE c.empresa_id = ? AND c.active = 1 "
-                    "  AND LOWER(COALESCE(c.rol,'')) IN ('jefe','coordinador') "
-                    "  AND c.phone_e164 IS NOT NULL "
-                    "  AND c.opted_in_at IS NOT NULL",
-                    empresa_id,
-                )
-                managers = list(cur.fetchall())
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[visit-completed] query managers empresa {empresa_id} fallo: {e}")
-            managers = []
-
-        for m in managers:
-            mgr_phone = str(m[2] or "").strip()
-            if not mgr_phone.startswith("+"):
-                continue
-            body_mgr = (
-                f"✅ *{driver_name}* entregó \"{cliente_label}\" a las {hora_str}.\n"
-                f"Empresa: *{empresa_nombre}* — Progreso: {completed_count}/{total_count} OK."
-            )
-            try:
-                send_whatsapp(
-                    body=body_mgr,
-                    targets=[(None, mgr_phone)],
-                    subject=f"Entrega OK · {empresa_nombre}",
-                    tracking_id=tid,
-                    triggered_by=f"{triggered_by}_mgr",
-                )
-                manager_notified += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[visit-completed] manager {m[0]} envio fallo: {e}")
-
-    # 5) Contactos admin Falabella cross-empresa (rol='admin' o similar).
-    admin_notified = 0
-    try:
-        with get_conn() as cn:
-            cur = cn.cursor()
-            cur.execute(
-                "SELECT contact_id, nombre, phone_e164 "
-                "FROM fpoc.empresa_contactos "
-                "WHERE active = 1 "
-                "  AND phone_e164 IS NOT NULL AND opted_in_at IS NOT NULL "
-                "  AND LOWER(COALESCE(rol,'')) IN ('admin','falabella','falabella_admin','falabella_ops')"
-            )
-            admins = list(cur.fetchall())
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[visit-completed] query admin contactos fallo: {e}")
-        admins = []
-
-    for a in admins:
-        adm_phone = str(a[2] or "").strip()
-        if not adm_phone.startswith("+"):
-            continue
-        body_adm = (
-            f"✅ Entrega OK · {empresa_nombre}\n"
-            f"{driver_name} → \"{cliente_label}\" @ {hora_str}\n"
-            f"Empresa {completed_count}/{total_count} OK."
-        )
-        try:
-            send_whatsapp(
-                body=body_adm,
-                targets=[(None, adm_phone)],
-                subject=f"Entrega OK · {empresa_nombre}",
-                tracking_id=tid,
-                triggered_by=f"{triggered_by}_admin",
-            )
-            admin_notified += 1
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[visit-completed] admin {a[0]} envio fallo: {e}")
+    # 4-5) Broadcast a supervisors (managers de la empresa + admins Falabella).
+    body_supervisors = (
+        f"✅ *{driver_name}* entregó \"{cliente_label}\" a las {hora_str}.\n"
+        f"Empresa: *{empresa_nombre}* — Progreso: {completed_count}/{total_count} OK."
+    )
+    manager_notified, admin_notified = _notify_supervisors(
+        empresa_id, body_supervisors,
+        subject=f"Entrega OK · {empresa_nombre}",
+        tracking_id=tid,
+        triggered_by=triggered_by,
+    )
 
     detail = (
         f"driver_notified={driver_notified} mgrs={manager_notified} "
