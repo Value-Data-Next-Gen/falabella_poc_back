@@ -182,30 +182,20 @@ Convenciones:
 | `fpoc_loader/migrate_copiloto_decisions.py` | 024 — bifurcada. | migración |
 | `fpoc_loader/migrate_activation_tokens.py` | 025 — wa.me activation tokens (CR-014). | migración |
 
-### Loaders / seeds históricos (no en runtime, ejecutar a mano)
+### Loaders / seeds activos (importados o ejecutados a mano)
 
 | Archivo | Qué hace | Estado |
 |---------|----------|--------|
 | `fpoc_loader/load_to_azure.py` | Carga `datos_eta_YYYY-MM-DD.xlsx` a Azure SQL. Idempotente por fecha. **También importado** desde `drivers_whatsapp.py` para constantes `SIMPLI_COLS`/`GEO_COLS`. | activo (import + script) |
 | `fpoc_loader/seed_regiones_estacionalidad.py` | Backfill regiones + Black Friday + Cyber Week + ruta_id. **También importado** desde `routers/seed_admin.py`. | activo (import + script) |
-| `fpoc_loader/bootstrap_azure_schema.py` | One-shot: crea tablas que faltan en Azure SQL. | histórico |
-| `fpoc_loader/fix_vip_columns_azure.py` | One-shot: agrega columnas deadline a `fpoc.vip_clients` en Azure SQL. | histórico |
-| `fpoc_loader/migrate_sqlite_to_azure.py` | Migra datos del SQLite local a Azure SQL. | histórico |
-| `fpoc_loader/seed_history.py` | Backfill de N días históricos en `fpoc.simpli_visits`. | histórico |
-| `fpoc_loader/seed_sqlite.py` | Seed SQLite desde Excel (usado para dev local antes del bootstrap). ⚠️ Solapado funcionalmente con `bootstrap.py`. Verificar si todavía aporta. | ⚠️ histórico |
-| `fpoc_loader/seed_users.py` | Seed inicial de admin + ops + transport_managers en Azure SQL. **Usa `INITIAL_ADMIN_PASSWORD` env** con fallback inseguro a `admin123`. | histórico (rotar password si se reusa) |
-| `fpoc_loader/apply_migration.py` | CLI runner para aplicar un .sql con separador `GO`. | script |
+| `fpoc_loader/seed_sqlite.py` | Seed SQLite desde Excel. **Importado** por `bootstrap.py::_load_excel_via_seed_sqlite` (migración 001). | activo (import) |
 
 ### SQL DDL
 
 | Archivo | Qué hace | Estado |
 |---------|----------|--------|
-| `fpoc_loader/ddl.sql` | DDL base de Azure SQL (fpoc.simpli_visits, fpoc.geo_suborders). | activo |
-| `fpoc_loader/sqlite_schema.sql` | DDL equivalente para SQLite (con prefijos `fpoc_` en vez de schema). | activo |
-| `fpoc_loader/users_ddl.sql` | DDL `fpoc.users`, `fpoc.empresas_transporte`. | activo |
-| `fpoc_loader/notifications_ddl.sql` | DDL `fpoc.notifications_log`, `fpoc.whatsapp_sessions`. | activo |
-| `fpoc_loader/access_log_ddl.sql` | DDL `fpoc.access_log` (auth audit trail). | activo |
-| `fpoc_loader/content_templates_ddl.sql` | DDL `fpoc.content_templates` (Twilio SIDs en DB). | activo |
+| `fpoc_loader/ddl.sql` | DDL base de Azure SQL (fpoc.simpli_visits, fpoc.geo_suborders). Cargado por `load_to_azure.py`. | activo |
+| `fpoc_loader/sqlite_schema.sql` | DDL equivalente para SQLite (con prefijos `fpoc_` en vez de schema). Cargado por `bootstrap.py` y `seed_sqlite.py`. | activo |
 
 ---
 
@@ -214,14 +204,9 @@ Convenciones:
 | Archivo | Qué hace / cuándo se invoca | Estado |
 |---------|------------------------------|--------|
 | `scripts/dump_openapi.py` | Regenera `backend/openapi.json` desde `app.openapi()`. Correr al cerrar un CR con cambios al contrato. | script |
-| `scripts/seed_centros_distribucion.py` | Crea `fpoc.centros_distribucion` + seed por región. Idempotente. | histórico (one-shot) |
-| `scripts/enrich_simpli_visits.py` | Backfill `ruta_id` + `region` + `comuna` en `simpli_visits` desde `geo_suborders`. | histórico (one-shot por load) |
-| `scripts/cleanup_synthetic_data.py` | Borra data sintética + live-gen vieja, deja solo planificaciones registradas en `fpoc.planificacion_imports`. | histórico |
-| `scripts/cleanup_data_round7.py` | Limpieza puntual R7: drivers con typo `DVR-*`, nombres incompletos, vehicles con 2+ drivers activos. | histórico |
-| `scripts/cleanup_stale_en_curso.py` | Cierra días `EN_CURSO` huérfanos (multi-EN_CURSO simultáneo). | histórico |
-| `scripts/truncate_visit_data.py` | Truncate destructivo de tablas de visitas. Preserva users/drivers/vehicles/notif. | script |
-| `scripts/load_motivos_descripciones.py` | Carga descripciones de motivos del XLSX `Motivo no entrega HD.xlsx` a `fpoc.motivo_alert_config`. Path import arreglado en este cleanup. | histórico |
-| `scripts/smoke_wa_agent.py` | Smoke test del FSM/LLM del agente WhatsApp via `_dispatch`. Paths corregidos en este cleanup. | script |
+| `scripts/seed_centros_distribucion.py` | Crea `fpoc.centros_distribucion` + seed por región. Idempotente. Usa `core.db`. | script (one-shot) |
+| `scripts/load_motivos_descripciones.py` | Carga descripciones de motivos del XLSX `Motivo no entrega HD.xlsx` a `fpoc.motivo_alert_config`. Usa `core.db`. | script (one-shot) |
+| `scripts/smoke_wa_agent.py` | Smoke test del FSM/LLM del agente WhatsApp via `_dispatch`. | script |
 
 ---
 
@@ -253,16 +238,6 @@ Convenciones:
 
 ---
 
-## Borrados confirmados en este cleanup
-
-1. **`backend/_legacy/`** entero — solo contenía `README.md` y un subdir
-   `scripts/` vacío. Ningún archivo `.py` adentro y ningún `from _legacy.*`
-   en el código vivo.
-2. **Imports rotos arreglados** (no borrado, fix):
-   - `scripts/smoke_wa_agent.py`: `from twilio_inbound` → `from routers.twilio_inbound`;
-     `from whatsapp_agent` → `from sims.whatsapp_agent`.
-   - `scripts/load_motivos_descripciones.py`: `from db` → `from core.db`.
-
 ## Sin borrar (flagged ⚠️)
 
 | Archivo / endpoint | Por qué se queda | Acción sugerida |
@@ -274,21 +249,56 @@ Convenciones:
 | `routers/seed_admin.py::region-day/regions-supported` | Sin consumer frontend — admin manual de seeding. | Mantener. |
 | `routers/whatsapp_onboarding.py::POST onboard / GET onboard/list` | Solo documentados en `backend/docs/ONBOARDING.md` (curl). | Mantener; usados manualmente. |
 | `backend/core/valuedata.db` | Duplicado de `backend/valuedata.db` — aparece cuando se corre el script desde `backend/core/`. | Verificar y borrar si sobra. |
-| `fpoc_loader/seed_sqlite.py` | Funcionalmente solapado con `bootstrap.py` (que ya bootstrapea SQLite en lifespan). | Verificar si todavía aporta vs deprecation. |
-| `fpoc_loader/seed_users.py` | Fallback inseguro a `admin123` si `INITIAL_ADMIN_PASSWORD` no está set. | Rotar password / hard-fail si se reusa. |
 | `routers/drivers_whatsapp.py` (1400+ líneas) | Bien que funcione, pero monolítico. | Planear split en CR futuro (no en este). |
 
-## Conteo por categoría (post-cleanup)
+---
 
-| Categoría | Archivos |
-|-----------|----------|
-| Top-level `backend/` | 6 (main.py, startup.sh, requirements.txt, openapi.json, README.md + runtime: valuedata.db, uvicorn.log) |
-| `core/` | 11 (10 .py + 1 db artifact) |
-| `routers/` | 33 (.py) |
-| `sims/` | 8 (.py) |
-| `ml/` | 4 (.py) |
-| `fpoc_loader/` | 30 (25 .py runtime + 4 .py históricos + 1 apply_migration.py + 6 .sql) — ajustar conteo cuando se decida `seed_sqlite.py` |
-| `scripts/` | 9 (.py) |
-| `tests/` | 9 (.py incl. `__init__` y `conftest`) |
-| `docs/` (backend) | 1 (.md) |
-| `_legacy/` | **0** (borrado en este cleanup) |
+## Legacy (no importado por código vivo)
+
+Archivos movidos a `backend/_legacy/` en este pase de cleanup. Conservados con
+`git mv`-style (sin git acá, plain `mv`) bajo `__init__.py` vacíos para que
+sigan siendo importables si hubiera que rescatarlos. **No re-importar desde
+código vivo sin moverlos primero de vuelta.**
+
+### `backend/_legacy/fpoc_loader/`
+
+| Archivo | Razón de mover |
+|---------|----------------|
+| `apply_migration.py` | CLI standalone que aplica un `.sql` Azure-style con separador `GO`. Cero imports desde código vivo. Reemplazado por `fpoc_loader/migrations.py` con tracking idempotente. |
+| `bootstrap_azure_schema.py` | One-shot que creó las tablas faltantes en Azure SQL en setup inicial. Cero imports. Ya aplicado en el ambiente productivo. |
+| `fix_vip_columns_azure.py` | One-shot que agregó columnas `deadline_*` a `fpoc.vip_clients` en Azure SQL. Cero imports. Reemplazado por la migración 022 (`migrate_vip_deadline`). |
+| `migrate_sqlite_to_azure.py` | CLI one-shot para migrar datos del SQLite local a Azure SQL durante onboarding del ambiente. Cero imports. Ya aplicado. |
+| `seed_history.py` | Backfill demo de N días históricos en `fpoc.simpli_visits`. Self-contained (Azure-only `get_conn` interno), cero imports desde código vivo. |
+| `seed_users.py` | Seed inicial admin + ops + transport_managers en Azure SQL. Cero imports desde código vivo; `bootstrap.py` tiene su propio `_seed_users_minimal` inline. Fallback inseguro a `admin123`. |
+| `users_ddl.sql` | DDL `fpoc.users`/`fpoc.empresas_transporte`. Solo referenciado desde `seed_users.py` (también legacy) y `bootstrap_azure_schema.py` (legacy). Schema vivo en SQLite por `sqlite_schema.sql`. |
+| `notifications_ddl.sql` | DDL `fpoc.notifications_log`/`fpoc.whatsapp_sessions`. Solo referenciado desde docstrings de scripts legacy. |
+| `access_log_ddl.sql` | DDL `fpoc.access_log`. Solo referenciado desde docstrings de scripts legacy. |
+| `content_templates_ddl.sql` | DDL `fpoc.content_templates`. Solo referenciado desde docstrings de scripts legacy. |
+
+### `backend/_legacy/scripts/`
+
+| Archivo | Razón de mover |
+|---------|----------------|
+| `cleanup_data_round7.py` | One-shot R7 (drivers con typo `DVR-*`). **Import roto** (`from db import get_conn`) — no corre as-is. Ya aplicado en R7. |
+| `cleanup_stale_en_curso.py` | One-shot para cerrar días `EN_CURSO` huérfanos. **Import roto** (`from db import get_conn`). |
+| `cleanup_synthetic_data.py` | Limpieza data sintética post-load. **Import roto** (`from db import get_conn`). Si se vuelve a necesitar, reescribir con `from core.db`. |
+| `enrich_simpli_visits.py` | Backfill `ruta_id`/`region`/`comuna`. **Import roto** (`from db import get_conn`). Superado por las migraciones 017/018 que ya enriquecen al cargar. |
+| `truncate_visit_data.py` | Truncate destructivo de visitas. **Import roto** (`from db import get_conn`). Útil pero no funcional as-is — reescribir si se necesita. |
+
+## Conteo por categoría (post-cleanup actual)
+
+| Categoría | Archivos | Detalle |
+|-----------|----------|---------|
+| Top-level `backend/` | 6 + 2 runtime | main.py, startup.sh, requirements.txt, openapi.json, README.md + valuedata.db, uvicorn.log |
+| `core/` | 10 .py + 1 db | (`__init__`, activation, app_config, auth, cache, db, events, schemas, state, storage, twilio_templates) |
+| `routers/` | 35 .py | Todos referenciados desde `main.py` o entre sí |
+| `sims/` | 8 .py | Todos referenciados |
+| `ml/` | 4 .py | (`__init__`, pipeline, masters, synthetic_calibration) |
+| `fpoc_loader/` | 28 .py + 2 .sql | 25 migraciones + `migrations.py` + `bootstrap.py` + `seed_sqlite.py` + `load_to_azure.py` + `seed_regiones_estacionalidad.py` + `ddl.sql` + `sqlite_schema.sql` |
+| `scripts/` | 4 .py | `dump_openapi.py`, `seed_centros_distribucion.py`, `load_motivos_descripciones.py`, `smoke_wa_agent.py` |
+| `tests/` | 9 .py | incl. `__init__` y `conftest` |
+| `docs/` (backend) | 1 .md | `ONBOARDING.md` |
+| `_legacy/fpoc_loader/` | 6 .py + 4 .sql | One-shot scripts y DDL fragmentado, todos sin imports desde código vivo |
+| `_legacy/scripts/` | 5 .py | Scripts CLI con `from db import` rotos (apuntan a un módulo inexistente) |
+
+Smoke test post-cleanup: `from main import app; len(app.routes) == 197`.
