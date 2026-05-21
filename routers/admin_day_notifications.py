@@ -562,3 +562,219 @@ def notify_eta_breach(
     reusar sin duplicar codigo.
     """
     return dispatch_eta_breach(req.tracking_id, triggered_by="eta_breach_manual")
+
+
+# ---------------------------------------------------------------------------
+# Dispatch visit completed (CR-entrega-ok)
+# ---------------------------------------------------------------------------
+
+class VisitCompletedResponse(BaseModel):
+    tracking_id: str
+    driver_notified: bool
+    manager_notified_count: int
+    admin_notified_count: int
+    completed_count: int
+    total_count: int
+    detail: str
+
+
+def dispatch_visit_completed(
+    tracking_id: str,
+    *,
+    triggered_by: str = "visit_completed_manual",
+) -> VisitCompletedResponse:
+    """Cuando una visita pasa a status='completed', avisa por WhatsApp a:
+
+      1. El driver: "Entrega OK: {cliente}. Quedan N pendientes."
+      2. Manager(es) de la empresa: contactos con recibe_alerts=1.
+      3. Admin Falabella: contactos cross-empresa con recibe_alerts=1 (si los
+         hay en empresa_contactos).
+
+    Mensajes freeform — dependen de que cada destinatario tenga ventana 24h
+    abierta. Si no, el envio falla pero no bloquea el flow operativo.
+
+    Llamada desde:
+      - POST /api/admin/pilot/simulate-event (event='complete')
+      - Futuro: bot driver cuando marca entrega OK desde el menu FSM.
+    """
+    from routers.notifications import send_whatsapp
+
+    tid = tracking_id.strip()
+    today_iso = date.today().isoformat()
+
+    # 1) Visita + datos del driver/empresa.
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT v.id, v.title, v.comuna, v.patente_falsa, v.planned_date "
+            "FROM fpoc.simpli_visits v "
+            "WHERE CAST(v.id AS VARCHAR(32)) = ?",
+            tid,
+        )
+        v = cur.fetchone()
+    if v is None:
+        raise HTTPException(404, f"Visita {tid} no existe")
+
+    cliente = str(v[1] or "—")
+    comuna = str(v[2] or "")
+    patente = int(v[3]) if v[3] is not None else None
+    planned_date = str(v[4]) if v[4] else today_iso
+    cliente_label = f"{cliente}" + (f" ({comuna})" if comuna else "")
+
+    if patente is None:
+        raise HTTPException(409, f"Visita {tid} sin patente_falsa")
+
+    # 2) Driver activo + empresa.
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT d.driver_id, d.name, d.phone_e164, d.notify_whatsapp, "
+            "       d.opted_in_at, d.empresa_id, e.nombre "
+            "FROM fpoc.drivers d "
+            "LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = d.empresa_id "
+            "WHERE d.vehicle_id = ? AND d.active = 1 "
+            "ORDER BY d.opted_in_at DESC",
+            patente,
+        )
+        d = cur.fetchone()
+    if d is None:
+        raise HTTPException(409, f"No hay driver activo para patente {patente}")
+
+    driver_id = str(d[0]) if d[0] else "?"
+    driver_name = str(d[1] or "—")
+    driver_phone = str(d[2] or "").strip()
+    driver_notify = bool(d[3]) if d[3] is not None else False
+    driver_optin = d[4]
+    empresa_id = int(d[5]) if d[5] is not None else None
+    empresa_nombre = str(d[6] or "—")
+
+    # 3) Counters del día.
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT "
+            "  SUM(CASE WHEN LOWER(status)='completed' THEN 1 ELSE 0 END) AS done, "
+            "  COUNT(*) AS total "
+            "FROM fpoc.simpli_visits "
+            "WHERE planned_date = ? AND patente_falsa = ?",
+            planned_date, patente,
+        )
+        r = cur.fetchone()
+    completed_count = int(r[0] or 0)
+    total_count = int(r[1] or 0)
+    pending_count = max(0, total_count - completed_count)
+    hora_str = datetime.now().strftime("%H:%M")
+
+    driver_notified = False
+    if (driver_phone.startswith("+") and driver_notify and driver_optin is not None):
+        body_driver = (
+            f"✅ *Entrega OK*: {cliente_label}\n"
+            f"Te quedan *{pending_count}* pendientes hoy.\n"
+            f"Mandá 'menu' para ver tu ruta restante."
+        )
+        try:
+            send_whatsapp(
+                body=body_driver,
+                targets=[(None, driver_phone)],
+                subject=f"Entrega OK · TID:{tid}",
+                tracking_id=tid,
+                triggered_by=triggered_by,
+            )
+            driver_notified = True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[visit-completed] driver {driver_id} envio fallo: {e}")
+
+    # 4) Contactos de la empresa con rol jefe/coordinador (managers que
+    # reciben alertas operativas).
+    manager_notified = 0
+    if empresa_id is not None:
+        try:
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT c.contact_id, c.nombre, c.phone_e164, c.opted_in_at "
+                    "FROM fpoc.empresa_contactos c "
+                    "WHERE c.empresa_id = ? AND c.active = 1 "
+                    "  AND LOWER(COALESCE(c.rol,'')) IN ('jefe','coordinador') "
+                    "  AND c.phone_e164 IS NOT NULL "
+                    "  AND c.opted_in_at IS NOT NULL",
+                    empresa_id,
+                )
+                managers = list(cur.fetchall())
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[visit-completed] query managers empresa {empresa_id} fallo: {e}")
+            managers = []
+
+        for m in managers:
+            mgr_phone = str(m[2] or "").strip()
+            if not mgr_phone.startswith("+"):
+                continue
+            body_mgr = (
+                f"✅ *{driver_name}* entregó \"{cliente_label}\" a las {hora_str}.\n"
+                f"Empresa: *{empresa_nombre}* — Progreso: {completed_count}/{total_count} OK."
+            )
+            try:
+                send_whatsapp(
+                    body=body_mgr,
+                    targets=[(None, mgr_phone)],
+                    subject=f"Entrega OK · {empresa_nombre}",
+                    tracking_id=tid,
+                    triggered_by=f"{triggered_by}_mgr",
+                )
+                manager_notified += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[visit-completed] manager {m[0]} envio fallo: {e}")
+
+    # 5) Contactos admin Falabella cross-empresa (rol='admin' o similar).
+    admin_notified = 0
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT contact_id, nombre, phone_e164 "
+                "FROM fpoc.empresa_contactos "
+                "WHERE active = 1 "
+                "  AND phone_e164 IS NOT NULL AND opted_in_at IS NOT NULL "
+                "  AND LOWER(COALESCE(rol,'')) IN ('admin','falabella','falabella_admin','falabella_ops')"
+            )
+            admins = list(cur.fetchall())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[visit-completed] query admin contactos fallo: {e}")
+        admins = []
+
+    for a in admins:
+        adm_phone = str(a[2] or "").strip()
+        if not adm_phone.startswith("+"):
+            continue
+        body_adm = (
+            f"✅ Entrega OK · {empresa_nombre}\n"
+            f"{driver_name} → \"{cliente_label}\" @ {hora_str}\n"
+            f"Empresa {completed_count}/{total_count} OK."
+        )
+        try:
+            send_whatsapp(
+                body=body_adm,
+                targets=[(None, adm_phone)],
+                subject=f"Entrega OK · {empresa_nombre}",
+                tracking_id=tid,
+                triggered_by=f"{triggered_by}_admin",
+            )
+            admin_notified += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[visit-completed] admin {a[0]} envio fallo: {e}")
+
+    detail = (
+        f"driver_notified={driver_notified} mgrs={manager_notified} "
+        f"admins={admin_notified} ({completed_count}/{total_count})"
+    )
+    logger.info(f"[visit-completed] TID={tid} {detail}")
+
+    return VisitCompletedResponse(
+        tracking_id=tid,
+        driver_notified=driver_notified,
+        manager_notified_count=manager_notified,
+        admin_notified_count=admin_notified,
+        completed_count=completed_count,
+        total_count=total_count,
+        detail=detail,
+    )

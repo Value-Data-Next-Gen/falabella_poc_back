@@ -617,7 +617,19 @@ def simulate_event(
             )
             cn.commit()
         new_status = "completed"
-        detail = "Visita marcada completed (sin notificacion)."
+        try:
+            from routers.admin_day_notifications import dispatch_visit_completed
+            resp = dispatch_visit_completed(tid, triggered_by="pilot_simulate_complete")
+            detail = (
+                f"Visita completed. "
+                f"Notif: driver={resp.driver_notified} mgrs={resp.manager_notified_count} "
+                f"admins={resp.admin_notified_count} ({resp.completed_count}/{resp.total_count})"
+            )
+        except HTTPException as he:
+            detail = f"Visita completed, pero notif fallo: {he.detail}"
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[pilot-simulate-complete] notif fallo TID={tid}: {e}")
+            detail = f"Visita completed (notif fallo: {e})."
 
     elif req.event == "no_show":
         with get_conn() as cn:
