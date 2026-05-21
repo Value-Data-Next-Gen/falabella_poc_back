@@ -10,7 +10,7 @@ En SQLite la tabla `fpoc_simpli_visits` ya se crea con esas columnas en
 Idempotente: chequea INFORMATION_SCHEMA antes de cada ALTER.
 
 Uso manual:
-    python -m fpoc_loader.migrate_simpli_columns   # requiere DB_BACKEND=sqlserver
+    python -m fpoc_loader.migrate_simpli_columns   # Azure SQL único backend
 
 Corre automáticamente en lifespan via fpoc_loader.migrations.MIGRATIONS bajo
 el id "026_simpli_columns".
@@ -34,7 +34,7 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
 
 from loguru import logger  # noqa: E402
 
-from core.db import backend as db_backend, get_conn  # noqa: E402
+from core.db import get_conn  # noqa: E402
 
 
 COLUMNS: tuple[tuple[str, str], ...] = (
@@ -51,10 +51,6 @@ def _log(msg: str, quiet: bool) -> None:
 
 def main(quiet: bool = False) -> None:
     """Aplica las columnas faltantes en fpoc.simpli_visits (Azure SQL únicamente)."""
-    if db_backend() != "sqlserver":
-        _log("[migrate-simpli-columns] backend!=sqlserver, no-op", quiet)
-        return
-
     _log("[migrate-simpli-columns] backend=sqlserver", quiet)
     with get_conn() as cn:
         cur = cn.cursor()

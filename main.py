@@ -1,13 +1,16 @@
 """ValueData backend (FastAPI) — bootstrap + lifespan + router registration.
 
-Capa de predicción anticipada que se monta encima de SimpliRoute. En este POC
-genera el plan localmente con la misma forma que devolvería SimpliRoute; en
-producción `pipeline.gen_today_plan` se reemplaza por una llamada a la API real.
+Fase 2 MVP refactor: la fuente única de visitas es `fpoc.simpli_visits`.
+El modelo ML XGBoost + SHAP + synthetic data generator se eliminó, junto con
+los simuladores `comment_simulator` / `live_generator` / `driver_sim`.
 
-R7-F3: los 23 endpoints que vivían inline acá se movieron a `legacy_routes.py`
-agrupados en 4 sub-routers (system / control / model / fleet). Este módulo
-queda solo con bootstrap del FastAPI app, scheduler, lifespan e include_router.
-Las URLs públicas no cambiaron.
+Lo único que sigue corriendo en `lifespan` es:
+  - migraciones idempotentes desde `fpoc_loader.migrations`
+  - `STATE.init()` (carga maestros de DB; sin modelo ML)
+  - `scheduler` con el VIP deadline cron (chequea fpoc.simpli_visits cada 60s)
+
+Fase 3 reintroducirá un simulador de movimiento de drivers basado en
+interpolación sobre `fpoc.simpli_visits` (sin synthetic data).
 """
 from __future__ import annotations
 
@@ -39,62 +42,43 @@ from core.auth import (
 logger.remove()
 logger.add(sys.stderr, level="INFO")
 
-SCHEDULER_TICK_SEC = 3  # cada 3s avanza sim_clock por sim_minutes_per_tick
-
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Migraciones idempotentes con tracking en fpoc.schema_migrations.
-    # Se corren antes de STATE.init() porque train_model lee fpoc_simpli_visits.
     try:
         from fpoc_loader.migrations import MIGRATIONS, apply_all
         apply_all(MIGRATIONS)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[migrations] runner falló (se intenta seguir): {e}")
 
-    logger.info("Bootstrapping ValueData backend (training model, may take 30-40s)...")
+    logger.info("Bootstrapping ValueData backend (loading masters)...")
     STATE.init()
     logger.info(
-        f"Model ready. AUC={STATE.boot['metrics']['auc']:.3f}, "
-        f"Brier={STATE.boot['metrics']['brier']:.4f}. "
-        f"Today plan: {len(STATE.today_plan)} visits."
+        f"State ready. drivers={len(STATE.drivers)} "
+        f"vehicles={len(STATE.vehicles_ext)} empresas={len(STATE.empresas)}"
     )
 
     scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        STATE.tick, "interval",
-        seconds=SCHEDULER_TICK_SEC, id="sim-tick",
-        max_instances=1, coalesce=True,
-    )
-    # VIP deadline checker (interval 60s)
+    # VIP deadline checker (interval 60s) — lee de fpoc.simpli_visits
     from sims.vip_deadline_cron import register_cron as register_vip_cron
     register_vip_cron(scheduler)
-
+    # Fase 3 MVP: ETA breach checker (interval 5min) — alerta automatica
+    # WhatsApp si una visita pending pasa su ETA + GRACE_MINUTES.
+    from sims.eta_breach_cron import register_cron as register_eta_breach_cron
+    register_eta_breach_cron(scheduler)
     scheduler.start()
-    logger.info(f"Scheduler started: tick every {SCHEDULER_TICK_SEC}s")
-
-    # Live SQL generator (inserta rows aleatorias en fpoc.simpli_visits)
-    live_gen_start()
-
-    # Simulador de comentarios alertables (off por default; se enciende por endpoint)
-    comment_sim_start()
-
-    # Driver simulation (Ronda 4): movimiento + entregas. Solo procesa fechas
-    # con state=EN_CURSO (gateado por start_sim() vía day_state.transition).
-    driver_sim_start()
+    logger.info("Scheduler started: VIP deadline + ETA breach crons")
 
     try:
         yield
     finally:
         scheduler.shutdown(wait=False)
-        live_gen_stop()
-        comment_sim_stop()
-        driver_sim_stop()
 
 
 app = FastAPI(
     title="ValueData backend - Torre de Control",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -107,9 +91,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# CR-012 T0.1 — gzip para payloads grandes (plan-diario ~1.25 MB sin comprimir).
-# minimum_size evita comprimir respuestas chicas (auth, day-state). level 6 es
-# el sweet spot CPU/ratio para JSON repetitivo.
+# gzip para payloads grandes (plan-diario ~1.25 MB sin comprimir).
 app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
 
 # ============================================================================
@@ -122,28 +104,17 @@ from routers.vip import router as vip_router
 from routers.priorities import router as priorities_router
 from routers.plan_diario import router as plan_diario_router
 from routers.watchlist import router as watchlist_router
-from sims.live_generator import (
-    router as live_gen_router,
-    start_scheduler as live_gen_start,
-    stop_scheduler as live_gen_stop,
-)
 from routers.mantenedores import router as mantenedores_router
 from routers.me import router as me_router
 from routers.comments import router as comments_router
 from routers.empresa_contactos import router as empresa_contactos_router
 from routers.motivo_classifier import router as motivo_classifier_router
-from sims.comment_simulator import (
-    router as comment_sim_router,
-    start_scheduler as comment_sim_start,
-    stop_scheduler as comment_sim_stop,
-)
 from routers.motivo_corrections import router as motivo_corrections_router
 from routers.drivers_whatsapp import router as drivers_whatsapp_router
 from routers.day_planning import router as day_planning_router
 from routers.day_state import router as day_state_router
 from routers.rutas import router as rutas_router
 from routers.seed_admin import router as seed_admin_router
-from sims.driver_sim import router as driver_sim_router, start_scheduler as driver_sim_start, stop_scheduler as driver_sim_stop
 from routers.search import router as search_router
 from routers.twilio_inbound import router as twilio_inbound_router, _legacy_router as twilio_legacy_router
 from routers.whatsapp_onboarding import router as whatsapp_onboarding_router
@@ -153,11 +124,11 @@ from routers.copiloto import router as copiloto_router
 from routers.whatsapp_escalation import router as whatsapp_escalation_router
 from routers.admin_invitations import router as admin_invitations_router
 from routers.admin_day_notifications import router as admin_day_notifications_router
-# R7-F3: endpoints legacy extraídos de main.py (system/state/control/model/fleet)
+from routers.admin_pilot import router as admin_pilot_router
+from routers.operacion import router as operacion_router
+# Endpoints "legacy" sobrevivientes tras eliminar ML (system/fleet)
 from routers.legacy_routes import (
     system_router,
-    control_router,
-    model_router,
     fleet_router,
 )
 
@@ -170,12 +141,10 @@ app.include_router(vip_router)
 app.include_router(priorities_router)
 app.include_router(plan_diario_router)
 app.include_router(watchlist_router)
-app.include_router(live_gen_router)
 app.include_router(mantenedores_router)
 app.include_router(me_router)
 app.include_router(comments_router)
 app.include_router(empresa_contactos_router)
-app.include_router(comment_sim_router)
 app.include_router(motivo_classifier_router)
 app.include_router(motivo_corrections_router)
 app.include_router(drivers_whatsapp_router)
@@ -183,7 +152,6 @@ app.include_router(day_planning_router)
 app.include_router(day_state_router)
 app.include_router(rutas_router)
 app.include_router(seed_admin_router)
-app.include_router(driver_sim_router)
 app.include_router(search_router)
 app.include_router(twilio_inbound_router)
 app.include_router(twilio_legacy_router)
@@ -194,7 +162,7 @@ app.include_router(copiloto_router)
 app.include_router(whatsapp_escalation_router)
 app.include_router(admin_invitations_router)
 app.include_router(admin_day_notifications_router)
+app.include_router(admin_pilot_router)
+app.include_router(operacion_router)
 app.include_router(system_router)
-app.include_router(control_router)
-app.include_router(model_router)
 app.include_router(fleet_router)

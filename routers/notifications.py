@@ -31,7 +31,7 @@ from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 
 from core.auth import CurrentUser, current_user, require_admin
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
@@ -184,40 +184,23 @@ def _log_notification(
 ) -> int:
     cur = cn.cursor()
     cv_json = json.dumps(content_variables) if content_variables else None
-    if db_backend() == "sqlserver":
-        # OUTPUT INSERTED.notification_id es 100% confiable con pyodbc;
-        # SCOPE_IDENTITY() en cur.execute separado a veces devuelve NULL.
-        cur.execute(
-            """
-            INSERT INTO fpoc.notifications_log
-              (user_id, to_number, channel, subject, body, tracking_id,
-               twilio_sid, status, error_msg, triggered_by,
-               content_sid, content_variables, region)
-            OUTPUT INSERTED.notification_id
-            VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            user_id, to_number, subject, body, tracking_id,
-            twilio_sid, status, error, triggered_by,
-            content_sid, cv_json, region,
-        )
-        row = cur.fetchone()
-        new_id = int(row[0]) if row and row[0] is not None else 0
-    else:
-        cur.execute(
-            """
-            INSERT INTO fpoc.notifications_log
-              (user_id, to_number, channel, subject, body, tracking_id,
-               twilio_sid, status, error_msg, triggered_by,
-               content_sid, content_variables, region)
-            VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            user_id, to_number, subject, body, tracking_id,
-            twilio_sid, status, error, triggered_by,
-            content_sid, cv_json, region,
-        )
-        cur.execute("SELECT last_insert_rowid()")
-        row = cur.fetchone()
-        new_id = int(row[0]) if row and row[0] is not None else 0
+    # OUTPUT INSERTED.notification_id es 100% confiable con pyodbc;
+    # SCOPE_IDENTITY() en cur.execute separado a veces devuelve NULL.
+    cur.execute(
+        """
+        INSERT INTO fpoc.notifications_log
+          (user_id, to_number, channel, subject, body, tracking_id,
+           twilio_sid, status, error_msg, triggered_by,
+           content_sid, content_variables, region)
+        OUTPUT INSERTED.notification_id
+        VALUES (?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        user_id, to_number, subject, body, tracking_id,
+        twilio_sid, status, error, triggered_by,
+        content_sid, cv_json, region,
+    )
+    row = cur.fetchone()
+    new_id = int(row[0]) if row and row[0] is not None else 0
     cn.commit()
     return new_id
 

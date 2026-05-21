@@ -4,13 +4,12 @@ Heredadas del export XLSX de SimpliRoute. El importador hace el mapeo
 antes de INSERT así que el XLSX sigue funcionando igual.
 
 Idempotente: chequea si la columna vieja existe antes de renombrar.
-No-op en SQLite (sp_rename es T-SQL).
 """
 from __future__ import annotations
 
 from loguru import logger
 
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 # Nombres construidos por concatenación para que un futuro grep/sed global
 # no nos los toque por accidente.
@@ -30,10 +29,6 @@ RENAMES: list[tuple[str, str]] = [
 
 
 def main(quiet: bool = False) -> None:
-    if db_backend() != "sqlserver":
-        if not quiet:
-            logger.info("[simpli-rename] backend no-mssql, skip")
-        return
     renamed = 0
     skipped = 0
     with get_conn() as cn:

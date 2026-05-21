@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ValueData backend - Torre de Control",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/api/auth/login": {
@@ -260,7 +260,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/routers__seguimiento__KPIs"
+                  "$ref": "#/components/schemas/KPIs"
                 }
               }
             }
@@ -1610,6 +1610,7 @@
           "plan-diario"
         ],
         "summary": "Get Plan Diario",
+        "description": "Plan diario. Fuente única: fpoc.simpli_visits.\n\nTras Fase 2 MVP refactor el modo `source=synthetic` quedó eliminado\n(acoplado a STATE.snapshot_df que ya no existe). El query param se mantiene\npor compat de URL pero solo acepta `real`.\n\nModo `legacy=true` sigue exponiendo el shape Sprint-1 (Empresa→Drivers→Visits),\nleyendo SIEMPRE de DB real (antes caía al snapshot sintético cuando no venía\nplanned_date; ahora usa STATE.today como default).",
         "operationId": "get_plan_diario_api_plan_diario_get",
         "security": [
           {
@@ -1669,7 +1670,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(real|synthetic)$",
+              "pattern": "^(real)$",
               "default": "real",
               "title": "Source"
             }
@@ -1796,200 +1797,6 @@
             }
           }
         }
-      }
-    },
-    "/api/live-gen/stats": {
-      "get": {
-        "tags": [
-          "live-gen"
-        ],
-        "summary": "Stats",
-        "operationId": "stats_api_live_gen_stats_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LiveGenStats"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/live-gen/toggle": {
-      "post": {
-        "tags": [
-          "live-gen"
-        ],
-        "summary": "Toggle",
-        "operationId": "toggle_api_live_gen_toggle_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToggleRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LiveGenStats"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/live-gen/reset": {
-      "post": {
-        "tags": [
-          "live-gen"
-        ],
-        "summary": "Reset",
-        "description": "Borra las rows generadas por el live-gen de hoy (id >= ID_BASE).",
-        "operationId": "reset_api_live_gen_reset_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "title": "Response Reset Api Live Gen Reset Post"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/live-gen/batch": {
-      "post": {
-        "tags": [
-          "live-gen"
-        ],
-        "summary": "Batch",
-        "description": "Inyecta un batch de N filas en una fecha específica (default: hoy).\nÚtil para popular un día rápido en la demo.",
-        "operationId": "batch_api_live_gen_batch_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BatchRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BatchResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/live-gen/simulate-days": {
-      "post": {
-        "tags": [
-          "live-gen"
-        ],
-        "summary": "Simulate Days",
-        "description": "Simula N días con rows_per_day cada uno. Loopea hacia atrás desde hoy.\nBloqueante (puede tardar varios segundos). Con 7x1800 ≈ 10-20s.",
-        "operationId": "simulate_days_api_live_gen_simulate_days_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SimulateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimulateResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
       }
     },
     "/api/admin/empresas": {
@@ -6404,150 +6211,6 @@
         }
       }
     },
-    "/api/comment-sim/stats": {
-      "get": {
-        "tags": [
-          "comment-sim"
-        ],
-        "summary": "Get Stats",
-        "operationId": "get_stats_api_comment_sim_stats_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimStats"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/comment-sim/toggle": {
-      "post": {
-        "tags": [
-          "comment-sim"
-        ],
-        "summary": "Toggle",
-        "operationId": "toggle_api_comment_sim_toggle_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SimToggle"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimStats"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/comment-sim/config": {
-      "post": {
-        "tags": [
-          "comment-sim"
-        ],
-        "summary": "Update Config",
-        "operationId": "update_config_api_comment_sim_config_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SimConfig"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimStats"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/comment-sim/emit-now": {
-      "post": {
-        "tags": [
-          "comment-sim"
-        ],
-        "summary": "Emit Now",
-        "operationId": "emit_now_api_comment_sim_emit_now_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimStats"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
     "/api/motivos/classify": {
       "post": {
         "tags": [
@@ -7094,71 +6757,6 @@
         ]
       }
     },
-    "/api/planificacion/import-mock": {
-      "post": {
-        "tags": [
-          "drivers-whatsapp"
-        ],
-        "summary": "Import Mock",
-        "description": "Importa visitas mock para una fecha y las persiste en fpoc_simpli_visits.\n\n- `fecha`: 'YYYY-MM-DD'. Default: STATE.today si existe, sino hoy.\n- `force=true`: re-importar aunque la fecha ya esté cargada (para demos\n  destructivas).\n\nIdempotencia: marker en `fpoc_planificacion_imports`. Si ya hay para la\nfecha, devuelve `already_imported=true` + el count anterior, sin duplicar.",
-        "operationId": "import_mock_api_planificacion_import_mock_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "fecha",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Fecha"
-            }
-          },
-          {
-            "name": "force",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Force"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ImportMockResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/planificacion/import-xlsx": {
       "post": {
         "tags": [
@@ -7226,7 +6824,7 @@
           "drivers-whatsapp"
         ],
         "summary": "Start Day",
-        "description": "Marca el comienzo del día operativo en la fecha indicada.\n\n- Detiene el live_generator (deja de inyectar visitas al planned_date).\n- Si reset_status=true (default): resetea status='pending' + limpia checkouts\n  en todas las visitas del día. Crucial porque el import-mock las trae con\n  status=completed/failed (datos sintéticos para ML); para operar el día\n  tienen que arrancar como pending.\n- Setea STATE.today = fecha y refresca el snapshot ML/in-memory.\n- Cuenta visitas reales en fpoc.simpli_visits para esa fecha (cuadratura).\n- Devuelve conflictos de dotación pendientes.",
+        "description": "Marca el comienzo del día operativo en la fecha indicada.\n\nFase 2 MVP: ya no hay live_generator que pausar ni snapshot ML que refrescar.\nEl endpoint solo:\n- Si reset_status=true (default): pasa todas las visitas a status='pending'\n  y limpia checkouts (comment/observation). Si la importación quedó con\n  visitas pre-completadas (datos sintéticos legacy), esto las pone listas\n  para operar.\n- Setea STATE.today = fecha (placeholder de día operativo activo).\n- Cuenta visitas en fpoc.simpli_visits para esa fecha (cuadratura).\n- Devuelve conflictos de dotación pendientes.\n\n`live_gen_paused` y `snapshot_size` quedan con valores estables (False y 0)\npara no romper el contrato del frontend mientras se migra.",
         "operationId": "start_day_api_planificacion_start_day_post",
         "security": [
           {
@@ -7932,125 +7530,6 @@
         }
       }
     },
-    "/api/planificacion/day-state/clean-and-regenerate": {
-      "post": {
-        "tags": [
-          "day-state"
-        ],
-        "summary": "Clean And Regenerate",
-        "description": "Borra todas las visitas del día y regenera con el live_generator.\n\nModos:\n  - \"default\" (1800 rows, multi-empresa, multi-driver, multi-región)\n  - \"minimal\" (5 visitas, 1 empresa, 1 driver, RM, ETAs cronológicas)\n    Ignora `rows`. Para demos limpios y tests unitarios.\n\nEl live_generator respeta región por driver (hash determinístico), evita\nlíneas cruzando el país. Visitas nacen `pending` para que el sim las\nprocese cronológicamente.",
-        "operationId": "clean_and_regenerate_api_planificacion_day_state_clean_and_regenerate_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "fecha",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Fecha"
-            }
-          },
-          {
-            "name": "rows",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 5000,
-              "minimum": 5,
-              "default": 1800,
-              "title": "Rows"
-            }
-          },
-          {
-            "name": "mode",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "pattern": "^(default|minimal)$",
-              "default": "default",
-              "title": "Mode"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CleanRegenerateResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/planificacion/day-state/regenerate": {
-      "post": {
-        "tags": [
-          "day-state"
-        ],
-        "summary": "Regenerate Day",
-        "description": "Rebobina la simulación de un día EN_CURSO sin destruir el plan.\n\nQué hace:\n  - sim_clock vuelve a 09:00 del día.\n  - Todas las visitas del día pasan a status='pending', limpiando observaciones de sim.\n  - driver_positions del día se borra y se re-inicializa.\n  - El plan (rutas, drivers, asignaciones) se conserva intacto.\n\nPara qué sirve: \"ver de nuevo cómo simula el día\" sin tener que volver a\nBORRADOR → VALIDADO → EN_CURSO. Usable solo en EN_CURSO.",
-        "operationId": "regenerate_day_api_planificacion_day_state_regenerate_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "fecha",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Fecha"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DayState"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/planificacion/day-state/extend": {
       "post": {
         "tags": [
@@ -8385,69 +7864,6 @@
             "HTTPBearer": []
           }
         ]
-      }
-    },
-    "/api/operacion/driver-positions": {
-      "get": {
-        "tags": [
-          "driver-sim"
-        ],
-        "summary": "Driver Positions",
-        "operationId": "driver_positions_api_operacion_driver_positions_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "fecha",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Fecha"
-            }
-          },
-          {
-            "name": "empresa_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Empresa Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SimStatusResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/search": {
@@ -9202,7 +8618,7 @@
           "admin-day-notifications"
         ],
         "summary": "Notify Eta Breach",
-        "description": "Manual trigger para disparar alerta de atraso ETA en una visita\nespecífica (uso QA / demo). Persiste el `tracking_id` en la sesión\nWhatsApp del driver para que el LLM agent pueda enlazar la respuesta\nlibre del driver con el `report_motivo` correspondiente.",
+        "description": "Manual trigger para disparar alerta de atraso ETA en una visita\nespecífica (uso QA / demo). Persiste el `tracking_id` en la sesión\nWhatsApp del driver para que el LLM agent pueda enlazar la respuesta\nlibre del driver con el `report_motivo` correspondiente.\n\nLa logica real vive en `dispatch_eta_breach()` para que el cron\n`sims.eta_breach_cron` y el `/api/admin/pilot/simulate-event` la puedan\nreusar sin duplicar codigo.",
         "operationId": "notify_eta_breach_api_admin_notify_eta_breach_post",
         "requestBody": {
           "content": {
@@ -9241,6 +8657,294 @@
             "HTTPBearer": []
           }
         ]
+      }
+    },
+    "/api/admin/pilot/clock": {
+      "get": {
+        "tags": [
+          "admin-pilot"
+        ],
+        "summary": "Get Clock",
+        "operationId": "get_clock_api_admin_pilot_clock_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "fecha",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD",
+              "title": "Fecha"
+            },
+            "description": "YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin-pilot"
+        ],
+        "summary": "Post Clock",
+        "operationId": "post_clock_api_admin_pilot_clock_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClockActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClockResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/pilot/setup": {
+      "post": {
+        "tags": [
+          "admin-pilot"
+        ],
+        "summary": "Pilot Setup",
+        "operationId": "pilot_setup_api_admin_pilot_setup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PilotSetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PilotSetupResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/admin/pilot/simulate-event": {
+      "post": {
+        "tags": [
+          "admin-pilot"
+        ],
+        "summary": "Simulate Event",
+        "description": "Aplica un evento simulado a una visita.\n\n- delay      => +30min al current_eta_cl + dispara alerta WhatsApp ETA breach.\n- complete   => status='completed'. Sin notificacion (driver lo marco OK).\n- no_show    => status='failed' + comentario alertable 'SIN MORADORES'.",
+        "operationId": "simulate_event_api_admin_pilot_simulate_event_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulateEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulateEventResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/admin/pilot/status": {
+      "get": {
+        "tags": [
+          "admin-pilot"
+        ],
+        "summary": "Pilot Status",
+        "operationId": "pilot_status_api_admin_pilot_status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "fecha",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD",
+              "title": "Fecha"
+            },
+            "description": "YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PilotStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operacion/driver-positions": {
+      "get": {
+        "tags": [
+          "operacion"
+        ],
+        "summary": "Driver Positions",
+        "operationId": "driver_positions_api_operacion_driver_positions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "fecha",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD",
+              "title": "Fecha"
+            },
+            "description": "YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DriverPosition"
+                  },
+                  "title": "Response Driver Positions Api Operacion Driver Positions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/health": {
@@ -9338,6 +9042,7 @@
           "system"
         ],
         "summary": "Get State",
+        "description": "Estado mínimo de la torre.\n\nTras Fase 2 MVP: sin snapshot ML, sin sim_clock auto-advance. Los campos\nobsoletos quedan con defaults estables (day_seed=0, auto_advance=False,\nsim_minutes_per_tick=0, incidents={}, last_tick_at=None) para no romper\nel contrato con el frontend mientras se migra.\n\n`vehicles` y `total_visits` se computan leyendo fpoc.simpli_visits para\nla fecha activa (STATE.today). Si STATE.today es None o falla, se cae a 0.",
         "operationId": "get_state_api_state_get",
         "responses": {
           "200": {
@@ -9356,507 +9061,6 @@
             "HTTPBearer": []
           }
         ]
-      }
-    },
-    "/api/control/start-day": {
-      "post": {
-        "tags": [
-          "control"
-        ],
-        "summary": "Post Start Day",
-        "description": "Arranca el día: opcionalmente regenera el plan y resetea sim_clock al\ninicio, luego activa auto_advance.",
-        "operationId": "post_start_day_api_control_start_day_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/StartDayRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Req"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/kpis": {
-      "get": {
-        "tags": [
-          "model"
-        ],
-        "summary": "Get Kpis",
-        "operationId": "get_kpis_api_kpis_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "vehicle_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "integer"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vehicle Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/core__schemas__KPIs"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/visits": {
-      "get": {
-        "tags": [
-          "model"
-        ],
-        "summary": "Get Visits",
-        "operationId": "get_visits_api_visits_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "vehicle_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "integer"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Vehicle Id"
-            }
-          },
-          {
-            "name": "status",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Status"
-            }
-          },
-          {
-            "name": "only_alerts",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Only Alerts"
-            }
-          },
-          {
-            "name": "region",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "pattern": "^(all|RM|regiones)$",
-              "default": "all",
-              "title": "Region"
-            }
-          },
-          {
-            "name": "only_vip",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Only Vip"
-            }
-          },
-          {
-            "name": "eta_window_hours",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number",
-                  "maximum": 24.0,
-                  "minimum": 0.0
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Eta Window Hours"
-            }
-          },
-          {
-            "name": "alert_threshold",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number",
-                  "maximum": 1.0,
-                  "minimum": 0.0
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Alert Threshold"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Visit"
-                  },
-                  "title": "Response Get Visits Api Visits Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/alerts/anticipated": {
-      "get": {
-        "tags": [
-          "model"
-        ],
-        "summary": "Get Anticipated Alerts",
-        "operationId": "get_anticipated_alerts_api_alerts_anticipated_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 200,
-              "minimum": 1,
-              "default": 20,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "region",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "pattern": "^(all|RM|regiones)$",
-              "default": "all",
-              "title": "Region"
-            }
-          },
-          {
-            "name": "eta_window_hours",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number",
-                  "maximum": 24.0,
-                  "minimum": 0.0
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Eta Window Hours"
-            }
-          },
-          {
-            "name": "alert_threshold",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number",
-                  "maximum": 1.0,
-                  "minimum": 0.0
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Alert Threshold"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/AnticipatedAlert"
-                  },
-                  "title": "Response Get Anticipated Alerts Api Alerts Anticipated Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/visits/{tracking_id}/explanation": {
-      "get": {
-        "tags": [
-          "model"
-        ],
-        "summary": "Get Explanation",
-        "operationId": "get_explanation_api_visits__tracking_id__explanation_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "tracking_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Tracking Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VisitExplanation"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/vehicles": {
-      "get": {
-        "tags": [
-          "model"
-        ],
-        "summary": "Get Vehicles",
-        "operationId": "get_vehicles_api_vehicles_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/VehicleSummary"
-                  },
-                  "type": "array",
-                  "title": "Response Get Vehicles Api Vehicles Get"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/model/metrics": {
-      "get": {
-        "tags": [
-          "model"
-        ],
-        "summary": "Get Model Metrics",
-        "operationId": "get_model_metrics_api_model_metrics_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelMetrics"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/model/importance": {
-      "get": {
-        "tags": [
-          "model"
-        ],
-        "summary": "Get Model Importance",
-        "operationId": "get_model_importance_api_model_importance_get",
-        "parameters": [
-          {
-            "name": "top_k",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 50,
-              "minimum": 1,
-              "default": 15,
-              "title": "Top K"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/FeatureImportance"
-                  },
-                  "title": "Response Get Model Importance Api Model Importance Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/drivers": {
@@ -9976,146 +9180,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VehicleExtended"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/clients": {
-      "get": {
-        "tags": [
-          "fleet"
-        ],
-        "summary": "Get Clients",
-        "operationId": "get_clients_api_clients_get",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 2000,
-              "minimum": 1,
-              "default": 200,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "default": 0,
-              "title": "Offset"
-            }
-          },
-          {
-            "name": "only_problem_zone",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Only Problem Zone"
-            }
-          },
-          {
-            "name": "min_fail_rate",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "number",
-              "maximum": 1.0,
-              "minimum": 0.0,
-              "default": 0.0,
-              "title": "Min Fail Rate"
-            }
-          },
-          {
-            "name": "search",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Search"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ClientMaster"
-                  },
-                  "title": "Response Get Clients Api Clients Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/clients/{customer_id}": {
-      "get": {
-        "tags": [
-          "fleet"
-        ],
-        "summary": "Get Client",
-        "operationId": "get_client_api_clients__customer_id__get",
-        "parameters": [
-          {
-            "name": "customer_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Customer Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClientMaster"
                 }
               }
             }
@@ -10422,72 +9486,6 @@
         "title": "AlertEvent",
         "description": "CR-012 T0.3: evento histórico de alerta enviada para una visita.\n\nHidratado desde `fpoc_alert_dispatch_log` por tracking_id. El frontend lo\nmuestra en el slide-over de drill-down (Tarea 8) en orden cronológico\ndescendente. `acknowledged_at = None` y `sent_at` >10min atrás → estado\n'sin respuesta'."
       },
-      "AnticipatedAlert": {
-        "properties": {
-          "tracking_id": {
-            "type": "string",
-            "title": "Tracking Id"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "vehicle_id": {
-            "type": "integer",
-            "title": "Vehicle Id"
-          },
-          "vehicle_name": {
-            "type": "string",
-            "title": "Vehicle Name"
-          },
-          "window_end": {
-            "type": "string",
-            "title": "Window End"
-          },
-          "estimated_time_arrival": {
-            "type": "string",
-            "title": "Estimated Time Arrival"
-          },
-          "p_fallo": {
-            "type": "number",
-            "title": "P Fallo"
-          },
-          "horas_hasta_window_end": {
-            "type": "number",
-            "title": "Horas Hasta Window End"
-          },
-          "latitude": {
-            "type": "number",
-            "title": "Latitude"
-          },
-          "longitude": {
-            "type": "number",
-            "title": "Longitude"
-          },
-          "top_factors": {
-            "items": {
-              "$ref": "#/components/schemas/ShapFactor"
-            },
-            "type": "array",
-            "title": "Top Factors"
-          }
-        },
-        "type": "object",
-        "required": [
-          "tracking_id",
-          "title",
-          "vehicle_id",
-          "vehicle_name",
-          "window_end",
-          "estimated_time_arrival",
-          "p_fallo",
-          "horas_hasta_window_end",
-          "latitude",
-          "longitude",
-          "top_factors"
-        ],
-        "title": "AnticipatedAlert"
-      },
       "AppConfigEntry": {
         "properties": {
           "value": {
@@ -10711,51 +9709,6 @@
           "dates"
         ],
         "title": "AvailableDates"
-      },
-      "BatchRequest": {
-        "properties": {
-          "rows": {
-            "type": "integer",
-            "title": "Rows",
-            "default": 1800
-          },
-          "date": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Date"
-          }
-        },
-        "type": "object",
-        "title": "BatchRequest"
-      },
-      "BatchResponse": {
-        "properties": {
-          "date": {
-            "type": "string",
-            "title": "Date"
-          },
-          "inserted": {
-            "type": "integer",
-            "title": "Inserted"
-          },
-          "elapsed_sec": {
-            "type": "number",
-            "title": "Elapsed Sec"
-          }
-        },
-        "type": "object",
-        "required": [
-          "date",
-          "inserted",
-          "elapsed_sec"
-        ],
-        "title": "BatchResponse"
       },
       "Body_bulk_csv_api_empresa_contactos_empresas__empresa_id__contactos_bulk_csv_post": {
         "properties": {
@@ -11017,24 +9970,6 @@
         ],
         "title": "CalendarDay"
       },
-      "CalibrationPoint": {
-        "properties": {
-          "predicted": {
-            "type": "number",
-            "title": "Predicted"
-          },
-          "actual": {
-            "type": "number",
-            "title": "Actual"
-          }
-        },
-        "type": "object",
-        "required": [
-          "predicted",
-          "actual"
-        ],
-        "title": "CalibrationPoint"
-      },
       "CapacitacionModuloIn": {
         "properties": {
           "codigo": {
@@ -11282,34 +10217,6 @@
         ],
         "title": "ClassifyResponse"
       },
-      "CleanRegenerateResponse": {
-        "properties": {
-          "fecha": {
-            "type": "string",
-            "title": "Fecha"
-          },
-          "deleted_visits": {
-            "type": "integer",
-            "title": "Deleted Visits"
-          },
-          "inserted_visits": {
-            "type": "integer",
-            "title": "Inserted Visits"
-          },
-          "state": {
-            "type": "string",
-            "title": "State"
-          }
-        },
-        "type": "object",
-        "required": [
-          "fecha",
-          "deleted_visits",
-          "inserted_visits",
-          "state"
-        ],
-        "title": "CleanRegenerateResponse"
-      },
       "ClientDayNoteIn": {
         "properties": {
           "fecha": {
@@ -11431,74 +10338,6 @@
           "longitude"
         ],
         "title": "ClientIn"
-      },
-      "ClientMaster": {
-        "properties": {
-          "customer_id": {
-            "type": "string",
-            "title": "Customer Id"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "address": {
-            "type": "string",
-            "title": "Address"
-          },
-          "latitude": {
-            "type": "number",
-            "title": "Latitude"
-          },
-          "longitude": {
-            "type": "number",
-            "title": "Longitude"
-          },
-          "comuna_id": {
-            "type": "string",
-            "title": "Comuna Id"
-          },
-          "is_problem_zone": {
-            "type": "boolean",
-            "title": "Is Problem Zone"
-          },
-          "n_visits_60d": {
-            "type": "integer",
-            "title": "N Visits 60D"
-          },
-          "n_failed_60d": {
-            "type": "integer",
-            "title": "N Failed 60D"
-          },
-          "fail_rate_60d": {
-            "type": "number",
-            "title": "Fail Rate 60D"
-          },
-          "first_seen": {
-            "type": "string",
-            "title": "First Seen"
-          },
-          "last_seen": {
-            "type": "string",
-            "title": "Last Seen"
-          }
-        },
-        "type": "object",
-        "required": [
-          "customer_id",
-          "title",
-          "address",
-          "latitude",
-          "longitude",
-          "comuna_id",
-          "is_problem_zone",
-          "n_visits_60d",
-          "n_failed_60d",
-          "fail_rate_60d",
-          "first_seen",
-          "last_seen"
-        ],
-        "title": "ClientMaster"
       },
       "ClientOut": {
         "properties": {
@@ -11758,6 +10597,75 @@
           "offset"
         ],
         "title": "ClientsPage"
+      },
+      "ClockActionRequest": {
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "title": "Fecha",
+            "description": "YYYY-MM-DD"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "advance",
+              "reset"
+            ],
+            "title": "Action"
+          },
+          "minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1440.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minutes",
+            "description": "Requerido si action=advance. Minutos a sumar al offset."
+          }
+        },
+        "type": "object",
+        "required": [
+          "fecha",
+          "action"
+        ],
+        "title": "ClockActionRequest"
+      },
+      "ClockResponse": {
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "title": "Fecha"
+          },
+          "sim_clock": {
+            "type": "string",
+            "title": "Sim Clock"
+          },
+          "offset_min": {
+            "type": "integer",
+            "title": "Offset Min"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "manual"
+            ],
+            "title": "Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fecha",
+          "sim_clock",
+          "offset_min",
+          "mode"
+        ],
+        "title": "ClockResponse"
       },
       "CommentCreate": {
         "properties": {
@@ -13912,20 +12820,9 @@
       },
       "DriverPosition": {
         "properties": {
-          "vehicle_id": {
-            "type": "integer",
-            "title": "Vehicle Id"
-          },
-          "ruta_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ruta Id"
+          "driver_id": {
+            "type": "string",
+            "title": "Driver Id"
           },
           "driver_name": {
             "anyOf": [
@@ -13938,60 +12835,9 @@
             ],
             "title": "Driver Name"
           },
-          "patente": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Patente"
-          },
-          "empresa_id": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Empresa Id"
-          },
-          "empresa_nombre": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Empresa Nombre"
-          },
-          "current_stop": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Stop"
-          },
-          "next_stop": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Stop"
+          "vehicle_id": {
+            "type": "integer",
+            "title": "Vehicle Id"
           },
           "lat": {
             "anyOf": [
@@ -14004,7 +12850,7 @@
             ],
             "title": "Lat"
           },
-          "lon": {
+          "lng": {
             "anyOf": [
               {
                 "type": "number"
@@ -14013,9 +12859,13 @@
                 "type": "null"
               }
             ],
-            "title": "Lon"
+            "title": "Lng"
           },
-          "ts_sim": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "next_visit_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -14024,46 +12874,55 @@
                 "type": "null"
               }
             ],
-            "title": "Ts Sim"
+            "title": "Next Visit Id"
           },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "speed_kmh": {
+          "next_visit_title": {
             "anyOf": [
               {
-                "type": "number"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Speed Kmh"
+            "title": "Next Visit Title"
           },
-          "stops_total": {
+          "next_visit_eta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Visit Eta"
+          },
+          "last_completed_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Completed Id"
+          },
+          "completed_count": {
             "type": "integer",
-            "title": "Stops Total",
+            "title": "Completed Count",
             "default": 0
           },
-          "stops_completed": {
+          "pending_count": {
             "type": "integer",
-            "title": "Stops Completed",
-            "default": 0
-          },
-          "stops_failed": {
-            "type": "integer",
-            "title": "Stops Failed",
-            "default": 0
-          },
-          "vip_visitas": {
-            "type": "integer",
-            "title": "Vip Visitas",
+            "title": "Pending Count",
             "default": 0
           }
         },
         "type": "object",
         "required": [
+          "driver_id",
           "vehicle_id",
           "status"
         ],
@@ -14969,29 +13828,6 @@
         ],
         "title": "ExtendDayResponse"
       },
-      "FeatureImportance": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "display": {
-            "type": "string",
-            "title": "Display"
-          },
-          "importance": {
-            "type": "number",
-            "title": "Importance"
-          }
-        },
-        "type": "object",
-        "required": [
-          "name",
-          "display",
-          "importance"
-        ],
-        "title": "FeatureImportance"
-      },
       "FolioRow": {
         "properties": {
           "ruta_id": {
@@ -15229,47 +14065,6 @@
         ],
         "title": "ImportLogRow"
       },
-      "ImportMockResponse": {
-        "properties": {
-          "ok": {
-            "type": "boolean",
-            "title": "Ok"
-          },
-          "count": {
-            "type": "integer",
-            "title": "Count"
-          },
-          "fecha": {
-            "type": "string",
-            "title": "Fecha"
-          },
-          "already_imported": {
-            "type": "boolean",
-            "title": "Already Imported",
-            "default": false
-          },
-          "message": {
-            "type": "string",
-            "title": "Message",
-            "default": ""
-          },
-          "conflicts": {
-            "items": {
-              "$ref": "#/components/schemas/DotacionConflict"
-            },
-            "type": "array",
-            "title": "Conflicts",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "ok",
-          "count",
-          "fecha"
-        ],
-        "title": "ImportMockResponse"
-      },
       "ImportXlsxResponse": {
         "properties": {
           "ok": {
@@ -15465,60 +14260,88 @@
         ],
         "title": "InvitationsListOut"
       },
-      "LiveGenStats": {
+      "KPIs": {
         "properties": {
-          "enabled": {
-            "type": "boolean",
-            "title": "Enabled"
+          "planned_date": {
+            "type": "string",
+            "title": "Planned Date"
           },
-          "interval_sec": {
+          "total": {
             "type": "integer",
-            "title": "Interval Sec"
+            "title": "Total"
           },
-          "rows_per_tick": {
+          "completed": {
             "type": "integer",
-            "title": "Rows Per Tick"
+            "title": "Completed"
           },
-          "total_inserted_session": {
+          "failed": {
             "type": "integer",
-            "title": "Total Inserted Session"
+            "title": "Failed"
           },
-          "last_insert_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Insert At"
+          "completion_pct": {
+            "type": "number",
+            "title": "Completion Pct"
           },
-          "last_error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Error"
-          },
-          "rows_today_db": {
+          "ruta_anomala": {
             "type": "integer",
-            "title": "Rows Today Db"
+            "title": "Ruta Anomala"
+          },
+          "ruta_anomala_pct": {
+            "type": "number",
+            "title": "Ruta Anomala Pct"
+          },
+          "sla_hour_avg": {
+            "type": "number",
+            "title": "Sla Hour Avg"
+          },
+          "sla_hour_p50": {
+            "type": "number",
+            "title": "Sla Hour P50"
+          },
+          "sla_hour_p90": {
+            "type": "number",
+            "title": "Sla Hour P90"
+          },
+          "on_time": {
+            "type": "integer",
+            "title": "On Time"
+          },
+          "early": {
+            "type": "integer",
+            "title": "Early"
+          },
+          "late": {
+            "type": "integer",
+            "title": "Late"
+          },
+          "empresas": {
+            "type": "integer",
+            "title": "Empresas"
+          },
+          "drivers": {
+            "type": "integer",
+            "title": "Drivers"
           }
         },
         "type": "object",
         "required": [
-          "enabled",
-          "interval_sec",
-          "rows_per_tick",
-          "total_inserted_session",
-          "rows_today_db"
+          "planned_date",
+          "total",
+          "completed",
+          "failed",
+          "completion_pct",
+          "ruta_anomala",
+          "ruta_anomala_pct",
+          "sla_hour_avg",
+          "sla_hour_p50",
+          "sla_hour_p90",
+          "on_time",
+          "early",
+          "late",
+          "empresas",
+          "drivers"
         ],
-        "title": "LiveGenStats"
+        "title": "KPIs"
       },
       "LocalidadPerf": {
         "properties": {
@@ -15682,63 +14505,6 @@
           "reply"
         ],
         "title": "MessageResponse"
-      },
-      "ModelMetrics": {
-        "properties": {
-          "auc": {
-            "type": "number",
-            "title": "Auc"
-          },
-          "brier": {
-            "type": "number",
-            "title": "Brier"
-          },
-          "confusion_matrix": {
-            "items": {
-              "items": {
-                "type": "integer"
-              },
-              "type": "array"
-            },
-            "type": "array",
-            "title": "Confusion Matrix"
-          },
-          "calibration_curve": {
-            "items": {
-              "$ref": "#/components/schemas/CalibrationPoint"
-            },
-            "type": "array",
-            "title": "Calibration Curve"
-          },
-          "n_train": {
-            "type": "integer",
-            "title": "N Train"
-          },
-          "n_val": {
-            "type": "integer",
-            "title": "N Val"
-          },
-          "base_rate_train": {
-            "type": "number",
-            "title": "Base Rate Train"
-          },
-          "base_rate_val": {
-            "type": "number",
-            "title": "Base Rate Val"
-          }
-        },
-        "type": "object",
-        "required": [
-          "auc",
-          "brier",
-          "confusion_matrix",
-          "calibration_curve",
-          "n_train",
-          "n_val",
-          "base_rate_train",
-          "base_rate_val"
-        ],
-        "title": "ModelMetrics"
       },
       "MotivoAlertConfig": {
         "properties": {
@@ -17040,6 +15806,245 @@
           "new_password"
         ],
         "title": "PasswordReset"
+      },
+      "PilotDriverResult": {
+        "properties": {
+          "driver_id": {
+            "type": "string",
+            "title": "Driver Id"
+          },
+          "driver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Name"
+          },
+          "vehicle_id": {
+            "type": "integer",
+            "title": "Vehicle Id"
+          },
+          "visitas": {
+            "type": "integer",
+            "title": "Visitas"
+          }
+        },
+        "type": "object",
+        "required": [
+          "driver_id",
+          "vehicle_id",
+          "visitas"
+        ],
+        "title": "PilotDriverResult"
+      },
+      "PilotSetupRequest": {
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "title": "Fecha",
+            "description": "YYYY-MM-DD"
+          },
+          "driver_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Driver Ids"
+          },
+          "regiones": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Regiones"
+          },
+          "visitas_por_driver": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Visitas Por Driver"
+          },
+          "horario_inicio": {
+            "type": "string",
+            "title": "Horario Inicio",
+            "description": "HH:MM",
+            "default": "09:00"
+          },
+          "horario_fin": {
+            "type": "string",
+            "title": "Horario Fin",
+            "description": "HH:MM",
+            "default": "18:00"
+          },
+          "auto_start_day": {
+            "type": "boolean",
+            "title": "Auto Start Day",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "fecha",
+          "driver_ids",
+          "regiones",
+          "visitas_por_driver"
+        ],
+        "title": "PilotSetupRequest"
+      },
+      "PilotSetupResponse": {
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "title": "Fecha"
+          },
+          "created": {
+            "type": "integer",
+            "title": "Created"
+          },
+          "drivers": {
+            "items": {
+              "$ref": "#/components/schemas/PilotDriverResult"
+            },
+            "type": "array",
+            "title": "Drivers"
+          },
+          "day_state": {
+            "type": "string",
+            "title": "Day State"
+          },
+          "regiones_used": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Regiones Used"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fecha",
+          "created",
+          "drivers",
+          "day_state",
+          "regiones_used"
+        ],
+        "title": "PilotSetupResponse"
+      },
+      "PilotStatusDriverItem": {
+        "properties": {
+          "driver_id": {
+            "type": "string",
+            "title": "Driver Id"
+          },
+          "driver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Name"
+          },
+          "vehicle_id": {
+            "type": "integer",
+            "title": "Vehicle Id"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "driver_id",
+          "vehicle_id",
+          "pending",
+          "completed",
+          "failed",
+          "total"
+        ],
+        "title": "PilotStatusDriverItem"
+      },
+      "PilotStatusResponse": {
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "title": "Fecha"
+          },
+          "sim_clock": {
+            "type": "string",
+            "title": "Sim Clock"
+          },
+          "offset_min": {
+            "type": "integer",
+            "title": "Offset Min"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "manual"
+            ],
+            "title": "Mode"
+          },
+          "day_state": {
+            "type": "string",
+            "title": "Day State"
+          },
+          "drivers": {
+            "items": {
+              "$ref": "#/components/schemas/PilotStatusDriverItem"
+            },
+            "type": "array",
+            "title": "Drivers"
+          },
+          "totals": {
+            "type": "object",
+            "title": "Totals"
+          },
+          "next_eta_breach_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Eta Breach At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fecha",
+          "sim_clock",
+          "offset_min",
+          "mode",
+          "day_state",
+          "drivers",
+          "totals"
+        ],
+        "title": "PilotStatusResponse"
       },
       "PlanDiarioResponseLegacy": {
         "properties": {
@@ -18715,86 +17720,46 @@
         ],
         "title": "SeedRegionDayResult"
       },
-      "ShapFactor": {
+      "SimulateEventRequest": {
         "properties": {
-          "name": {
+          "tracking_id": {
             "type": "string",
-            "title": "Name"
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Tracking Id"
           },
-          "display": {
+          "event": {
             "type": "string",
-            "title": "Display"
-          },
-          "contribution": {
-            "type": "number",
-            "title": "Contribution"
+            "enum": [
+              "delay",
+              "complete",
+              "no_show"
+            ],
+            "title": "Event"
           }
         },
         "type": "object",
         "required": [
-          "name",
-          "display",
-          "contribution"
+          "tracking_id",
+          "event"
         ],
-        "title": "ShapFactor"
+        "title": "SimulateEventRequest"
       },
-      "SimConfig": {
+      "SimulateEventResponse": {
         "properties": {
-          "interval_sec": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 600.0,
-                "minimum": 3.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Interval Sec"
+          "tracking_id": {
+            "type": "string",
+            "title": "Tracking Id"
           },
-          "only_alertable": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Only Alertable"
+          "event": {
+            "type": "string",
+            "title": "Event"
           },
-          "severity_filter": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^(low|medium|high|critical)$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Severity Filter"
-          }
-        },
-        "type": "object",
-        "title": "SimConfig"
-      },
-      "SimStats": {
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "title": "Enabled"
+          "status": {
+            "type": "string",
+            "title": "Status"
           },
-          "interval_sec": {
-            "type": "integer",
-            "title": "Interval Sec"
-          },
-          "only_alertable": {
-            "type": "boolean",
-            "title": "Only Alertable"
-          },
-          "severity_filter": {
+          "current_eta_cl": {
             "anyOf": [
               {
                 "type": "string"
@@ -18803,13 +17768,9 @@
                 "type": "null"
               }
             ],
-            "title": "Severity Filter"
+            "title": "Current Eta Cl"
           },
-          "total_emitted_session": {
-            "type": "integer",
-            "title": "Total Emitted Session"
-          },
-          "last_emit_at": {
+          "detail": {
             "anyOf": [
               {
                 "type": "string"
@@ -18818,141 +17779,16 @@
                 "type": "null"
               }
             ],
-            "title": "Last Emit At"
-          },
-          "last_emit_payload": {
-            "anyOf": [
-              {
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Emit Payload"
-          },
-          "last_error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Error"
+            "title": "Detail"
           }
         },
         "type": "object",
         "required": [
-          "enabled",
-          "interval_sec",
-          "only_alertable",
-          "total_emitted_session"
+          "tracking_id",
+          "event",
+          "status"
         ],
-        "title": "SimStats"
-      },
-      "SimStatusResponse": {
-        "properties": {
-          "sim_active": {
-            "type": "boolean",
-            "title": "Sim Active"
-          },
-          "sim_clock": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sim Clock"
-          },
-          "tick_sec": {
-            "type": "integer",
-            "title": "Tick Sec"
-          },
-          "minutes_per_tick": {
-            "type": "integer",
-            "title": "Minutes Per Tick"
-          },
-          "drivers": {
-            "items": {
-              "$ref": "#/components/schemas/DriverPosition"
-            },
-            "type": "array",
-            "title": "Drivers"
-          }
-        },
-        "type": "object",
-        "required": [
-          "sim_active",
-          "tick_sec",
-          "minutes_per_tick",
-          "drivers"
-        ],
-        "title": "SimStatusResponse"
-      },
-      "SimToggle": {
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "title": "Enabled"
-          }
-        },
-        "type": "object",
-        "required": [
-          "enabled"
-        ],
-        "title": "SimToggle"
-      },
-      "SimulateRequest": {
-        "properties": {
-          "days": {
-            "type": "integer",
-            "title": "Days",
-            "default": 7
-          },
-          "rows_per_day": {
-            "type": "integer",
-            "title": "Rows Per Day",
-            "default": 1800
-          },
-          "include_today": {
-            "type": "boolean",
-            "title": "Include Today",
-            "default": true
-          }
-        },
-        "type": "object",
-        "title": "SimulateRequest"
-      },
-      "SimulateResponse": {
-        "properties": {
-          "total_inserted": {
-            "type": "integer",
-            "title": "Total Inserted"
-          },
-          "per_day": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "type": "object",
-            "title": "Per Day"
-          },
-          "elapsed_sec": {
-            "type": "number",
-            "title": "Elapsed Sec"
-          }
-        },
-        "type": "object",
-        "required": [
-          "total_inserted",
-          "per_day",
-          "elapsed_sec"
-        ],
-        "title": "SimulateResponse"
+        "title": "SimulateEventResponse"
       },
       "SlaBin": {
         "properties": {
@@ -18976,28 +17812,6 @@
           "count"
         ],
         "title": "SlaBin"
-      },
-      "StartDayRequest": {
-        "properties": {
-          "regen_plan": {
-            "type": "boolean",
-            "title": "Regen Plan",
-            "default": false
-          },
-          "day_seed": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Day Seed"
-          }
-        },
-        "type": "object",
-        "title": "StartDayRequest"
       },
       "StartDayResponse": {
         "properties": {
@@ -19592,19 +18406,6 @@
           "status"
         ],
         "title": "TestBroadcastRow"
-      },
-      "ToggleRequest": {
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "title": "Enabled"
-          }
-        },
-        "type": "object",
-        "required": [
-          "enabled"
-        ],
-        "title": "ToggleRequest"
       },
       "TrackingNotifSummary": {
         "properties": {
@@ -20410,59 +19211,6 @@
         ],
         "title": "VehicleOut"
       },
-      "VehicleSummary": {
-        "properties": {
-          "vehicle_id": {
-            "type": "integer",
-            "title": "Vehicle Id"
-          },
-          "vehicle_name": {
-            "type": "string",
-            "title": "Vehicle Name"
-          },
-          "n_visits": {
-            "type": "integer",
-            "title": "N Visits"
-          },
-          "completed": {
-            "type": "integer",
-            "title": "Completed"
-          },
-          "pending": {
-            "type": "integer",
-            "title": "Pending"
-          },
-          "red_simpliroute": {
-            "type": "integer",
-            "title": "Red Simpliroute"
-          },
-          "vd_alerts": {
-            "type": "integer",
-            "title": "Vd Alerts"
-          },
-          "last_observed_delay_min": {
-            "type": "number",
-            "title": "Last Observed Delay Min"
-          },
-          "incident_extra_min": {
-            "type": "number",
-            "title": "Incident Extra Min"
-          }
-        },
-        "type": "object",
-        "required": [
-          "vehicle_id",
-          "vehicle_name",
-          "n_visits",
-          "completed",
-          "pending",
-          "red_simpliroute",
-          "vd_alerts",
-          "last_observed_delay_min",
-          "incident_extra_min"
-        ],
-        "title": "VehicleSummary"
-      },
       "VehicleUpdate": {
         "properties": {
           "empresa_id": {
@@ -20829,136 +19577,6 @@
         "type": "object",
         "title": "VipClientUpdate"
       },
-      "Visit": {
-        "properties": {
-          "tracking_id": {
-            "type": "string",
-            "title": "Tracking Id"
-          },
-          "vehicle_id": {
-            "type": "integer",
-            "title": "Vehicle Id"
-          },
-          "vehicle_name": {
-            "type": "string",
-            "title": "Vehicle Name"
-          },
-          "order": {
-            "type": "integer",
-            "title": "Order"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "address": {
-            "type": "string",
-            "title": "Address"
-          },
-          "latitude": {
-            "type": "number",
-            "title": "Latitude"
-          },
-          "longitude": {
-            "type": "number",
-            "title": "Longitude"
-          },
-          "load": {
-            "type": "number",
-            "title": "Load"
-          },
-          "n_subordenes": {
-            "type": "integer",
-            "title": "N Subordenes",
-            "default": 1
-          },
-          "region": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Region"
-          },
-          "comuna": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comuna"
-          },
-          "window_start": {
-            "type": "string",
-            "title": "Window Start"
-          },
-          "window_end": {
-            "type": "string",
-            "title": "Window End"
-          },
-          "planned_arrival_time": {
-            "type": "string",
-            "title": "Planned Arrival Time"
-          },
-          "estimated_time_arrival": {
-            "type": "string",
-            "title": "Estimated Time Arrival"
-          },
-          "slack_min": {
-            "type": "number",
-            "title": "Slack Min"
-          },
-          "alert_slack": {
-            "type": "string",
-            "title": "Alert Slack"
-          },
-          "p_fallo": {
-            "type": "number",
-            "title": "P Fallo"
-          },
-          "alert_valuedata": {
-            "type": "boolean",
-            "title": "Alert Valuedata"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "horas_hasta_window_end": {
-            "type": "number",
-            "title": "Horas Hasta Window End"
-          }
-        },
-        "type": "object",
-        "required": [
-          "tracking_id",
-          "vehicle_id",
-          "vehicle_name",
-          "order",
-          "title",
-          "address",
-          "latitude",
-          "longitude",
-          "load",
-          "window_start",
-          "window_end",
-          "planned_arrival_time",
-          "estimated_time_arrival",
-          "slack_min",
-          "alert_slack",
-          "p_fallo",
-          "alert_valuedata",
-          "status",
-          "horas_hasta_window_end"
-        ],
-        "title": "Visit"
-      },
       "VisitComment": {
         "properties": {
           "comment_id": {
@@ -21051,47 +19669,6 @@
           "created_at"
         ],
         "title": "VisitComment"
-      },
-      "VisitExplanation": {
-        "properties": {
-          "tracking_id": {
-            "type": "string",
-            "title": "Tracking Id"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title"
-          },
-          "p_fallo": {
-            "type": "number",
-            "title": "P Fallo"
-          },
-          "alert_slack": {
-            "type": "string",
-            "title": "Alert Slack"
-          },
-          "alert_valuedata": {
-            "type": "boolean",
-            "title": "Alert Valuedata"
-          },
-          "top_factors": {
-            "items": {
-              "$ref": "#/components/schemas/ShapFactor"
-            },
-            "type": "array",
-            "title": "Top Factors"
-          }
-        },
-        "type": "object",
-        "required": [
-          "tracking_id",
-          "title",
-          "p_fallo",
-          "alert_slack",
-          "alert_valuedata",
-          "top_factors"
-        ],
-        "title": "VisitExplanation"
       },
       "VisitRow": {
         "properties": {
@@ -21240,17 +19817,13 @@
             "type": "integer",
             "title": "Total"
           },
-          "critico": {
+          "urgent": {
             "type": "integer",
-            "title": "Critico"
+            "title": "Urgent"
           },
-          "alto": {
+          "warning": {
             "type": "integer",
-            "title": "Alto"
-          },
-          "medio": {
-            "type": "integer",
-            "title": "Medio"
+            "title": "Warning"
           },
           "vip_at_risk": {
             "type": "integer",
@@ -21268,9 +19841,8 @@
         "type": "object",
         "required": [
           "total",
-          "critico",
-          "alto",
-          "medio",
+          "urgent",
+          "warning",
           "vip_at_risk",
           "notified",
           "not_notified"
@@ -21284,7 +19856,14 @@
             "title": "Tracking Id"
           },
           "vehicle_id": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Vehicle Id"
           },
           "vehicle_name": {
@@ -21346,41 +19925,35 @@
             ],
             "title": "Address"
           },
-          "latitude": {
-            "type": "number",
-            "title": "Latitude"
+          "comuna": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comuna"
           },
-          "longitude": {
-            "type": "number",
-            "title": "Longitude"
-          },
-          "order": {
-            "type": "integer",
-            "title": "Order"
-          },
-          "window_end": {
+          "region": {
             "type": "string",
-            "title": "Window End"
+            "title": "Region"
           },
           "estimated_time_arrival": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Estimated Time Arrival"
           },
-          "slack_min": {
-            "type": "number",
-            "title": "Slack Min"
-          },
-          "alert_slack": {
+          "status_label": {
             "type": "string",
-            "title": "Alert Slack"
-          },
-          "p_fallo": {
-            "type": "number",
-            "title": "P Fallo"
-          },
-          "alert_valuedata": {
-            "type": "boolean",
-            "title": "Alert Valuedata"
+            "title": "Status Label"
           },
           "is_vip": {
             "type": "boolean",
@@ -21427,10 +20000,6 @@
             "type": "array",
             "title": "Reasons"
           },
-          "region": {
-            "type": "string",
-            "title": "Region"
-          },
           "notif": {
             "anyOf": [
               {
@@ -21445,23 +20014,14 @@
         "type": "object",
         "required": [
           "tracking_id",
-          "vehicle_id",
           "title",
-          "latitude",
-          "longitude",
-          "order",
-          "window_end",
-          "estimated_time_arrival",
-          "slack_min",
-          "alert_slack",
-          "p_fallo",
-          "alert_valuedata",
+          "region",
+          "status_label",
           "is_vip",
           "priority",
           "urgency_score",
           "severity",
-          "reasons",
-          "region"
+          "reasons"
         ],
         "title": "WatchlistVisit"
       },
@@ -21757,69 +20317,6 @@
         ],
         "title": "WhatsAppResponse"
       },
-      "core__schemas__KPIs": {
-        "properties": {
-          "total": {
-            "type": "integer",
-            "title": "Total"
-          },
-          "completed": {
-            "type": "integer",
-            "title": "Completed"
-          },
-          "in_route": {
-            "type": "integer",
-            "title": "In Route"
-          },
-          "pending": {
-            "type": "integer",
-            "title": "Pending"
-          },
-          "red_simpliroute": {
-            "type": "integer",
-            "title": "Red Simpliroute"
-          },
-          "yellow_simpliroute": {
-            "type": "integer",
-            "title": "Yellow Simpliroute"
-          },
-          "vd_alerts": {
-            "type": "integer",
-            "title": "Vd Alerts"
-          },
-          "vd_alerts_caught_real": {
-            "type": "integer",
-            "title": "Vd Alerts Caught Real"
-          },
-          "real_failures_oracle": {
-            "type": "integer",
-            "title": "Real Failures Oracle"
-          },
-          "projected_compliance_pct": {
-            "type": "number",
-            "title": "Projected Compliance Pct"
-          },
-          "rescue_clp": {
-            "type": "integer",
-            "title": "Rescue Clp"
-          }
-        },
-        "type": "object",
-        "required": [
-          "total",
-          "completed",
-          "in_route",
-          "pending",
-          "red_simpliroute",
-          "yellow_simpliroute",
-          "vd_alerts",
-          "vd_alerts_caught_real",
-          "real_failures_oracle",
-          "projected_compliance_pct",
-          "rescue_clp"
-        ],
-        "title": "KPIs"
-      },
       "core__schemas__StateResponse": {
         "properties": {
           "sim_clock": {
@@ -21931,89 +20428,6 @@
           "state"
         ],
         "title": "StateResponse"
-      },
-      "routers__seguimiento__KPIs": {
-        "properties": {
-          "planned_date": {
-            "type": "string",
-            "title": "Planned Date"
-          },
-          "total": {
-            "type": "integer",
-            "title": "Total"
-          },
-          "completed": {
-            "type": "integer",
-            "title": "Completed"
-          },
-          "failed": {
-            "type": "integer",
-            "title": "Failed"
-          },
-          "completion_pct": {
-            "type": "number",
-            "title": "Completion Pct"
-          },
-          "ruta_anomala": {
-            "type": "integer",
-            "title": "Ruta Anomala"
-          },
-          "ruta_anomala_pct": {
-            "type": "number",
-            "title": "Ruta Anomala Pct"
-          },
-          "sla_hour_avg": {
-            "type": "number",
-            "title": "Sla Hour Avg"
-          },
-          "sla_hour_p50": {
-            "type": "number",
-            "title": "Sla Hour P50"
-          },
-          "sla_hour_p90": {
-            "type": "number",
-            "title": "Sla Hour P90"
-          },
-          "on_time": {
-            "type": "integer",
-            "title": "On Time"
-          },
-          "early": {
-            "type": "integer",
-            "title": "Early"
-          },
-          "late": {
-            "type": "integer",
-            "title": "Late"
-          },
-          "empresas": {
-            "type": "integer",
-            "title": "Empresas"
-          },
-          "drivers": {
-            "type": "integer",
-            "title": "Drivers"
-          }
-        },
-        "type": "object",
-        "required": [
-          "planned_date",
-          "total",
-          "completed",
-          "failed",
-          "completion_pct",
-          "ruta_anomala",
-          "ruta_anomala_pct",
-          "sla_hour_avg",
-          "sla_hour_p50",
-          "sla_hour_p90",
-          "on_time",
-          "early",
-          "late",
-          "empresas",
-          "drivers"
-        ],
-        "title": "KPIs"
       }
     },
     "securitySchemes": {

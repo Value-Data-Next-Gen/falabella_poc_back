@@ -37,35 +37,22 @@ _INITIALIZED = False
 
 
 def _ensure_table() -> None:
-    """Crea la tabla si no existe. Idempotente en SQLite y Azure SQL."""
-    from core.db import backend as db_backend
+    """Crea la tabla si no existe. Idempotente en Azure SQL."""
     with get_conn() as cn:
         cur = cn.cursor()
-        if db_backend() == "sqlserver":
-            cur.execute(
-                """
-                IF OBJECT_ID('fpoc_app_config', 'U') IS NULL
-                BEGIN
-                    CREATE TABLE fpoc_app_config (
-                        [key] NVARCHAR(100) NOT NULL PRIMARY KEY,
-                        value NVARCHAR(MAX) NOT NULL,
-                        updated_at DATETIME2(0) NOT NULL DEFAULT SYSDATETIME(),
-                        updated_by_user_id INT NULL
-                    )
-                END
-                """
-            )
-        else:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fpoc_app_config (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_by_user_id INTEGER
+        cur.execute(
+            """
+            IF OBJECT_ID('fpoc_app_config', 'U') IS NULL
+            BEGIN
+                CREATE TABLE fpoc_app_config (
+                    [key] NVARCHAR(100) NOT NULL PRIMARY KEY,
+                    value NVARCHAR(MAX) NOT NULL,
+                    updated_at DATETIME2(0) NOT NULL DEFAULT SYSDATETIME(),
+                    updated_by_user_id INT NULL
                 )
-                """
-            )
+            END
+            """
+        )
         cn.commit()
 
 

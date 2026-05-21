@@ -1,112 +1,69 @@
-"""Estado en memoria de la torre de control.
+"""Estado en memoria de la torre de control (post Fase-2 refactor MVP).
 
-Singleton-ish: una sola instancia de AppState por proceso. Encapsula:
-- modelo entrenado (cargado al startup)
-- maestros (drivers, vehicles ext, clients) cargados al startup
-- plan del dia + reloj simulado
-- incidentes manuales y automaticos
-- snapshot mas reciente de visitas + SHAP
-- detecciones de transiciones tick-a-tick -> stream de eventos
+Tras el refactor MVP la única fuente de verdad para visitas es `fpoc.simpli_visits`.
+El modelo ML XGBoost + SHAP + synthetic data generator quedó eliminado del
+backend, y con eso desaparecen los atributos `snapshot_df`, `today_plan`,
+`shap_vals`, `boot`, etc.
 
-Mutaciones protegidas con Lock para coexistir con el scheduler de APScheduler.
+Lo único que sobrevive en STATE son **lookup tables** que el bot/LLM/handlers
+de routers usan para enriquecer respuestas:
+
+- `STATE.drivers`        : list[dict]  — desde fpoc.drivers
+- `STATE.vehicles_ext`   : list[dict]  — desde fpoc.vehicles
+- `STATE.empresas`       : list[dict]  — desde fpoc.empresas_transporte
+- `STATE.vehicle_empresa_map` : dict[int, int]  vehicle_id → empresa_id
+- `STATE.today`          : date | None — fecha operativa "actual" (gateada
+                            por endpoints como /api/planificacion/start-day)
+- `STATE.sim_clock`      : datetime | None — placeholder; Fase 3 lo populará
+                            con interpolación basada en DB.
+
+`reload_maestros()` se mantiene para que los CRUDs de drivers/vehicles
+invaliden el cache.
+
+`is_operational_day_active()` se mantiene (gateado por fpoc.planificacion_imports).
 """
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any
-
-import numpy as np
-import pandas as pd
-
-from core.events import EVENTS
-from ml.masters import build_client_master, gen_drivers, gen_vehicles_extended
-from ml.pipeline import (
-    DAY_END,
-    DAY_START,
-    apply_status_and_predict,
-    gen_today_plan,
-    train_model,
-    PRICE_PER_RESCUE_CLP,
-    RESCUE_RATE,
-)
+from typing import Any, Union
 
 
 @dataclass
 class AppState:
-    boot: dict[str, Any] | None = None
-
-    # Maestros (estilo SimpliRoute: drivers, vehicles, clients)
+    # Maestros (lookup tables que enriquecen respuestas del bot / routers)
     drivers: list[dict] = field(default_factory=list)
     vehicles_ext: list[dict] = field(default_factory=list)
-    clients_master: list[dict] = field(default_factory=list)
-    historical_df: pd.DataFrame | None = None
+    empresas: list[dict] = field(default_factory=list)
 
-    # Estado del dia
+    # Estado del día operativo
     today: date | None = None
-    day_seed: int = 0
     sim_clock: datetime | None = None
-    manual_incidents: dict[int, float] = field(default_factory=dict)
-    auto_incidents: dict[int, float] = field(default_factory=dict)
-
-    # Plan del dia
-    today_plan: pd.DataFrame | None = None
-    snapshot_df: pd.DataFrame | None = None
-    shap_vals: np.ndarray | None = None
-    last_tick_at: datetime | None = None
-
-    # Auto-advance
-    auto_advance: bool = True
-    sim_minutes_per_tick: int = 3
-
-    # Estado anterior para diff de transiciones
-    _prev_status: dict[str, str] = field(default_factory=dict)
-    _prev_alert_vd: dict[str, bool] = field(default_factory=dict)
-    _prev_alert_slack: dict[str, str] = field(default_factory=dict)
-
-    _rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(7))
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-    _ticks: int = 0
 
     # vehicle_id -> empresa_id (mapeo determinístico para multi-tenancy POC)
     vehicle_empresa_map: dict[int, int] = field(default_factory=dict)
-    empresas: list[dict] = field(default_factory=list)
 
     # Auto-notify cooldown: timestamp (wall clock) del último envío por teléfono.
-    # Evita que un tick con N alertas dispare N WhatsApps al mismo destinatario
-    # en el sandbox. Ventana configurable vía AUTO_NOTIFY_COOLDOWN_SEC (default 300s).
+    # Reutilizado por vip_deadline_cron y otros notifiers para evitar spam.
     _autonotify_last_sent: dict[str, datetime] = field(default_factory=dict)
+
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     # ----- Lifecycle -----
     def init(self) -> None:
-        self.boot = train_model()
+        """Carga maestros desde DB. Sin modelo ML, sin plan sintético.
 
-        # Reconstruct historical_df briefly to derive client metrics.
-        # Para ahorrar memoria: solo lo usamos al cargar masters.
-        self.historical_df = self._regen_historical_for_masters()
-
+        Si la DB falla la app igual arranca con maestros vacíos (los routers
+        que dependen de STATE.drivers / STATE.vehicles_ext caen graciosamente).
+        """
         self._load_maestros()
-        self.clients_master = build_client_master(self.boot["customers"], self.historical_df)
         self._load_empresas_and_assign()
-
-        self.today = self.boot["today"]
-        self.sim_clock = datetime.combine(self.today, DAY_START)
-        # R8: si ya hay un día EN_CURSO en DB, alinear self.today a esa fecha
-        # antes de generar el plan. Sin esto el backend bootea con date.today()
-        # del SO que no necesariamente coincide con el día operativo del usuario.
-        self._sync_today_with_en_curso()
-        self._regen_plan()
-        self._refresh_snapshot(emit_events=False)
+        self.today = date.today()
+        self.sim_clock = datetime.utcnow()
 
     def _load_maestros(self) -> None:
-        """Carga drivers/vehicles desde SQLite. Si están vacíos, cae al generador
-        in-memory (escenario sin seed aplicado).
-
-        También sobrescribe boot['customers'] desde fpoc_clients para que
-        gen_today_plan use los clientes editables. Si la tabla está vacía,
-        mantiene los del generador.
-        """
+        """Carga drivers/vehicles desde la DB. Si fallan, se quedan vacíos."""
         from core.db import get_conn
         from loguru import logger
         try:
@@ -165,60 +122,18 @@ class AppState:
                     }
                     for r in cur.fetchall()
                 ]
-                cur.execute(
-                    """
-                    SELECT customer_id, title, address, latitude, longitude,
-                           is_recurrent, in_problem_comuna
-                    FROM fpoc.clients
-                    """
-                )
-                clients = [
-                    {
-                        "customer_id": r.customer_id,
-                        "title": r.title,
-                        "address": r.address,
-                        "latitude": float(r.latitude),
-                        "longitude": float(r.longitude),
-                        "_is_recurrent": bool(r.is_recurrent),
-                        "_in_problem_comuna": bool(r.in_problem_comuna),
-                    }
-                    for r in cur.fetchall()
-                ]
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"[state] no pude cargar maestros desde DB: {e}. Uso generadores in-memory.")
-            drivers, vehicles, clients = [], [], []
+            logger.warning(f"[state] no pude cargar maestros desde DB: {e}. Quedan vacíos.")
+            drivers, vehicles = [], []
 
-        if drivers:
-            self.drivers = drivers
-        else:
-            self.drivers = gen_drivers()
-        if vehicles:
-            self.vehicles_ext = vehicles
-        else:
-            self.vehicles_ext = gen_vehicles_extended(self.drivers)
-        if clients:
-            # Sobrescribimos los customers de boot para que gen_today_plan use
-            # los editables. Mantienen el mismo schema que customer_pool.
-            self.boot["customers"] = clients
+        self.drivers = drivers
+        self.vehicles_ext = vehicles
 
     def reload_maestros(self) -> None:
-        """Re-lee drivers/vehicles/clients desde la DB tras un CRUD.
-        Re-genera el plan del día si los clientes cambiaron."""
+        """Re-lee drivers/vehicles desde la DB tras un CRUD."""
         with self._lock:
-            old_n_clients = len(self.boot["customers"]) if self.boot else 0
             self._load_maestros()
-            self.clients_master = build_client_master(
-                self.boot["customers"], self.historical_df
-            )
-            # Si cambió el set de clientes, regenerar plan + snapshot.
-            if self.boot and len(self.boot["customers"]) != old_n_clients:
-                self._regen_plan()
-                self._refresh_snapshot(emit_events=False)
-
-        self.today = self.boot["today"]
-        self.sim_clock = datetime.combine(self.today, DAY_START)
-        self._regen_plan()
-        self._refresh_snapshot(emit_events=False)
+            self._load_empresas_and_assign()
 
     def _load_empresas_and_assign(self) -> None:
         """Carga empresas y arma vehicle_id -> empresa_id.
@@ -226,6 +141,7 @@ class AppState:
         Preferimos el ownership persistente de fpoc.vehicles.empresa_id. El
         round-robin queda solo como fallback para datos antiguos sin migrar.
         """
+        from loguru import logger
         try:
             from core.db import get_conn
             with get_conn() as cn:
@@ -236,16 +152,17 @@ class AppState:
                 rows = cur.fetchall()
             self.empresas = [{"empresa_id": int(r[0]), "nombre": r[1]} for r in rows]
             if not self.empresas:
-                from loguru import logger
                 logger.warning("[state] fpoc_empresas_transporte vacía. Multi-tenancy deshabilitado.")
                 self.empresas = [{"empresa_id": 0, "nombre": "Default"}]
         except Exception as e:  # noqa: BLE001
-            from loguru import logger
             logger.warning(f"[state] no pude cargar empresas: {e}. Multi-tenancy deshabilitado.")
             self.empresas = [{"empresa_id": 0, "nombre": "Default"}]
 
         vehicle_ids = sorted(int(v["vehicle_id"]) for v in self.vehicles_ext)
         n_empresas = len(self.empresas)
+        if n_empresas == 0:
+            self.vehicle_empresa_map = {}
+            return
         fallback = {
             vid: self.empresas[i % n_empresas]["empresa_id"]
             for i, vid in enumerate(vehicle_ids)
@@ -261,542 +178,130 @@ class AppState:
             return list(self.vehicle_empresa_map.keys())
         return [vid for vid, eid in self.vehicle_empresa_map.items() if eid == empresa_id]
 
-    def _regen_historical_for_masters(self) -> pd.DataFrame:
-        """Regenera 60 dias para metricas de clientes. Costoso pero solo una vez."""
-        from ml.pipeline import N_HISTORICAL_DAYS, gen_day_visits
-        customers = self.boot["customers"]
-        today = self.boot["today"]
-        dfs = [
-            gen_day_visits(d, today - timedelta(days=N_HISTORICAL_DAYS - d), customers)
-            for d in range(N_HISTORICAL_DAYS)
-        ]
-        return pd.concat(dfs, ignore_index=True)
+    # ----- Compat shims post Fase-2 MVP refactor -----
+    # El modelo ML quedó eliminado; estos atributos quedaban referenciados desde
+    # múltiples routers/handlers que vivían con `if STATE.snapshot_df is not None`
+    # como fast-path. Mientras se completa la migración a fpoc.simpli_visits en
+    # todos los call sites, devolvemos None / fallbacks para que ese branch sea
+    # siempre el "no hay snapshot" path (DB-driven).
+    @property
+    def snapshot_df(self):  # type: ignore[no-untyped-def]
+        return None
 
-    def _regen_plan(self) -> None:
-        assert self.boot is not None and self.today is not None
-        self.today_plan = gen_today_plan(self.today, self.day_seed, self.boot["customers"])
-        # Reset transition memory
-        self._prev_status = {}
-        self._prev_alert_vd = {}
-        self._prev_alert_slack = {}
+    @property
+    def boot(self):  # type: ignore[no-untyped-def]
+        return None
 
-    def _all_incidents(self) -> dict[int, float]:
-        merged: dict[int, float] = {}
-        for d in (self.manual_incidents, self.auto_incidents):
-            for k, v in d.items():
-                merged[int(k)] = merged.get(int(k), 0.0) + float(v)
-        return merged
+    @property
+    def shap_vals(self):  # type: ignore[no-untyped-def]
+        return None
 
-    def _refresh_snapshot(self, emit_events: bool = True) -> None:
-        assert self.boot is not None and self.today_plan is not None and self.sim_clock is not None
-        df, shap_vals = apply_status_and_predict(
-            self.today_plan,
-            self.sim_clock,
-            self._all_incidents(),
-            self.boot["calibrated_model"],
-            self.boot["shap_explainer"],
-            self.boot["feature_names"],
-            self.boot["comuna_rate"],
-        )
-        if emit_events and self.snapshot_df is not None:
-            self._emit_transitions(df)
-        self.snapshot_df = df
-        self.shap_vals = shap_vals
-        self.last_tick_at = datetime.utcnow()
+    @property
+    def clients_master(self):  # type: ignore[no-untyped-def]
+        return []
 
-        # Update transition memory
-        self._prev_status = dict(zip(df["tracking_id"].astype(str), df["status"].astype(str)))
-        self._prev_alert_vd = dict(zip(df["tracking_id"].astype(str), df["alert_valuedata"].astype(bool)))
-        self._prev_alert_slack = dict(zip(df["tracking_id"].astype(str), df["alert_slack"].astype(str)))
+    @property
+    def day_seed(self) -> int:  # type: ignore[no-untyped-def]
+        return 0
 
-    def _emit_transitions(self, new_df: pd.DataFrame) -> None:
-        """Compara new_df vs estado previo y emite eventos + auto-notify."""
-        assert self.sim_clock is not None
-        # Preparamos lote de notificaciones para esta iteración (dedupe en memoria)
-        pending_notifs: list[dict] = []
-        for _, row in new_df.iterrows():
-            tid = str(row["tracking_id"])
-
-            # Detectar alerta anticipada recién disparada → candidato a notificación
-            prev_vd_for_notif = self._prev_alert_vd.get(tid, False)
-            if (not prev_vd_for_notif) and bool(row["alert_valuedata"]):
-                pending_notifs.append({
-                    "tracking_id": tid,
-                    "vehicle_id": int(row["vehicle_id"]),
-                    "vehicle_name": str(row["vehicle_name"]),
-                    "title": str(row["title"]),
-                    "window_end": str(row["window_end"]),
-                    "eta": str(row["estimated_time_arrival"]),
-                    "p_fallo": float(row["p_fallo"]),
-                    "slack_min": float(row["slack_min"]),
-                    "reason": "alert_valuedata",
-                })
-
-            # Status transition: pending -> completed
-            prev_status = self._prev_status.get(tid)
-            if prev_status == "pending" and row["status"] == "completed":
-                if int(row["failed"]) == 1:
-                    EVENTS.emit("failed_delivery", self.sim_clock, {
-                        "tracking_id": tid,
-                        "vehicle_id": int(row["vehicle_id"]),
-                        "vehicle_name": str(row["vehicle_name"]),
-                        "title": str(row["title"]),
-                        "window_end": str(row["window_end"]),
-                        "eta": str(row["estimated_time_arrival"]),
-                        "delay_min": float(round(-row["slack_min"], 1)),
-                    })
-                else:
-                    EVENTS.emit("delivery", self.sim_clock, {
-                        "tracking_id": tid,
-                        "vehicle_id": int(row["vehicle_id"]),
-                        "vehicle_name": str(row["vehicle_name"]),
-                        "title": str(row["title"]),
-                        "window_end": str(row["window_end"]),
-                        "eta": str(row["estimated_time_arrival"]),
-                        "slack_min": float(round(row["slack_min"], 1)),
-                    })
-
-            # Alert VD: false -> true
-            prev_vd = self._prev_alert_vd.get(tid, False)
-            if (not prev_vd) and bool(row["alert_valuedata"]):
-                EVENTS.emit("alert_triggered", self.sim_clock, {
-                    "tracking_id": tid,
-                    "vehicle_id": int(row["vehicle_id"]),
-                    "vehicle_name": str(row["vehicle_name"]),
-                    "title": str(row["title"]),
-                    "window_end": str(row["window_end"]),
-                    "p_fallo": float(round(row["p_fallo"], 3)),
-                    "horas_hasta_we": float(round(row["horas_hasta_we"], 1)),
-                })
-            elif prev_vd and not bool(row["alert_valuedata"]):
-                EVENTS.emit("alert_cleared", self.sim_clock, {
-                    "tracking_id": tid,
-                    "vehicle_id": int(row["vehicle_id"]),
-                    "vehicle_name": str(row["vehicle_name"]),
-                    "title": str(row["title"]),
-                    "p_fallo": float(round(row["p_fallo"], 3)),
-                })
-
-            # Slack alert: not RED -> RED (visita pendiente cruza slack <= 0)
-            prev_slack = self._prev_alert_slack.get(tid)
-            if (
-                row["status"] == "pending"
-                and prev_slack is not None
-                and prev_slack != "RED"
-                and str(row["alert_slack"]) == "RED"
-            ):
-                EVENTS.emit("red_simpli", self.sim_clock, {
-                    "tracking_id": tid,
-                    "vehicle_id": int(row["vehicle_id"]),
-                    "vehicle_name": str(row["vehicle_name"]),
-                    "title": str(row["title"]),
-                    "window_end": str(row["window_end"]),
-                    "slack_min": float(round(row["slack_min"], 1)),
-                })
-
-        # Auto-notify (después de emitir eventos)
-        self._auto_notify_alerts(pending_notifs)
-
-    def _auto_notify_alerts(self, notifs: list[dict]) -> None:
-        """Para cada alerta recién disparada, busca usuarios con umbrales que
-        coincidan y les envía WhatsApp (via notifications.send_whatsapp).
-
-        Gated por env var ENABLE_AUTO_NOTIFY (default false hasta que Twilio esté OK).
-        Si está apagado, saltamos todo el work para no bloquear el tick del scheduler.
-        """
-        import os as _os
-        if _os.environ.get("ENABLE_AUTO_NOTIFY", "false").lower() != "true":
-            return
-        if not notifs:
-            return
-        try:
-            from core.db import get_conn
-            from routers.notifications import send_whatsapp
-            from routers.vip import is_vip
-        except Exception as e:  # noqa: BLE001
-            from loguru import logger
-            logger.warning(f"[auto-notify] imports fallaron: {e}")
-            return
-
-        from loguru import logger
-
-        for n in notifs:
-            empresa_id = self.vehicle_empresa_map.get(int(n["vehicle_id"]))
-            vip = is_vip(title=n.get("title"), customer_id=None, reference=None, empresa_id=empresa_id)
-            try:
-                with get_conn() as cn:
-                    cur = cn.cursor()
-                    # Usuarios candidatos: su empresa o falabella_* + notify on
-                    cur.execute(
-                        """
-                        SELECT user_id, phone_e164, notify_pfallo_threshold,
-                               notify_slack_min_threshold, notify_only_vip
-                        FROM fpoc.users
-                        WHERE activo = 1
-                          AND notify_whatsapp = 1
-                          AND phone_e164 IS NOT NULL
-                          AND LEN(phone_e164) > 0
-                          AND (
-                              role IN ('falabella_admin', 'falabella_ops')
-                              OR empresa_id = ?
-                          )
-                        """,
-                        empresa_id,
-                    )
-                    users = cur.fetchall()
-
-                targets: list[tuple[int | None, str]] = []
-                user_phones: set[str] = set()
-                for u in users:
-                    if bool(u.notify_only_vip) and not vip:
-                        continue
-                    umbral_p = float(u.notify_pfallo_threshold)
-                    umbral_s = int(u.notify_slack_min_threshold)
-                    # dispara si p_fallo >= umbral_p  O  slack <= umbral_s
-                    if n["p_fallo"] >= umbral_p or n["slack_min"] <= umbral_s or vip:
-                        targets.append((int(u.user_id), u.phone_e164))
-                        user_phones.add(u.phone_e164)
-
-                # Merge con destinatarios de fpoc_empresa_contactos. Para
-                # auto_threshold (alertas ML) no hay motivo/severity explícitos:
-                # asumimos severity 'high' y omitimos filtro de motivo. Filtro
-                # de región se aplica con _visit_region(lat, lon) si vino el
-                # dato (los notifs actuales no incluyen geo → 'regiones').
-                try:
-                    from routers.comments import _visit_region as _viz_region  # local import
-                    import json as _json
-                    with get_conn() as cn:
-                        cur = cn.cursor()
-                        cur.execute(
-                            """
-                            SELECT contact_id, phone_e164, severities_in, motivos_in, region_filter
-                            FROM fpoc_empresa_contactos
-                            WHERE active = 1 AND opted_in_at IS NOT NULL
-                              AND empresa_id = ?
-                            """,
-                            empresa_id,
-                        )
-                        contactos = cur.fetchall()
-                    visit_region = _viz_region(n.get("latitude"), n.get("longitude"))
-                    inferred_severity = "high"
-                    for c in contactos:
-                        if c.phone_e164 in user_phones:
-                            continue
-                        sev_raw = c.severities_in
-                        if sev_raw:
-                            try:
-                                sev_list = _json.loads(sev_raw)
-                            except Exception:  # noqa: BLE001
-                                sev_list = None
-                            if sev_list and inferred_severity not in sev_list:
-                                continue
-                        # Sin motivo en auto_threshold → si el contacto definió
-                        # motivos_in restrictivos, no aplica para esta alerta.
-                        if c.motivos_in:
-                            continue
-                        region = (c.region_filter or "all").lower()
-                        if region != "all" and region != visit_region:
-                            continue
-                        targets.append((None, c.phone_e164))
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"[auto-notify] merge contactos falló: {e}")
-
-                if not targets:
-                    continue
-
-                # Cooldown anti-spam por destinatario (clave: phone_e164).
-                # Sin esto, un tick con N alertas dispara N mensajes al mismo
-                # número — molesto en sandbox y arriesgado en prod. Configurable
-                # vía AUTO_NOTIFY_COOLDOWN_SEC (default 300s).
-                import os as _os
-                cooldown_sec = int(_os.environ.get("AUTO_NOTIFY_COOLDOWN_SEC", "300"))
-                now_wall = datetime.utcnow()
-                filtered_targets: list[tuple[int | None, str]] = []
-                for uid, phone in targets:
-                    last = self._autonotify_last_sent.get(phone)
-                    if last is not None and (now_wall - last).total_seconds() < cooldown_sec:
-                        logger.info(f"[auto-notify] cooldown skip phone={phone[-4:]}")
-                        continue
-                    filtered_targets.append((uid, phone))
-                if not filtered_targets:
-                    continue
-                # Marcar antes de enviar — si falla el send, igual evitamos
-                # reintento spammeante en el siguiente tick.
-                for _, phone in filtered_targets:
-                    self._autonotify_last_sent[phone] = now_wall
-                targets = filtered_targets
-
-                vip_tag = " VIP" if vip else ""
-                # Template Meta-approved vd_alerta_motivo_v2 — 6 vars
-                # (severity, motivo, vehiculo, conductor, cliente, comentario).
-                # Mapeo desde el notif ML: severity fija HIGH para auto_threshold,
-                # motivo = "ETA EN RIESGO", comentario = riesgo + slack.
-                # Mantiene compat con TWILIO_CONTENT_SID viejo (2 vars) si no
-                # está el nuevo override + sender warmup todavía corriendo.
-                from core.twilio_templates import alerta_motivo_sid as _alerta_sid
-                content_sid_new = _alerta_sid()
-                content_sid_legacy = _os.environ.get("TWILIO_CONTENT_SID", "")
-                # Derivar driver_name best-effort desde STATE.drivers via vehicle_id
-                driver_name = "—"
-                try:
-                    vid = int(n.get("vehicle_id") or 0)
-                    drv = getattr(self, "drivers", None)
-                    if drv:
-                        d = drv.get(vid) if hasattr(drv, "get") else None
-                        if d:
-                            driver_name = str(getattr(d, "name", None) or (d.get("name") if isinstance(d, dict) else None) or "—")
-                except Exception:  # noqa: BLE001
-                    driver_name = "—"
-
-                from routers.comments import _sanitize_template_var as _sanvar  # local import
-
-                used_template = False
-                if content_sid_new:
-                    try:
-                        send_whatsapp(
-                            content_sid=content_sid_new,
-                            content_variables={
-                                "1": "HIGH",
-                                "2": _sanvar("ETA EN RIESGO"),
-                                "3": _sanvar(n.get("vehicle_name")) or "—",
-                                "4": _sanvar(driver_name) or "—",
-                                "5": _sanvar(n.get("title")) or "—",
-                                "6": _sanvar(
-                                    f"Riesgo {n['p_fallo']*100:.0f}% · Slack {n['slack_min']:.0f}min",
-                                    max_len=200,
-                                ),
-                            },
-                            targets=targets,
-                            subject=f"Alerta{vip_tag} {n['title']}",
-                            tracking_id=n["tracking_id"],
-                            triggered_by="vip" if vip else "auto_threshold",
-                        )
-                        used_template = True
-                    except Exception as _e:  # noqa: BLE001
-                        logger.warning(f"[auto-notify] template vd_alerta_motivo_v2 falló: {_e}")
-                if not used_template and content_sid_legacy:
-                    # Modo template legacy: mapeo de variables {{1}}={fecha} {{2}}={hora}.
-                    try:
-                        send_whatsapp(
-                            content_sid=content_sid_legacy,
-                            content_variables={
-                                "1": n["window_end"][:10] if n["window_end"] else "hoy",
-                                "2": n["eta"][:5] if n["eta"] else "",
-                            },
-                            targets=targets,
-                            subject=f"Alerta{vip_tag} {n['title']}",
-                            tracking_id=n["tracking_id"],
-                            triggered_by="vip" if vip else "auto_threshold",
-                        )
-                        used_template = True
-                    except Exception as _e:  # noqa: BLE001
-                        logger.warning(f"[auto-notify] template legacy falló: {_e}")
-                if not used_template:
-                    body = (
-                        f"[Falabella ValueData]{vip_tag} Alerta anticipada\n"
-                        f"Cliente: {n['title']}\n"
-                        f"Vehiculo: {n['vehicle_name']}\n"
-                        f"Window end: {n['window_end']}  ETA: {n['eta']}\n"
-                        f"Riesgo: {n['p_fallo']*100:.0f}%  Slack: {n['slack_min']:.0f}min\n"
-                        f"Sugerencia: llamar al cliente."
-                    )
-                    send_whatsapp(
-                        body=body,
-                        targets=targets,
-                        subject=f"Alerta {n['title']}",
-                        tracking_id=n["tracking_id"],
-                        triggered_by="vip" if vip else "auto_threshold",
-                    )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[auto-notify] error en {n['tracking_id']}: {e}")
-
-    def _sync_today_with_en_curso(self) -> bool:
-        """R8: si hay un día EN_CURSO en DB y NO matchea self.today, ajusta
-        self.today + sim_clock a ese día. Causa raíz del bug "state.today
-        avanza con system clock mientras el plan operativo está en otro día":
-        al bootear, `boot["today"] = date.today()` que es la fecha real del SO.
-        Si el operador iniciÓ el día 12-05 pero el sistema marca 25-05, ahí
-        empieza la desincronización.
-
-        Devuelve True si hizo sync (cambió self.today).
-        """
-        try:
-            from core.db import get_conn
-            with get_conn() as cn:
-                cur = cn.cursor()
-                cur.execute(
-                    "SELECT fecha FROM fpoc.planificacion_imports "
-                    "WHERE state = 'EN_CURSO' ORDER BY started_at DESC "
-                    "LIMIT 1"
-                )
-                r = cur.fetchone()
-                if r is None:
-                    return False
-                fecha_en_curso = r.fecha if hasattr(r, "fecha") else r[0]
-                # Normalize a date
-                if hasattr(fecha_en_curso, "year"):
-                    en_curso_d = date(fecha_en_curso.year, fecha_en_curso.month, fecha_en_curso.day)
-                else:
-                    en_curso_d = date.fromisoformat(str(fecha_en_curso))
-                if en_curso_d == self.today:
-                    return False
-                # Sync
-                self.today = en_curso_d
-                self.sim_clock = datetime.combine(en_curso_d, DAY_START)
-                return True
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _is_day_running(self) -> bool:
-        """R7: True solo si fpoc.planificacion_imports.state = 'EN_CURSO'
-        para self.today. Si no hay row o el backend no responde, devuelve
-        False (fail-closed: si no podemos confirmar, no avanzamos)."""
-        if self.today is None:
-            return False
-        try:
-            from core.db import get_conn
-            with get_conn() as cn:
-                cur = cn.cursor()
-                cur.execute(
-                    "SELECT state FROM fpoc.planificacion_imports WHERE fecha = ?",
-                    self.today.isoformat(),
-                )
-                r = cur.fetchone()
-                if r is None:
-                    return False
-                return str(r.state if hasattr(r, "state") else r[0]) == "EN_CURSO"
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _cutoff_dt_for_today(self) -> datetime:
-        """R7: lee cutoff_time desde fpoc.day_config para self.today. Si no hay
-        config o falla, usa DAY_END (default 18:30) como fallback. Devuelve un
-        datetime combinado con self.today."""
-        from datetime import time as _t
-        default_cutoff = datetime.combine(self.today, DAY_END) if self.today else None
-        if self.today is None:
-            return default_cutoff  # type: ignore[return-value]
-        try:
-            from core.db import get_conn
-            with get_conn() as cn:
-                cur = cn.cursor()
-                cur.execute(
-                    "SELECT cutoff_time FROM fpoc.day_config WHERE fecha = ?",
-                    self.today.isoformat(),
-                )
-                r = cur.fetchone()
-                if r is None or r[0] is None:
-                    return default_cutoff  # type: ignore[return-value]
-                raw = r[0] if not hasattr(r, "cutoff_time") else r.cutoff_time
-                if hasattr(raw, "hour"):
-                    cutoff_time = _t(raw.hour, raw.minute)
-                else:
-                    parts = str(raw).split(":")
-                    cutoff_time = _t(int(parts[0]), int(parts[1]))
-                return datetime.combine(self.today, cutoff_time)
-        except Exception:  # noqa: BLE001
-            return default_cutoff  # type: ignore[return-value]
-
-    # ----- Mutations -----
-    def tick(self) -> None:
-        with self._lock:
-            self._ticks += 1
-            # R7: el simulador solo avanza si el día activo está EN_CURSO.
-            # Si está BORRADOR / VALIDADO / CERRADO, el reloj queda congelado
-            # y el rollover automático al día siguiente está deshabilitado.
-            # El usuario controla las transiciones desde Planificación.
-            day_running = self._is_day_running()
-            if not day_running:
-                return
-            if self.auto_advance and self.sim_clock is not None and self.today is not None:
-                # R7: cutoff configurable por día (fpoc.day_config.cutoff_time).
-                # Si el usuario no configuró nada cae a DAY_END=18:30 default.
-                cutoff_dt = self._cutoff_dt_for_today()
-                next_clock = self.sim_clock + timedelta(minutes=self.sim_minutes_per_tick)
-                if next_clock > cutoff_dt:
-                    # R7: NO auto-rollover. El reloj se congela en el cutoff.
-                    # El usuario puede extender el cutoff (POST /day-state/extend)
-                    # o cerrar el día y abrir uno nuevo para continuar.
-                    self.sim_clock = cutoff_dt
-                    return
-                self.sim_clock = next_clock
-
-            # Auto-incidente random ~5% prob por tick durante horario operativo
-            if (
-                self.auto_advance
-                and self.sim_clock is not None
-                and DAY_START <= self.sim_clock.time() <= DAY_END
-                and self._rng.random() < 0.05
-            ):
-                vid = int(self._rng.integers(1, 13))
-                extra = float(round(self._rng.uniform(15.0, 35.0), 1))
-                self.auto_incidents[vid] = self.auto_incidents.get(vid, 0.0) + extra
-                EVENTS.emit("incident_auto", self.sim_clock, {
-                    "vehicle_id": vid,
-                    "vehicle_name": f"FAL-{1000 + vid - 1}",
-                    "extra_min": extra,
-                    "reason": "Trafico imprevisto / cierre de calle",
-                })
-
-            self._refresh_snapshot()
-
-    def add_incident(self, vehicle_id: int, extra_min: float) -> None:
-        with self._lock:
-            self.manual_incidents[int(vehicle_id)] = (
-                self.manual_incidents.get(int(vehicle_id), 0.0) + float(extra_min)
-            )
-            EVENTS.emit("incident_manual", self.sim_clock or datetime.utcnow(), {
-                "vehicle_id": int(vehicle_id),
-                "vehicle_name": f"FAL-{1000 + int(vehicle_id) - 1}",
-                "extra_min": float(extra_min),
-                "reason": "Operador agrego incidente",
-            })
-            self._refresh_snapshot()
-
-    def reset_day(self, start_date: date | None = None, day_seed: int | None = None) -> None:
-        """Reinicia la simulación.
-        start_date: fecha desde donde arrancar (default: mantiene self.today).
-        day_seed: seed explícito del día (default: incrementa el actual).
-        """
-        with self._lock:
-            if start_date is not None:
-                self.today = start_date
-            self.day_seed = day_seed if day_seed is not None else (self.day_seed + 1)
-            self.manual_incidents = {}
-            self.auto_incidents = {}
-            self.sim_clock = datetime.combine(self.today, DAY_START)  # type: ignore[arg-type]
-            self._regen_plan()
-            EVENTS.emit("day_reset", self.sim_clock, {"new_day_seed": self.day_seed})
-            self._refresh_snapshot(emit_events=False)
-
-    def set_sim_minutes_per_tick(self, minutes: int) -> None:
-        """Cuántos minutos de tiempo simulado avanza cada tick del scheduler (3s real)."""
-        with self._lock:
-            self.sim_minutes_per_tick = max(1, min(120, int(minutes)))
-
-    def set_clock(self, sim_clock: datetime | None = None,
-                  offset_minutes: int | None = None) -> None:
-        with self._lock:
-            assert self.today is not None and self.sim_clock is not None
-            if sim_clock is not None:
-                self.sim_clock = sim_clock
-            elif offset_minutes is not None:
-                day_end_dt = datetime.combine(self.today, DAY_END)
-                day_start_dt = datetime.combine(self.today, DAY_START)
-                new_clock = self.sim_clock + timedelta(minutes=offset_minutes)
-                if new_clock < day_start_dt:
-                    new_clock = day_start_dt
-                if new_clock > day_end_dt + timedelta(minutes=30):
-                    new_clock = day_end_dt + timedelta(minutes=30)
-                self.sim_clock = new_clock
-            self._refresh_snapshot()
-
-    def set_auto_advance(self, value: bool) -> None:
-        with self._lock:
-            self.auto_advance = bool(value)
+    @property
+    def manual_incidents(self) -> dict:  # type: ignore[no-untyped-def]
+        return {}
 
 
 STATE = AppState()
+
+
+# ============================================================================
+# Sim clock (Fase 3 MVP — piloto controlable)
+# ============================================================================
+# Modelo:
+#   sim_clock(fecha) = datetime.utcnow() + offset_min(fecha)
+# offset_min vive en `fpoc.planificacion_imports.sim_clock_offset_min` (INT, DEFAULT 0).
+# Modo automatico => offset == 0 => devuelve UTC now.
+# Modo manual     => offset != 0 => UTC now + offset.
+# El panel del piloto avanza/resetea el offset via /api/admin/pilot/clock.
+
+def _to_iso_date(fecha: Union[date, str]) -> str:
+    """Acepta date o ISO str. Devuelve YYYY-MM-DD."""
+    if isinstance(fecha, date):
+        return fecha.isoformat()
+    return str(fecha)[:10]
+
+
+def _read_offset(fecha_iso: str) -> int:
+    """Lee sim_clock_offset_min de planificacion_imports para esa fecha.
+    Si la fila no existe o la columna no esta (migracion no aplicada todavia),
+    devuelve 0 (modo automatico)."""
+    from core.db import get_conn
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT sim_clock_offset_min FROM fpoc.planificacion_imports WHERE fecha = ?",
+                fecha_iso,
+            )
+            r = cur.fetchone()
+        if r is None or r[0] is None:
+            return 0
+        return int(r[0])
+    except Exception:  # noqa: BLE001
+        # Tabla/columna no existe aun (boot pre-migracion). Fail-open: modo auto.
+        return 0
+
+
+def get_sim_clock(fecha: Union[date, str]) -> datetime:
+    """Sim clock para la fecha. Default: now UTC. Si hay offset manual, lo aplica."""
+    fecha_iso = _to_iso_date(fecha)
+    offset = _read_offset(fecha_iso)
+    return datetime.utcnow() + timedelta(minutes=offset)
+
+
+def advance_sim_clock(fecha: Union[date, str], minutes_delta: int) -> int:
+    """Suma minutes_delta al offset del dia. Devuelve nuevo offset total.
+
+    UPSERT-like: si la fila del dia no existe en planificacion_imports, la
+    creamos con state=BORRADOR para que el offset persista (sino el GET
+    siguiente devolveria 0). En la practica, el piloto se setupea con
+    setup() que ya garantiza la fila — esto es un safety net.
+    """
+    from core.db import get_conn
+    fecha_iso = _to_iso_date(fecha)
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "SELECT sim_clock_offset_min FROM fpoc.planificacion_imports WHERE fecha = ?",
+            fecha_iso,
+        )
+        r = cur.fetchone()
+        if r is None:
+            cur.execute(
+                "INSERT INTO fpoc.planificacion_imports (fecha, count, state, sim_clock_offset_min) "
+                "VALUES (?, 0, 'BORRADOR', ?)",
+                fecha_iso, int(minutes_delta),
+            )
+            new_offset = int(minutes_delta)
+        else:
+            new_offset = int(r[0] or 0) + int(minutes_delta)
+            cur.execute(
+                "UPDATE fpoc.planificacion_imports SET sim_clock_offset_min = ? WHERE fecha = ?",
+                new_offset, fecha_iso,
+            )
+        cn.commit()
+    return new_offset
+
+
+def reset_sim_clock(fecha: Union[date, str]) -> None:
+    """Pone offset = 0 (modo automatico)."""
+    from core.db import get_conn
+    fecha_iso = _to_iso_date(fecha)
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            "UPDATE fpoc.planificacion_imports SET sim_clock_offset_min = 0 WHERE fecha = ?",
+            fecha_iso,
+        )
+        cn.commit()
 
 
 # ============================================================================

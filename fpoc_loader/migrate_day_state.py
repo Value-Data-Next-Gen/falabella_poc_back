@@ -18,14 +18,10 @@ from __future__ import annotations
 
 from loguru import logger
 
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 
 def main(quiet: bool = False) -> None:
-    if db_backend() != "sqlserver":
-        if not quiet:
-            logger.info("[day-state] backend no-mssql, skip")
-        return
     sqls = [
         ("state",         "ALTER TABLE fpoc.planificacion_imports ADD state NVARCHAR(20) NOT NULL CONSTRAINT DF_planimp_state DEFAULT 'BORRADOR'"),
         ("paused_at",     "ALTER TABLE fpoc.planificacion_imports ADD paused_at DATETIME2(0) NULL"),

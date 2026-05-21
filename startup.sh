@@ -38,11 +38,10 @@ if [ -f requirements.txt ]; then
   pip install --no-cache-dir -r requirements.txt
 fi
 
-# Persistencia SQLite en /home/data (solo si DB_BACKEND=sqlite).
-# /home está montado como Azure Files; el resto del filesystem es efímero.
-if [ -n "${SQLITE_PATH:-}" ]; then
-  mkdir -p "$(dirname "$SQLITE_PATH")"
-fi
+# Azure SQL es el único backend soportado — sin fallback SQLite local.
+# DB_SERVER / DB_NAME / DB_USER / DB_PASSWORD deben estar configurados en
+# Azure App Service > Configuration. El módulo core.db hace fail-fast al import
+# si DB_SERVER falta.
 
 PORT="${PORT:-8000}"
 

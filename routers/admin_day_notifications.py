@@ -409,20 +409,26 @@ def notify_day_start(
 # Endpoint 2: notify-eta-breach
 # ---------------------------------------------------------------------------
 
-@router.post("/notify-eta-breach", response_model=NotifyEtaBreachResponse)
-def notify_eta_breach(
-    req: NotifyEtaBreachRequest,
-    user: CurrentUser = Depends(_require_admin_or_ops),
+def dispatch_eta_breach(
+    tracking_id: str,
+    *,
+    triggered_by: str = "eta_breach_manual",
 ) -> NotifyEtaBreachResponse:
-    """Manual trigger para disparar alerta de atraso ETA en una visita
-    específica (uso QA / demo). Persiste el `tracking_id` en la sesión
-    WhatsApp del driver para que el LLM agent pueda enlazar la respuesta
-    libre del driver con el `report_motivo` correspondiente.
+    """Logica reusable de notify-eta-breach.
+
+    Llamada directa desde:
+      - el endpoint POST /api/admin/notify-eta-breach (manual)
+      - el endpoint POST /api/admin/pilot/simulate-event (event=delay)
+      - sims.eta_breach_cron (chequeo automatico cada 5 min)
+
+    Raises:
+      HTTPException — si la visita no existe o el driver no esta apto para
+      recibir el WhatsApp.
     """
     from routers.comments import _sanitize_template_var
     from routers.notifications import send_whatsapp
 
-    tid = req.tracking_id.strip()
+    tid = tracking_id.strip()
 
     # 1) SELECT visita.
     with get_conn() as cn:
@@ -517,7 +523,7 @@ def notify_eta_breach(
             targets=[(None, phone)],
             subject=subject_line,
             tracking_id=tid,
-            triggered_by="eta_breach_manual",
+            triggered_by=triggered_by,
         )
         first = res.results[0] if res.results else None
         if first:
@@ -539,3 +545,20 @@ def notify_eta_breach(
         status=status,
         error=error,
     )
+
+
+@router.post("/notify-eta-breach", response_model=NotifyEtaBreachResponse)
+def notify_eta_breach(
+    req: NotifyEtaBreachRequest,
+    user: CurrentUser = Depends(_require_admin_or_ops),
+) -> NotifyEtaBreachResponse:
+    """Manual trigger para disparar alerta de atraso ETA en una visita
+    específica (uso QA / demo). Persiste el `tracking_id` en la sesión
+    WhatsApp del driver para que el LLM agent pueda enlazar la respuesta
+    libre del driver con el `report_motivo` correspondiente.
+
+    La logica real vive en `dispatch_eta_breach()` para que el cron
+    `sims.eta_breach_cron` y el `/api/admin/pilot/simulate-event` la puedan
+    reusar sin duplicar codigo.
+    """
+    return dispatch_eta_breach(req.tracking_id, triggered_by="eta_breach_manual")

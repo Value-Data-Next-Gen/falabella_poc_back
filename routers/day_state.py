@@ -367,62 +367,24 @@ def transition_day_state(
         )
         cn.commit()
 
-    # Lado del live_generator + driver_sim + comment_sim: arrancar/parar según target
-    try:
-        from sims.live_generator import STATE as LIVE_STATE
-        if target == "EN_CURSO":
-            LIVE_STATE.enabled = True
-            # Set STATE.today para que el ML snapshot también apunte ahí
-            try:
-                from core.state import STATE
-                STATE.reset_day(start_date=_date_cls.fromisoformat(req.fecha))
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[day-state] STATE.reset_day falló: {e}")
-            # Arrancar simulación de drivers para esa fecha
-            try:
-                from sims.driver_sim import start_sim
-                start_sim(req.fecha)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[day-state] driver_sim.start_sim falló: {e}")
-            # R7 (deprecado por CR limpieza): NO auto-encender comment_simulator.
-            # Generaba alertas sinteticas que se mezclaban con alertas reales
-            # del backend (motivo critico, eta breach, etc) creando ruido en
-            # WhatsApp para los drivers reales. Si se necesita simulator para
-            # el panel Auditoria IA, encenderlo manual via /api/comment-sim/toggle.
-        elif target == "CERRADO":
-            LIVE_STATE.enabled = False
-            try:
-                from sims.driver_sim import stop_sim
-                stop_sim(req.fecha)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[day-state] driver_sim.stop_sim falló: {e}")
-            try:
-                from sims.comment_simulator import SIM as COMMENT_SIM
-                COMMENT_SIM.enabled = False
-            except Exception:  # noqa: BLE001
-                pass
-        elif target == "BORRADOR":
-            # R7: volver a BORRADOR limpia el ring buffer del stream para que
-            # el panel de Alertas en vivo no muestre el residuo del día anterior.
-            LIVE_STATE.enabled = False
-            try:
-                from core.events import EVENTS
-                n = EVENTS.reset()
-                logger.info(f"[day-state] {req.fecha}: buffer eventos limpiado ({n} evt)")
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[day-state] EVENTS.reset falló: {e}")
-            try:
-                from sims.driver_sim import stop_sim
-                stop_sim(req.fecha)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                from sims.comment_simulator import SIM as COMMENT_SIM
-                COMMENT_SIM.enabled = False
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[day-state] live_gen control falló: {e}")
+    # Fase 2 MVP: eliminados sims.live_generator / driver_sim / comment_simulator.
+    # Las transiciones de estado solo persisten en DB. STATE.today se sincroniza
+    # al arrancar EN_CURSO para que el bot/handlers apunten al día activo.
+    if target == "EN_CURSO":
+        try:
+            from core.state import STATE
+            STATE.today = _date_cls.fromisoformat(req.fecha)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[day-state] sync STATE.today falló: {e}")
+    elif target == "BORRADOR":
+        # R7: volver a BORRADOR limpia el ring buffer del stream para que
+        # el panel de Alertas en vivo no muestre el residuo del día anterior.
+        try:
+            from core.events import EVENTS
+            n = EVENTS.reset()
+            logger.info(f"[day-state] {req.fecha}: buffer eventos limpiado ({n} evt)")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[day-state] EVENTS.reset falló: {e}")
 
     logger.info(
         f"[day-state] {req.fecha}: {current.state} → {target} by user_id={user.user_id}"
@@ -458,176 +420,18 @@ def reset_day_state(
         )
         cn.commit()
     try:
-        from sims.live_generator import STATE as LIVE_STATE
-        LIVE_STATE.enabled = False
-    except Exception:  # noqa: BLE001
-        pass
-    try:
         from core.events import EVENTS
         EVENTS.reset()
-    except Exception:  # noqa: BLE001
-        pass
-    # Detener driver_sim si estaba simulando esta fecha
-    try:
-        from sims.driver_sim import stop_sim
-        stop_sim(fecha)
     except Exception:  # noqa: BLE001
         pass
     logger.info(f"[day-state] {fecha}: RESET → BORRADOR by user_id={user.user_id}")
     _invalidate_state_caches(); return _build_state(fecha, user)
 
 
-class CleanRegenerateResponse(BaseModel):
-    fecha: str
-    deleted_visits: int
-    inserted_visits: int
-    state: str
-
-
-@router.post("/clean-and-regenerate", response_model=CleanRegenerateResponse)
-def clean_and_regenerate(
-    fecha: str = Query(...),
-    rows: int = Query(default=1800, ge=5, le=5000),
-    mode: str = Query(default="default", pattern="^(default|minimal)$"),
-    user: CurrentUser = Depends(require_admin),
-) -> CleanRegenerateResponse:
-    """Borra todas las visitas del día y regenera con el live_generator.
-
-    Modos:
-      - "default" (1800 rows, multi-empresa, multi-driver, multi-región)
-      - "minimal" (5 visitas, 1 empresa, 1 driver, RM, ETAs cronológicas)
-        Ignora `rows`. Para demos limpios y tests unitarios.
-
-    El live_generator respeta región por driver (hash determinístico), evita
-    líneas cruzando el país. Visitas nacen `pending` para que el sim las
-    procese cronológicamente.
-    """
-    try:
-        _date_cls.fromisoformat(fecha)
-    except ValueError:
-        raise HTTPException(400, f"fecha inválida: {fecha}")
-
-    # Detener driver_sim para esta fecha (vamos a regenerar todo)
-    try:
-        from sims.driver_sim import stop_sim
-        stop_sim(fecha)
-    except Exception:  # noqa: BLE001
-        pass
-
-    with get_conn() as cn:
-        cur = cn.cursor()
-        # Borrar visitas existentes del día
-        cur.execute(
-            "DELETE FROM fpoc.simpli_visits WHERE planned_date = ?", fecha,
-        )
-        deleted = cur.rowcount or 0
-        # Borrar driver_positions del día (las re-inicializamos al re-arrancar el sim)
-        cur.execute(
-            "DELETE FROM fpoc.driver_positions WHERE planned_date = ?", fecha,
-        )
-        cn.commit()
-
-    # Insertar batch via live_generator (que ya respeta región por driver)
-    try:
-        from sims.live_generator import _insert_batch
-        with get_conn() as cn:
-            inserted = _insert_batch(cn, _date_cls.fromisoformat(fecha), rows, mode=mode)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[clean-regenerate] _insert_batch falló: {e}")
-        inserted = 0
-
-    # Asegurar que el registro en planificacion_imports existe y queda en BORRADOR
-    with get_conn() as cn:
-        cur = cn.cursor()
-        cur.execute(
-            "SELECT 1 FROM fpoc.planificacion_imports WHERE fecha = ?", fecha,
-        )
-        if cur.fetchone() is None:
-            cur.execute(
-                "INSERT INTO fpoc.planificacion_imports "
-                "(fecha, count, imported_by_user_id, state) VALUES (?, ?, ?, 'BORRADOR')",
-                fecha, inserted, user.user_id,
-            )
-        else:
-            cur.execute(
-                "UPDATE fpoc.planificacion_imports "
-                "SET state = 'BORRADOR', count = ?, started_at = NULL, "
-                "    started_by_user_id = NULL, paused_at = NULL, closed_at = NULL, "
-                "    day_seed = NULL "
-                "WHERE fecha = ?",
-                inserted, fecha,
-            )
-        cn.commit()
-
-    logger.info(
-        f"[day-state] {fecha}: CLEAN_AND_REGENERATE deleted={deleted} "
-        f"inserted={inserted} by user_id={user.user_id}"
-    )
-    # Invalidar cache ANTES de releer estado (el sed previo no agarró este
-    # patrón porque acá es `state = _build_state(...)` no `return _build_state(...)`).
-    _invalidate_state_caches()
-    state = _build_state(fecha, user)
-    return CleanRegenerateResponse(
-        fecha=fecha,
-        deleted_visits=int(deleted),
-        inserted_visits=int(inserted),
-        state=state.state,
-    )
-
-
-@router.post("/regenerate", response_model=DayState)
-def regenerate_day(
-    fecha: str = Query(...),
-    user: CurrentUser = Depends(require_admin),
-) -> DayState:
-    """Rebobina la simulación de un día EN_CURSO sin destruir el plan.
-
-    Qué hace:
-      - sim_clock vuelve a 09:00 del día.
-      - Todas las visitas del día pasan a status='pending', limpiando observaciones de sim.
-      - driver_positions del día se borra y se re-inicializa.
-      - El plan (rutas, drivers, asignaciones) se conserva intacto.
-
-    Para qué sirve: "ver de nuevo cómo simula el día" sin tener que volver a
-    BORRADOR → VALIDADO → EN_CURSO. Usable solo en EN_CURSO.
-    """
-    try:
-        _date_cls.fromisoformat(fecha)
-    except ValueError:
-        raise HTTPException(400, f"fecha inválida: {fecha}")
-    current = _build_state(fecha, user)
-    if current.state != "EN_CURSO":
-        raise HTTPException(
-            400,
-            f"regenerate solo aplica en EN_CURSO (actual: {current.state}). "
-            "Para volver a BORRADOR usá /reset."
-        )
-    with get_conn() as cn:
-        cur = cn.cursor()
-        # Marcar todas las visitas como pending de nuevo (sim solo: NO toca
-        # checkout_cl ni current_eta_cl reales del XLSX — esos son del plan).
-        cur.execute(
-            "UPDATE fpoc.simpli_visits "
-            "SET status = 'pending', checkout_observation = NULL "
-            "WHERE planned_date = ?",
-            fecha,
-        )
-        cn.commit()
-    # Re-arrancar driver_sim desde 09:00
-    try:
-        from sims.driver_sim import stop_sim, start_sim
-        stop_sim(fecha)
-        start_sim(fecha)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[day-state] regenerate: driver_sim re-init falló: {e}")
-    # Resetear ring buffer de eventos para que el stream empiece limpio
-    try:
-        from core.events import EVENTS
-        EVENTS.reset()
-    except Exception:  # noqa: BLE001
-        pass
-    logger.info(f"[day-state] {fecha}: REGENERATE (rebobinar a 09:00) by user_id={user.user_id}")
-    _invalidate_state_caches(); return _build_state(fecha, user)
+# Fase 2 MVP: endpoints `/clean-and-regenerate` y `/regenerate` removidos.
+# Dependían de sims.live_generator._insert_batch y sims.driver_sim (eliminados).
+# La regeneración de datos del día ahora se hace re-importando el XLSX desde
+# `/api/planificacion/import-xlsx`.
 
 
 # =============================================================================

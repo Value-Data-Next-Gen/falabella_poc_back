@@ -22,8 +22,7 @@ Columnas:
   - (fecha)
   - (empresa_id, fecha)
 
-Patrón idéntico a migrate_alert_dispatch.py (CR-012, migración 023):
-bifurcado sqlite / sqlserver, idempotente (chequea existencia antes de crear).
+Idempotente (chequea existencia antes de crear). Azure SQL único backend.
 
 Uso a mano:
     python -m backend.fpoc_loader.migrate_copiloto_decisions
@@ -44,7 +43,7 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
         load_dotenv(_p)
         break
 
-from core.db import backend, get_conn  # noqa: E402
+from core.db import get_conn  # noqa: E402
 
 
 VALID_INTENTS = (
@@ -58,12 +57,6 @@ VALID_INTENTS = (
 
 def _table_exists(cn, table: str) -> bool:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            table,
-        )
-        return cur.fetchone() is not None
     cur.execute(
         "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?",
         table.replace("fpoc_", ""),
@@ -73,59 +66,39 @@ def _table_exists(cn, table: str) -> bool:
 
 def _create_copiloto_decisions(cn) -> None:
     if _table_exists(cn, "fpoc_copiloto_decisions"):
-        print("[skip] fpoc_copiloto_decisions ya existe")
+        print("[skip] fpoc.copiloto_decisions ya existe")
         return
     cur = cn.cursor()
-    if backend() == "sqlite":
-        intents_list = "','".join(VALID_INTENTS)
-        cur.executescript(f"""
-            CREATE TABLE fpoc_copiloto_decisions (
-                decision_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                user_email      TEXT NOT NULL,
-                empresa_id      INTEGER,
-                fecha           TEXT NOT NULL,
-                suggestion_id   TEXT NOT NULL,
-                intent          TEXT NOT NULL CHECK (intent IN ('{intents_list}')),
-                tracking_id     TEXT,
-                payload_json    TEXT
-            );
-            CREATE INDEX IX_copiloto_decisions_fecha
-                ON fpoc_copiloto_decisions(fecha);
-            CREATE INDEX IX_copiloto_decisions_empresa_fecha
-                ON fpoc_copiloto_decisions(empresa_id, fecha);
-        """)
-    else:
-        intents_list = "','".join(VALID_INTENTS)
-        cur.execute(f"""
-            CREATE TABLE fpoc.copiloto_decisions (
-                decision_id     INT IDENTITY(1,1) PRIMARY KEY,
-                created_at      DATETIME2(0) NOT NULL DEFAULT SYSUTCDATETIME(),
-                user_email      NVARCHAR(256) NOT NULL,
-                empresa_id      INT NULL,
-                fecha           DATE NOT NULL,
-                suggestion_id   NVARCHAR(128) NOT NULL,
-                intent          NVARCHAR(64) NOT NULL
-                    CHECK (intent IN ('{intents_list}')),
-                tracking_id     NVARCHAR(64) NULL,
-                payload_json    NVARCHAR(MAX) NULL
-            );
-        """)
-        cur.execute(
-            "CREATE INDEX IX_copiloto_decisions_fecha "
-            "ON fpoc.copiloto_decisions(fecha);"
-        )
-        cur.execute(
-            "CREATE INDEX IX_copiloto_decisions_empresa_fecha "
-            "ON fpoc.copiloto_decisions(empresa_id, fecha);"
-        )
+    intents_list = "','".join(VALID_INTENTS)
+    cur.execute(f"""
+        CREATE TABLE fpoc.copiloto_decisions (
+            decision_id     INT IDENTITY(1,1) PRIMARY KEY,
+            created_at      DATETIME2(0) NOT NULL DEFAULT SYSUTCDATETIME(),
+            user_email      NVARCHAR(256) NOT NULL,
+            empresa_id      INT NULL,
+            fecha           DATE NOT NULL,
+            suggestion_id   NVARCHAR(128) NOT NULL,
+            intent          NVARCHAR(64) NOT NULL
+                CHECK (intent IN ('{intents_list}')),
+            tracking_id     NVARCHAR(64) NULL,
+            payload_json    NVARCHAR(MAX) NULL
+        );
+    """)
+    cur.execute(
+        "CREATE INDEX IX_copiloto_decisions_fecha "
+        "ON fpoc.copiloto_decisions(fecha);"
+    )
+    cur.execute(
+        "CREATE INDEX IX_copiloto_decisions_empresa_fecha "
+        "ON fpoc.copiloto_decisions(empresa_id, fecha);"
+    )
     cn.commit()
-    print("[ok]   fpoc_copiloto_decisions creada con 2 índices")
+    print("[ok]   fpoc.copiloto_decisions creada con 2 índices")
 
 
 def main(quiet: bool = False) -> int:
     if not quiet:
-        print(f"[migrate] backend={backend()}")
+        print("[migrate] backend=sqlserver")
     with get_conn() as cn:
         _create_copiloto_decisions(cn)
     return 0

@@ -30,7 +30,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from core.auth import CurrentUser, current_user
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 from core.state import STATE
 
 
@@ -82,44 +82,23 @@ def log_decision(
 
     with get_conn() as cn:
         cur = cn.cursor()
-        if db_backend() == "sqlserver":
-            cur.execute(
-                """
-                INSERT INTO fpoc.copiloto_decisions
-                  (user_email, empresa_id, fecha, suggestion_id, intent,
-                   tracking_id, payload_json)
-                OUTPUT INSERTED.decision_id, INSERTED.created_at
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                user.email, user.empresa_id, fecha_iso,
-                req.suggestion_id, req.intent, req.tracking_id, payload_json,
-            )
-            row = cur.fetchone()
-            if row is None:
-                cn.rollback()
-                raise HTTPException(500, "INSERT no devolvió fila")
-            decision_id = int(row[0])
-            created_at_raw = row[1]
-        else:
-            cur.execute(
-                """
-                INSERT INTO fpoc.copiloto_decisions
-                  (user_email, empresa_id, fecha, suggestion_id, intent,
-                   tracking_id, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                user.email, user.empresa_id, fecha_iso,
-                req.suggestion_id, req.intent, req.tracking_id, payload_json,
-            )
-            cur.execute("SELECT last_insert_rowid()")
-            row_id = cur.fetchone()
-            decision_id = int(row_id[0]) if row_id and row_id[0] is not None else 0
-            cur.execute(
-                "SELECT created_at FROM fpoc.copiloto_decisions WHERE decision_id = ?",
-                decision_id,
-            )
-            row_ts = cur.fetchone()
-            created_at_raw = row_ts[0] if row_ts else None
+        cur.execute(
+            """
+            INSERT INTO fpoc.copiloto_decisions
+              (user_email, empresa_id, fecha, suggestion_id, intent,
+               tracking_id, payload_json)
+            OUTPUT INSERTED.decision_id, INSERTED.created_at
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            user.email, user.empresa_id, fecha_iso,
+            req.suggestion_id, req.intent, req.tracking_id, payload_json,
+        )
+        row = cur.fetchone()
+        if row is None:
+            cn.rollback()
+            raise HTTPException(500, "INSERT no devolvió fila")
+        decision_id = int(row[0])
+        created_at_raw = row[1]
         cn.commit()
 
     # Normalize created_at to a datetime (pyodbc devuelve datetime; sqlite, str)

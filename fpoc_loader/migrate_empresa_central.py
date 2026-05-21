@@ -3,7 +3,7 @@
 Un solo número por empresa. Si llega un mensaje WhatsApp desde este número,
 se trata como el dispatcher/jefe central que puede broadcast a sus drivers.
 
-Idempotente sqlite/sqlserver.
+Idempotente. Azure SQL único backend.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
         load_dotenv(_p)
         break
 
-from core.db import backend, get_conn  # noqa: E402
+from core.db import get_conn  # noqa: E402
 
 
 def _log(msg: str, quiet: bool) -> None:
@@ -32,9 +32,6 @@ def _log(msg: str, quiet: bool) -> None:
 
 def _column_exists(cn, table: str, column: str) -> bool:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"PRAGMA table_info({table})")
-        return any(str(r[1]).lower() == column.lower() for r in cur.fetchall())
     cur.execute(
         """
         SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
@@ -50,16 +47,13 @@ def _add_central_phone(cn, quiet: bool) -> None:
         _log("[skip] empresas_transporte.central_phone ya existe", quiet)
         return
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute("ALTER TABLE fpoc_empresas_transporte ADD COLUMN central_phone TEXT")
-    else:
-        cur.execute("ALTER TABLE fpoc.empresas_transporte ADD central_phone NVARCHAR(20) NULL")
+    cur.execute("ALTER TABLE fpoc.empresas_transporte ADD central_phone NVARCHAR(20) NULL")
     cn.commit()
     _log("[ok]   empresas_transporte.central_phone agregado", quiet)
 
 
 def main(quiet: bool = False) -> None:
-    _log(f"[migrate-empresa-central] backend={backend()}", quiet)
+    _log("[migrate-empresa-central] backend=sqlserver", quiet)
     with get_conn() as cn:
         _add_central_phone(cn, quiet)
 

@@ -1,34 +1,27 @@
-"""Watchlist: visitas pending scoreadas por urgencia.
+"""Watchlist: visitas pending scoreadas por urgencia (post Fase-2 MVP refactor).
 
-Objetivo: en 3s el operador ve quién va a fallar y puede actuar.
-
-Score de urgencia (0-100):
-  p_fallo       base 0-40
-  slack_min<0   +30    (ya pasó el deadline)
-  slack_min<30  +20
-  slack_min<60  +10
-  alert_slack RED  +15
-  VIP              +15
-  priority=high    +10
-  priority=vip     +20 (reemplaza anterior si aplica)
+Tras eliminar el modelo XGB + STATE.snapshot_df, el watchlist lee directo de
+`fpoc.simpli_visits` y computa urgencia simple basada en `current_eta_cl` vs
+sim_clock (o UTC now si STATE no tiene reloj seteado).
 
 Severity:
-  >= 70  CRITICO
-  >= 45  ALTO
-  >= 25  MEDIO
-  < 25   (se excluye del watchlist)
+  URGENT   → eta vencida (<= now)
+  WARNING  → eta dentro de los próximos 30 min
+  OK       → eta > now + 30 min   (se excluye del watchlist)
 
-Scope: transport_manager ve solo vehículos de su empresa.
+VIP get +severity_bump y se marcan visualmente.
+
+Scope: transport_manager ve solo visitas de su empresa.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from core.auth import CurrentUser, current_user
-from routers.comments import _visit_region
 from core.db import get_conn
 from core.state import STATE
 
@@ -44,38 +37,31 @@ class NotifInline(BaseModel):
 
 class WatchlistVisit(BaseModel):
     tracking_id: str
-    vehicle_id: int
+    vehicle_id: Optional[int] = None
     vehicle_name: Optional[str] = None
     driver_name: Optional[str] = None
     empresa_id: Optional[int] = None
     empresa_nombre: Optional[str] = None
     title: str
     address: Optional[str] = None
-    latitude: float
-    longitude: float
-    order: int
-    window_end: str
-    estimated_time_arrival: str
-    slack_min: float
-    alert_slack: str
-    p_fallo: float
-    alert_valuedata: bool
+    comuna: Optional[str] = None
+    region: str
+    estimated_time_arrival: Optional[str] = None
+    status_label: str
     is_vip: bool
     vip_tier: Optional[str] = None
     vip_deadline_time: Optional[str] = None
     priority: str
     urgency_score: float
-    severity: str  # 'CRITICO' | 'ALTO' | 'MEDIO'
+    severity: str  # 'URGENT' | 'WARNING'
     reasons: list[str]
-    region: str
     notif: Optional[NotifInline] = None
 
 
 class WatchlistSummary(BaseModel):
     total: int
-    critico: int
-    alto: int
-    medio: int
+    urgent: int
+    warning: int
     vip_at_risk: int
     notified: int
     not_notified: int
@@ -86,50 +72,85 @@ class WatchlistResponse(BaseModel):
     visits: list[WatchlistVisit]
 
 
-def _score_and_reasons(row, is_vip: bool, priority: str) -> tuple[float, str, list[str]]:
-    score = 0.0
+def _parse_eta(eta_raw) -> Optional[datetime]:
+    """Parsea current_eta_cl a datetime. Acepta 'YYYY-MM-DD HH:MM:SS' o ISO."""
+    if eta_raw is None:
+        return None
+    if isinstance(eta_raw, datetime):
+        return eta_raw
+    s = str(eta_raw).strip()
+    if not s:
+        return None
+    try:
+        if "T" in s:
+            return datetime.fromisoformat(s)
+        return datetime.fromisoformat(s.replace(" ", "T"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _now_for_watchlist() -> datetime:
+    if STATE.sim_clock is not None:
+        return STATE.sim_clock
+    return datetime.utcnow()
+
+
+def _compute_urgency(
+    eta_dt: Optional[datetime],
+    now: datetime,
+    is_vip: bool,
+    priority: str,
+) -> tuple[Optional[str], float, list[str]]:
+    """Devuelve (severity, score, reasons). severity=None significa "fuera del watchlist"."""
     reasons: list[str] = []
+    if eta_dt is None:
+        # Sin ETA no podemos juzgar urgencia: solo entra si es VIP o priority=high/vip
+        if is_vip or priority in ("vip", "high"):
+            reasons.append("ETA desconocido")
+            sev = "WARNING"
+            score = 35.0
+            if is_vip:
+                reasons.append("Cliente VIP")
+                score += 10
+            return sev, score, reasons
+        return None, 0.0, reasons
 
-    pf = float(row["p_fallo"])
-    score += pf * 40
-    if pf >= 0.7:
-        reasons.append(f"P(fallo) {pf*100:.0f}%")
-    elif pf >= 0.4:
-        reasons.append(f"Riesgo medio {pf*100:.0f}%")
+    mins_to_eta = (eta_dt - now).total_seconds() / 60.0
+    score = 0.0
+    sev: Optional[str] = None
 
-    slack = float(row["slack_min"])
-    if slack < 0:
-        score += 30
-        reasons.append(f"Slack negativo {slack:.0f}min")
-    elif slack < 30:
-        score += 20
-        reasons.append(f"Slack crítico {slack:.0f}min")
-    elif slack < 60:
-        score += 10
+    if mins_to_eta <= 0:
+        sev = "URGENT"
+        score = 70.0 + min(30.0, abs(mins_to_eta) / 2.0)  # cap 100
+        reasons.append(f"ETA vencida hace {abs(mins_to_eta):.0f} min")
+    elif mins_to_eta <= 30:
+        sev = "WARNING"
+        score = 40.0 + (30.0 - mins_to_eta)  # más cerca, más score
+        reasons.append(f"ETA en {mins_to_eta:.0f} min")
+    else:
+        # Fuera del watchlist a menos que sea VIP / priority high
+        if is_vip:
+            sev = "WARNING"
+            score = 30.0
+            reasons.append(f"VIP con ETA en {mins_to_eta:.0f} min")
+        elif priority in ("vip", "high"):
+            sev = "WARNING"
+            score = 28.0
+            reasons.append(f"Prioridad {priority} con ETA en {mins_to_eta:.0f} min")
+        else:
+            return None, 0.0, reasons
 
-    alert_slack = str(row.get("alert_slack", ""))
-    if alert_slack == "RED":
-        score += 15
-        reasons.append("Rojo SimpliRoute")
-
-    if bool(row.get("alert_valuedata", False)):
-        reasons.append("Alerta VD activa")
-
-    if is_vip:
-        score += 15
+    if is_vip and "Cliente VIP" not in reasons and "VIP" not in " ".join(reasons):
         reasons.append("Cliente VIP")
-
-    if priority == "vip":
-        score = max(score, score + 20)
-        if "Cliente VIP" not in reasons:
-            reasons.append("Prioridad VIP")
+        score += 10.0
+    if priority == "vip" and "Prioridad" not in " ".join(reasons):
+        reasons.append("Prioridad VIP")
+        score += 8.0
     elif priority == "high":
-        score += 10
         reasons.append("Prioridad alta")
+        score += 5.0
 
-    score = min(100, score)
-    sev = "CRITICO" if score >= 70 else ("ALTO" if score >= 45 else "MEDIO")
-    return score, sev, reasons
+    return sev, min(100.0, round(score, 1)), reasons
 
 
 @router.get("", response_model=WatchlistResponse)
@@ -139,156 +160,210 @@ def get_watchlist(
     only_vip: bool = Query(default=False),
     user: CurrentUser = Depends(current_user),
 ) -> WatchlistResponse:
-    if STATE.snapshot_df is None:
+    today = STATE.today
+    if today is None:
         return WatchlistResponse(
-            summary=WatchlistSummary(total=0, critico=0, alto=0, medio=0, vip_at_risk=0, notified=0, not_notified=0),
+            summary=WatchlistSummary(total=0, urgent=0, warning=0, vip_at_risk=0, notified=0, not_notified=0),
             visits=[],
         )
+    today_iso = today.isoformat()
 
-    df = STATE.snapshot_df.copy()
-    df["empresa_id"] = df["vehicle_id"].astype(int).map(STATE.vehicle_empresa_map)
-
+    # Scope empresa
+    scope_empresa: Optional[int] = None
     if not user.is_falabella:
-        df = df[df["empresa_id"] == user.empresa_id]
+        scope_empresa = user.empresa_id
     elif empresa_id is not None:
-        df = df[df["empresa_id"] == empresa_id]
+        scope_empresa = empresa_id
 
-    # Solo pending
-    df = df[df["status"] == "pending"]
+    # Query
+    where = ["planned_date = ?", "status = 'pending'"]
+    params: list = [today_iso]
+    if scope_empresa is not None:
+        where.append("empresa_falsa = ?")
+        params.append(scope_empresa)
+    if region == "RM":
+        where.append("(region = 'RM' OR region IS NULL)")
+    elif region == "regiones":
+        where.append("region IS NOT NULL AND region <> 'RM'")
 
-    # Region filter
-    df["region"] = df.apply(lambda r: _visit_region(r.get("latitude"), r.get("longitude")), axis=1)
-    if region != "all":
-        df = df[df["region"] == region]
+    sql = f"""
+        SELECT id, title, reference, comuna, region, address,
+               patente_falsa, empresa_falsa, driver_name, current_eta_cl
+        FROM fpoc.simpli_visits
+        WHERE {" AND ".join(where)}
+    """
 
-    # Lookup de VIP titles + priority overrides
-    tids = df["tracking_id"].astype(str).unique().tolist()
-    titles = df["title"].astype(str).unique().tolist()
+    empresas_cat = {int(e["empresa_id"]): e["nombre"] for e in STATE.empresas}
+    driver_by_vid = {int(v["vehicle_id"]): v.get("driver_name") for v in STATE.vehicles_ext}
+
+    rows: list[dict] = []
+    titles: list[str] = []
+    tids: list[str] = []
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(sql, *params)
+        for r in cur.fetchall():
+            tid = str(r.id)
+            title = r.title or ""
+            rows.append({
+                "id": tid,
+                "title": title,
+                "reference": r.reference,
+                "comuna": r.comuna,
+                "region": (r.region or "regiones"),
+                "address": r.address,
+                "patente_falsa": int(r.patente_falsa) if r.patente_falsa is not None else None,
+                "empresa_falsa": int(r.empresa_falsa) if r.empresa_falsa is not None else None,
+                "driver_name": r.driver_name,
+                "current_eta_cl": r.current_eta_cl,
+            })
+            titles.append(title)
+            tids.append(tid)
+
     vip_meta: dict[str, dict] = {}  # title -> {tier, deadline_time}
     priority_map: dict[str, str] = {}
     notif_map: dict[str, dict] = {}
-    empresas_cat = {int(e["empresa_id"]): e["nombre"] for e in STATE.empresas}
-    driver_by_vid = {int(v["vehicle_id"]): v["driver_name"] for v in STATE.vehicles_ext}
 
     if tids:
         with get_conn() as cn:
             cur = cn.cursor()
-            # VIP by title (batched, with metadata)
-            for i in range(0, len(titles), 500):
-                batch = titles[i:i + 500]
+            unique_titles = list({t for t in titles if t})
+            for i in range(0, len(unique_titles), 500):
+                batch = unique_titles[i:i + 500]
                 marks = ",".join(["?"] * len(batch))
-                cur.execute(
-                    f"""
-                    SELECT match_value, tier, deadline_time
-                    FROM fpoc.vip_clients
-                    WHERE active = 1 AND match_type = 'title' AND match_value IN ({marks})
-                    """,
-                    *batch,
-                )
-                for r in cur.fetchall():
-                    vip_meta[r.match_value] = {
-                        "tier": r.tier,
-                        "deadline_time": str(r.deadline_time) if r.deadline_time else None,
-                    }
+                try:
+                    cur.execute(
+                        f"""
+                        SELECT match_value, tier, deadline_time
+                        FROM fpoc.vip_clients
+                        WHERE active = 1 AND match_type = 'title' AND match_value IN ({marks})
+                        """,
+                        *batch,
+                    )
+                    for r in cur.fetchall():
+                        vip_meta[r.match_value] = {
+                            "tier": r.tier,
+                            "deadline_time": str(r.deadline_time) if r.deadline_time else None,
+                        }
+                except Exception:  # noqa: BLE001
+                    pass
             # Priority overrides
             for i in range(0, len(tids), 500):
                 batch = tids[i:i + 500]
                 marks = ",".join(["?"] * len(batch))
-                cur.execute(
-                    f"SELECT tracking_id, priority FROM fpoc.visit_priority_overrides "
-                    f"WHERE tracking_id IN ({marks})",
-                    *batch,
-                )
-                for r in cur.fetchall():
-                    priority_map[r.tracking_id] = r.priority
+                try:
+                    cur.execute(
+                        f"SELECT tracking_id, priority FROM fpoc.visit_priority_overrides "
+                        f"WHERE tracking_id IN ({marks})",
+                        *batch,
+                    )
+                    for r in cur.fetchall():
+                        priority_map[r.tracking_id] = r.priority
+                except Exception:  # noqa: BLE001
+                    pass
             # Last notification per tracking_id
             for i in range(0, len(tids), 500):
                 batch = tids[i:i + 500]
                 marks = ",".join(["?"] * len(batch))
-                cur.execute(
-                    f"""
-                    WITH ranked AS (
-                      SELECT tracking_id, status, created_at, COUNT(*) OVER (PARTITION BY tracking_id) AS n,
-                             SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) OVER (PARTITION BY tracking_id) AS sent_n,
-                             ROW_NUMBER() OVER (PARTITION BY tracking_id ORDER BY created_at DESC) AS rn
-                      FROM fpoc.notifications_log
-                      WHERE tracking_id IN ({marks})
+                try:
+                    cur.execute(
+                        f"""
+                        WITH ranked AS (
+                          SELECT tracking_id, status, created_at,
+                                 COUNT(*) OVER (PARTITION BY tracking_id) AS n,
+                                 SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) OVER (PARTITION BY tracking_id) AS sent_n,
+                                 ROW_NUMBER() OVER (PARTITION BY tracking_id ORDER BY created_at DESC) AS rn
+                          FROM fpoc.notifications_log
+                          WHERE tracking_id IN ({marks})
+                        )
+                        SELECT tracking_id, n, sent_n, status, created_at FROM ranked WHERE rn = 1
+                        """,
+                        *batch,
                     )
-                    SELECT tracking_id, n, sent_n, status, created_at FROM ranked WHERE rn = 1
-                    """,
-                    *batch,
-                )
-                for r in cur.fetchall():
-                    notif_map[r.tracking_id] = {
-                        "count": int(r.n),
-                        "sent_count": int(r.sent_n or 0),
-                        "last_status": r.status,
-                        "last_created_at": r.created_at.isoformat(),
-                    }
+                    for r in cur.fetchall():
+                        notif_map[r.tracking_id] = {
+                            "count": int(r.n),
+                            "sent_count": int(r.sent_n or 0),
+                            "last_status": r.status,
+                            "last_created_at": r.created_at.isoformat()
+                                if hasattr(r.created_at, "isoformat") else str(r.created_at),
+                        }
+                except Exception:  # noqa: BLE001
+                    pass
 
+    now = _now_for_watchlist()
     visits: list[WatchlistVisit] = []
-    critico = alto = medio = vip_at_risk = notified = 0
+    urgent = warning = vip_at_risk = notified = 0
 
-    for _, row in df.iterrows():
-        tid = str(row["tracking_id"])
-        title = str(row["title"])
+    for row in rows:
+        tid = row["id"]
+        title = row["title"]
         vip_info = vip_meta.get(title)
         is_vip = vip_info is not None
 
-        # Filtro only_vip
         if only_vip and not is_vip:
             continue
 
         prio = priority_map.get(tid, "vip" if is_vip else "normal")
-        score, sev, reasons = _score_and_reasons(row, is_vip, prio)
-        if score < 25:
+        eta_dt = _parse_eta(row["current_eta_cl"])
+        sev, score, reasons = _compute_urgency(eta_dt, now, is_vip, prio)
+        if sev is None:
             continue
 
-        if sev == "CRITICO": critico += 1
-        elif sev == "ALTO": alto += 1
-        else: medio += 1
-        if is_vip: vip_at_risk += 1
+        if sev == "URGENT":
+            urgent += 1
+        else:
+            warning += 1
+        if is_vip:
+            vip_at_risk += 1
 
         nm = notif_map.get(tid)
-        if nm: notified += 1
+        if nm:
+            notified += 1
 
-        eid = int(row["empresa_id"]) if row.get("empresa_id") is not None else None
+        empresa_id_val = row["empresa_falsa"]
+        empresa_nombre = empresas_cat.get(empresa_id_val) if empresa_id_val is not None else None
+        vehicle_id = row["patente_falsa"]
+        eta_str: Optional[str] = None
+        if eta_dt is not None:
+            eta_str = eta_dt.strftime("%H:%M")
+        elif row["current_eta_cl"]:
+            eta_str = str(row["current_eta_cl"])[:5]
+
+        status_label = "ETA VENCIDA" if sev == "URGENT" else "EN RIESGO"
+
         visits.append(WatchlistVisit(
             tracking_id=tid,
-            vehicle_id=int(row["vehicle_id"]),
-            vehicle_name=str(row["vehicle_name"]),
-            driver_name=driver_by_vid.get(int(row["vehicle_id"]), f"Driver {row['vehicle_id']}"),
-            empresa_id=eid,
-            empresa_nombre=empresas_cat.get(eid) if eid is not None else None,
+            vehicle_id=vehicle_id,
+            vehicle_name=f"PAT-{vehicle_id}" if vehicle_id is not None else None,
+            driver_name=row.get("driver_name") or (
+                driver_by_vid.get(int(vehicle_id)) if vehicle_id is not None else None
+            ),
+            empresa_id=empresa_id_val,
+            empresa_nombre=empresa_nombre,
             title=title,
-            address=str(row["address"]),
-            latitude=float(row["latitude"]),
-            longitude=float(row["longitude"]),
-            order=int(row["order"]),
-            window_end=str(row["window_end"]),
-            estimated_time_arrival=str(row["estimated_time_arrival"]),
-            slack_min=float(row["slack_min"]),
-            alert_slack=str(row["alert_slack"]),
-            p_fallo=float(row["p_fallo"]),
-            alert_valuedata=bool(row["alert_valuedata"]),
+            address=row.get("address"),
+            comuna=row.get("comuna"),
+            region=row.get("region") or "regiones",
+            estimated_time_arrival=eta_str,
+            status_label=status_label,
             is_vip=is_vip,
             vip_tier=(vip_info or {}).get("tier"),
             vip_deadline_time=(vip_info or {}).get("deadline_time"),
             priority=prio,
-            urgency_score=round(score, 1),
+            urgency_score=score,
             severity=sev,
             reasons=reasons,
-            region=str(row.get("region", "regiones")),
             notif=NotifInline(**nm) if nm else None,
         ))
 
-    # Ordenar por urgencia desc
     visits.sort(key=lambda v: v.urgency_score, reverse=True)
 
     return WatchlistResponse(
         summary=WatchlistSummary(
             total=len(visits),
-            critico=critico, alto=alto, medio=medio,
+            urgent=urgent,
+            warning=warning,
             vip_at_risk=vip_at_risk,
             notified=notified,
             not_notified=len(visits) - notified,

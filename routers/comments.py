@@ -1041,39 +1041,23 @@ def _persist_and_dispatch_comment(
     alertable, severity = _resolve_alert_config(motivo, empresa_id)
     region = _visit_region(meta.get("latitude"), meta.get("longitude"))
 
-    from core.db import backend as db_backend
     with get_conn() as cn:
         cur = cn.cursor()
-        if db_backend() == "sqlserver":
-            # OUTPUT INSERTED.comment_id es 100% confiable con pyodbc;
-            # SCOPE_IDENTITY() en cur.execute separado a veces devuelve NULL.
-            cur.execute(
-                """
-                INSERT INTO fpoc.visit_comments
-                  (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
-                OUTPUT INSERTED.comment_id
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                tracking_id, vehicle_id, empresa_id,
-                motivo, comentario, user_id, region,
-            )
-            new_id_row = cur.fetchone()
-            new_id = int(new_id_row[0]) if new_id_row else None
-            cn.commit()
-        else:
-            cur.execute(
-                """
-                INSERT INTO fpoc.visit_comments
-                  (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                tracking_id, vehicle_id, empresa_id,
-                motivo, comentario, user_id, region,
-            )
-            cur.execute("SELECT last_insert_rowid()")
-            new_id_row = cur.fetchone()
-            new_id = int(new_id_row[0]) if new_id_row and new_id_row[0] else None
-            cn.commit()
+        # OUTPUT INSERTED.comment_id es 100% confiable con pyodbc;
+        # SCOPE_IDENTITY() en cur.execute separado a veces devuelve NULL.
+        cur.execute(
+            """
+            INSERT INTO fpoc.visit_comments
+              (tracking_id, vehicle_id, empresa_id, motivo, comentario, created_by, region)
+            OUTPUT INSERTED.comment_id
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            tracking_id, vehicle_id, empresa_id,
+            motivo, comentario, user_id, region,
+        )
+        new_id_row = cur.fetchone()
+        new_id = int(new_id_row[0]) if new_id_row else None
+        cn.commit()
 
         if new_id is None:
             raise HTTPException(500, "no se pudo obtener comment_id tras INSERT")

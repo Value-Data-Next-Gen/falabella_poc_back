@@ -1,23 +1,20 @@
 """Plan diario: vista jerárquica Empresa → Ruta → Visitas ordenadas.
 
-Sprint 6: la respuesta default lee del dataset REAL `fpoc_simpli_visits`.
-El cliente Falabella reportó que veía datos sintéticos del pipeline ML (~120
-visitas/día) en vez del dataset real (~350+/día). Plan operativo ahora usa la
-data real; el modelo XGB sigue entrenando con sintéticos pero solo se aplica a
-las vistas analíticas (Watchlist, ModelPanel).
+Fuente única (post Fase-2 MVP refactor): `fpoc.simpli_visits`.
 
 Sprint 2: la respuesta agrupa por Empresa → Rutas → Visitas con orden y
 progreso. Sprint 6 cambia la entidad ruta a `ruta_id` (R-YYYYMMDD-NNN).
 
-Compat: ?legacy=true devuelve la forma vieja (Empresa → Drivers vía snapshot
-sintético). ?source=synthetic mantiene el comportamiento previo (snapshot_df).
+Modo compat `?legacy=true` devuelve la forma vieja (Empresa → Drivers → Visits),
+también leyendo de DB real (antes caía a snapshot sintético del modelo XGB
+ahora eliminado).
 
 Filtros:
   empresa_id   : admin/ops puede filtrar (transport_manager fixed a su empresa)
   region       : 'all' | 'RM' | 'regiones' (lee columna `region` del dataset)
   only_vip     : true => solo visitas que matchean fpoc_vip_clients
   planned_date : opcional 'YYYY-MM-DD' (default: STATE.today, o MAX si no existe)
-  source       : 'real' (default) | 'synthetic' (snapshot_df)
+  source       : solo 'real' (el modo 'synthetic' quedó eliminado en Fase 2)
 
 Salida (estructura nueva Sprint 6):
   empresas[].rutas[] => { ruta_id, patente, driver_name, region, ct, ... }
@@ -41,9 +38,62 @@ from core.cache import ttl_cached
 from routers.comments import _visit_region
 from core.db import get_conn
 from core.state import STATE
-from sims.driver_sim import COMUNA_CENTROIDS, DEFAULT_LATLON
 
 router = APIRouter(prefix="/api/plan-diario", tags=["plan-diario"])
+
+# Centroides aproximados (lat, lon) por comuna. Para fallback visual del mapa
+# cuando fpoc.simpli_visits no trae lat/lon discretos (sólo comuna/region).
+# Migrado desde el extinto sims.driver_sim como parte del refactor MVP Fase 2.
+COMUNA_CENTROIDS = {
+    # RM
+    "Santiago": (-33.4489, -70.6693),
+    "Santiago Centro": (-33.4489, -70.6693),
+    "Las Condes": (-33.4137, -70.5807),
+    "Providencia": (-33.4313, -70.6093),
+    "Ñuñoa": (-33.4565, -70.5944),
+    "Maipú": (-33.5111, -70.7580),
+    "Puente Alto": (-33.6111, -70.5755),
+    "La Florida": (-33.5226, -70.5984),
+    "Vitacura": (-33.3892, -70.5734),
+    "Lo Barnechea": (-33.3517, -70.5169),
+    "La Reina": (-33.4474, -70.5400),
+    "Peñalolén": (-33.4860, -70.5333),
+    "Peñalolen": (-33.4860, -70.5333),
+    "Macul": (-33.4860, -70.5944),
+    "San Miguel": (-33.4986, -70.6543),
+    "Quilicura": (-33.3589, -70.7290),
+    "San Bernardo": (-33.5917, -70.7000),
+    "La Cisterna": (-33.5325, -70.6644),
+    "El Bosque": (-33.5614, -70.6743),
+    "La Pintana": (-33.5878, -70.6342),
+    "Independencia": (-33.4189, -70.6645),
+    "Recoleta": (-33.4070, -70.6440),
+    "Estación Central": (-33.4569, -70.6886),
+    "Cerrillos": (-33.4953, -70.7106),
+    "Pudahuel": (-33.4400, -70.7700),
+    "Renca": (-33.4081, -70.7264),
+    "Lo Espejo": (-33.5256, -70.6878),
+    "San Joaquín": (-33.4956, -70.6308),
+    "Huechuraba": (-33.3625, -70.6403),
+    "Conchalí": (-33.3837, -70.6700),
+    "Quinta Normal": (-33.4286, -70.7000),
+    "Lo Prado": (-33.4444, -70.7261),
+    "Cerro Navia": (-33.4192, -70.7375),
+    "Pedro Aguirre Cerda": (-33.4892, -70.6711),
+    # Regiones
+    "Valparaíso": (-33.0472, -71.6127),
+    "Viña del Mar": (-33.0153, -71.5500),
+    "Concepción": (-36.8201, -73.0444),
+    "Talcahuano": (-36.7250, -73.1153),
+    "Temuco": (-38.7359, -72.5904),
+    "La Serena": (-29.9027, -71.2519),
+    "Coquimbo": (-29.9534, -71.3436),
+    "Antofagasta": (-23.6500, -70.4000),
+    "Talca": (-35.4264, -71.6553),
+    "Rancagua": (-34.1708, -70.7444),
+    "Curicó": (-34.9847, -71.2394),
+}
+DEFAULT_LATLON = (-33.4489, -70.6693)  # Santiago
 
 
 _COMUNA_LATLON_BY_LOWER = {k.lower(): v for k, v in COMUNA_CENTROIDS.items()}
@@ -569,25 +619,29 @@ def get_plan_diario(
     region: str = Query(default="all"),
     only_vip: bool = Query(default=False),
     legacy: bool = Query(default=False),
-    source: str = Query(default="real", pattern="^(real|synthetic)$"),
+    source: str = Query(default="real", pattern="^(real)$"),
     planned_date: Optional[str] = Query(default=None),
     user: CurrentUser = Depends(current_user),
 ):
+    """Plan diario. Fuente única: fpoc.simpli_visits.
+
+    Tras Fase 2 MVP refactor el modo `source=synthetic` quedó eliminado
+    (acoplado a STATE.snapshot_df que ya no existe). El query param se mantiene
+    por compat de URL pero solo acepta `real`.
+
+    Modo `legacy=true` sigue exponiendo el shape Sprint-1 (Empresa→Drivers→Visits),
+    leyendo SIEMPRE de DB real (antes caía al snapshot sintético cuando no venía
+    planned_date; ahora usa STATE.today como default).
+    """
     # Scope
     if not user.is_falabella:
         empresa_id = user.empresa_id
 
-    # Modo legacy (Sprint 1) — shape Empresa→Drivers→Visits.
-    # R8: si vino planned_date, leer de la DB real (XLSX importado). Si no,
-    # caer al snapshot sintético del simulador.
     if legacy:
-        if planned_date:
-            return _build_legacy_from_real(empresa_id, region, planned_date)
-        return _build_legacy_from_snapshot(empresa_id, region)
-
-    # Source: real (default Sprint 6) o synthetic (compat)
-    if source == "synthetic":
-        return _build_new_from_snapshot(empresa_id, region, only_vip)
+        target_date = planned_date or (STATE.today.isoformat() if STATE.today else None)
+        if not target_date:
+            raise HTTPException(503, "No hay día operativo activo (planned_date requerido)")
+        return _build_legacy_from_real(empresa_id, region, target_date)
 
     return _build_new_from_real(empresa_id, region, only_vip, planned_date)
 
@@ -889,188 +943,6 @@ def _build_new_from_real(
     )
 
 
-# =============================================================================
-# Builder: snapshot sintético (compat ?source=synthetic)
-# =============================================================================
-def _build_new_from_snapshot(
-    empresa_id: Optional[int],
-    region: str,
-    only_vip: bool,
-) -> PlanDiarioResponseNew:
-    if STATE.snapshot_df is None or STATE.today is None or STATE.sim_clock is None:
-        raise HTTPException(503, "Backend warming up")
-
-    df = STATE.snapshot_df.copy()
-    df["empresa_id"] = df["vehicle_id"].astype(int).map(STATE.vehicle_empresa_map)
-    if empresa_id is not None:
-        df = df[df["empresa_id"] == empresa_id]
-
-    df["region"] = df.apply(lambda r: _visit_region(r.get("latitude"), r.get("longitude")), axis=1)
-    if region == "RM":
-        df = df[df["region"] == "RM"]
-    elif region == "regiones":
-        df = df[df["region"] != "RM"]
-    elif region not in ("all", ""):
-        df = df[df["region"] == region]
-
-    driver_by_vid = {int(v["vehicle_id"]): v["driver_name"] for v in STATE.vehicles_ext}
-    plate_by_vid = {int(v["vehicle_id"]): v.get("plate") for v in STATE.vehicles_ext}
-
-    tids = df["tracking_id"].astype(str).unique().tolist()
-    titles = df["title"].astype(str).unique().tolist()
-
-    priority_map = _load_priority_overrides(tids)
-    vip_map = _load_vip_match(titles)
-    motivo_map = _load_last_motivo(tids)
-
-    if only_vip:
-        df = df[df["title"].astype(str).isin(set(vip_map.keys()))]
-
-    empresas_catalog = {int(e["empresa_id"]): e["nombre"] for e in STATE.empresas}
-
-    out_empresas: list[PlanEmpresaNew] = []
-    today_iso = STATE.today.isoformat()
-    today_compact = today_iso.replace("-", "")
-
-    for eid, edf in df.groupby("empresa_id"):
-        rutas_out: list[PlanRuta] = []
-        e_total = e_comp = e_pend = e_failed = e_risk = 0
-        e_red = e_vip = e_high = 0
-
-        ruta_idx = 0
-        for vid, vdf in edf.groupby("vehicle_id"):
-            ruta_idx += 1
-            ruta_id = f"R-{today_compact}-{ruta_idx:03d}"
-            vdf_sorted = vdf.sort_values("order")
-            visitas_out: list[PlanVisit] = []
-            r_red = r_vip_count = r_high = r_failed = r_risk = 0
-            for _, row in vdf_sorted.iterrows():
-                tid = str(row["tracking_id"])
-                title = str(row["title"])
-                prio, reason = priority_map.get(tid, ("normal", None))
-                vip_info = vip_map.get(title)
-                is_vip = vip_info is not None
-                vip_tier = vip_info["tier"] if is_vip else None
-                vip_deadline = vip_info["deadline_time"] if is_vip else None
-                if is_vip and prio in ("normal", "low"):
-                    prio = "vip"
-                if prio == "vip":
-                    r_vip_count += 1
-                if prio == "high":
-                    r_high += 1
-                if str(row.get("alert_slack", "")) == "RED" and row["status"] == "pending":
-                    r_red += 1
-                # synth: failed = status completed con failed=1
-                synth_failed = (row.get("status") == "completed" and bool(row.get("failed", 0)))
-                if synth_failed:
-                    r_failed += 1
-                if _is_at_risk_synth(row):
-                    r_risk += 1
-                motivo, sev = motivo_map.get(tid, (None, None))
-                lat = float(row["latitude"])
-                lon = float(row["longitude"])
-                eta = str(row.get("estimated_time_arrival", ""))
-                visitas_out.append(PlanVisit(
-                    tracking_id=tid,
-                    order=int(row["order"]),
-                    title=title,
-                    cliente_nombre=title,
-                    address=str(row.get("address", "")),
-                    comuna=str(row.get("comuna_id") or row.get("comuna") or "") or None,
-                    region="RM" if _visit_region(lat, lon) == "RM" else "regiones",
-                    latitude=lat, longitude=lon, lat=lat, lon=lon,
-                    window_start=str(row.get("window_start", "")),
-                    window_end=str(row.get("window_end", "")),
-                    planned_arrival_time=str(row.get("planned_arrival_time", "")),
-                    estimated_time_arrival=_format_eta_hhmm(eta),
-                    current_eta_cl=eta,
-                    slack_min=float(row.get("slack_min", 0.0)),
-                    alert_slack=str(row.get("alert_slack", "GREEN")),
-                    p_fallo=float(row.get("p_fallo", 0.0)),
-                    status=str(row["status"]),
-                    priority=prio,
-                    priority_reason=reason,
-                    is_vip=is_vip,
-                    vip_tier=vip_tier,
-                    vip_deadline_time=vip_deadline,
-                    alert_valuedata=bool(row.get("alert_valuedata", False)),
-                    folio=None,
-                    motivo_reportado=motivo,
-                    severity=sev,
-                ))
-            total = len(vdf_sorted)
-            comp = int((vdf_sorted["status"] == "completed").sum())
-            pend = total - comp
-            pending_visits = [v for v in visitas_out if v.status == "pending"]
-            orden_actual = pending_visits[0].order if pending_visits else None
-            progreso = (comp / total * 100.0) if total else 0.0
-
-            rutas_out.append(PlanRuta(
-                ruta_id=ruta_id,
-                vehicle_id=int(vid),
-                vehicle_name=str(vdf_sorted["vehicle_name"].iloc[0]),
-                plate=plate_by_vid.get(int(vid)),
-                patente=plate_by_vid.get(int(vid)),
-                driver_name=driver_by_vid.get(int(vid), f"Driver {vid}"),
-                region="RM",
-                ct=None,
-                next_stop_order=orden_actual,
-                orden_actual=orden_actual,
-                total_visitas=total,
-                completadas=comp,
-                pendientes=pend,
-                fallidas=r_failed,
-                en_riesgo=r_risk,
-                progreso_pct=round(progreso, 1),
-                red_visitas=r_red,
-                vip_visitas=r_vip_count,
-                high_priority=r_high,
-                visitas=visitas_out,
-            ))
-            e_total += total; e_comp += comp; e_pend += pend
-            e_failed += r_failed; e_risk += r_risk; e_red += r_red
-            e_vip += r_vip_count; e_high += r_high
-
-        out_empresas.append(PlanEmpresaNew(
-            empresa_id=int(eid),
-            empresa_nombre=empresas_catalog.get(int(eid), f"Empresa {eid}"),
-            total_visitas=e_total,
-            completadas=e_comp,
-            pendientes=e_pend,
-            fallidas=e_failed,
-            en_riesgo=e_risk,
-            red_visitas=e_red,
-            vip_visitas=e_vip,
-            high_priority=e_high,
-            rutas=rutas_out,
-        ))
-    out_empresas.sort(key=lambda e: e.empresa_id)
-    return PlanDiarioResponseNew(
-        planned_date=STATE.today.isoformat(),
-        sim_clock=STATE.sim_clock.isoformat(),
-        region=region,
-        only_vip=only_vip,
-        source="synthetic",
-        empresas=out_empresas,
-    )
-
-
-def _is_at_risk_synth(row) -> bool:
-    if row["status"] != "pending":
-        return False
-    if str(row.get("alert_slack", "")) == "RED":
-        return True
-    if bool(row.get("alert_valuedata", False)):
-        return True
-    try:
-        if float(row.get("p_fallo", 0)) >= 0.5:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    return False
-
-
-# =============================================================================
 # Builder: legacy (Sprint 1) — Empresa → Drivers → Visits, leyendo DB real.
 # Añadido en R8 para que el Copiloto (RouteOpsPanel) lea las visitas del
 # XLSX importado en lugar del snapshot sintético.
@@ -1205,106 +1077,5 @@ def _build_legacy_from_real(
     return PlanDiarioResponseLegacy(
         planned_date=planned_date,
         sim_clock=sim_clock,
-        empresas=out_empresas,
-    )
-
-
-# =============================================================================
-# Builder: legacy (Sprint 1) — Empresa → Drivers → Visits, desde snapshot
-# =============================================================================
-def _build_legacy_from_snapshot(
-    empresa_id: Optional[int],
-    region: str,
-) -> PlanDiarioResponseLegacy:
-    if STATE.snapshot_df is None or STATE.today is None or STATE.sim_clock is None:
-        raise HTTPException(503, "Backend warming up")
-    df = STATE.snapshot_df.copy()
-    df["empresa_id"] = df["vehicle_id"].astype(int).map(STATE.vehicle_empresa_map)
-    if empresa_id is not None:
-        df = df[df["empresa_id"] == empresa_id]
-    df["region"] = df.apply(lambda r: _visit_region(r.get("latitude"), r.get("longitude")), axis=1)
-    if region == "RM":
-        df = df[df["region"] == "RM"]
-    elif region == "regiones":
-        df = df[df["region"] != "RM"]
-
-    driver_by_vid = {int(v["vehicle_id"]): v["driver_name"] for v in STATE.vehicles_ext}
-    tids = df["tracking_id"].astype(str).unique().tolist()
-    titles = df["title"].astype(str).unique().tolist()
-    priority_map = _load_priority_overrides(tids)
-    vip_map = _load_vip_match(titles)
-    empresas_catalog = {int(e["empresa_id"]): e["nombre"] for e in STATE.empresas}
-
-    out_empresas: list[PlanEmpresaLegacy] = []
-    for eid, edf in df.groupby("empresa_id"):
-        drivers_out: list[PlanDriverLegacy] = []
-        e_total = e_comp = e_pend = e_red = e_vip = e_high = 0
-        for vid, vdf in edf.groupby("vehicle_id"):
-            vdf_sorted = vdf.sort_values("order")
-            visits_out: list[PlanVisitLegacy] = []
-            v_red = v_vip_count = v_high = 0
-            for _, row in vdf_sorted.iterrows():
-                tid = str(row["tracking_id"])
-                title = str(row["title"])
-                prio, reason = priority_map.get(tid, ("normal", None))
-                is_vip = title in vip_map
-                if is_vip and prio in ("normal", "low"):
-                    prio = "vip"
-                if prio == "vip":
-                    v_vip_count += 1
-                if prio == "high":
-                    v_high += 1
-                if str(row.get("alert_slack", "")) == "RED" and row["status"] == "pending":
-                    v_red += 1
-                visits_out.append(PlanVisitLegacy(
-                    tracking_id=tid,
-                    order=int(row["order"]),
-                    title=title,
-                    address=str(row.get("address", "")),
-                    latitude=float(row["latitude"]),
-                    longitude=float(row["longitude"]),
-                    window_start=str(row.get("window_start", "")),
-                    window_end=str(row.get("window_end", "")),
-                    planned_arrival_time=str(row.get("planned_arrival_time", "")),
-                    estimated_time_arrival=str(row.get("estimated_time_arrival", "")),
-                    slack_min=float(row.get("slack_min", 0.0)),
-                    alert_slack=str(row.get("alert_slack", "")),
-                    p_fallo=float(row.get("p_fallo", 0.0)),
-                    status=str(row["status"]),
-                    priority=prio,
-                    priority_reason=reason,
-                    is_vip=is_vip,
-                    alert_valuedata=bool(row.get("alert_valuedata", False)),
-                ))
-            total = int(len(vdf_sorted))
-            comp = int((vdf_sorted["status"] == "completed").sum())
-            pend = total - comp
-            drivers_out.append(PlanDriverLegacy(
-                vehicle_id=int(vid),
-                vehicle_name=str(vdf_sorted["vehicle_name"].iloc[0]),
-                driver_name=driver_by_vid.get(int(vid), f"Driver {vid}"),
-                total_visits=total,
-                completed=comp,
-                pending=pend,
-                red_visits=v_red,
-                vip_visits=v_vip_count,
-                high_priority=v_high,
-                visits=visits_out,
-            ))
-            e_total += total; e_comp += comp; e_pend += pend
-            e_red += v_red; e_vip += v_vip_count; e_high += v_high
-
-        drivers_out.sort(key=lambda d: d.vehicle_id)
-        out_empresas.append(PlanEmpresaLegacy(
-            empresa_id=int(eid),
-            nombre=empresas_catalog.get(int(eid), f"Empresa {eid}"),
-            total_visits=e_total, completed=e_comp, pending=e_pend,
-            red_visits=e_red, vip_visits=e_vip, high_priority=e_high,
-            drivers=drivers_out,
-        ))
-    out_empresas.sort(key=lambda e: e.empresa_id)
-    return PlanDiarioResponseLegacy(
-        planned_date=STATE.today.isoformat(),
-        sim_clock=STATE.sim_clock.isoformat(),
         empresas=out_empresas,
     )

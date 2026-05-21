@@ -5,7 +5,7 @@ Permite que Falabella (admin/ops) marque un registro de capacitación como
 Falabella lo confirma. Si validated_at es NULL, el registro está "pendiente
 de validación".
 
-Idempotente sqlite/sqlserver.
+Idempotente. Azure SQL único backend.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
         load_dotenv(_p)
         break
 
-from core.db import backend, get_conn  # noqa: E402
+from core.db import get_conn  # noqa: E402
 
 
 def _log(msg: str, quiet: bool) -> None:
@@ -34,9 +34,6 @@ def _log(msg: str, quiet: bool) -> None:
 
 def _column_exists(cn, table: str, column: str) -> bool:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"PRAGMA table_info({table})")
-        return any(str(r[1]).lower() == column.lower() for r in cur.fetchall())
     cur.execute(
         """SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = 'fpoc' AND TABLE_NAME = ? AND COLUMN_NAME = ?""",
@@ -45,26 +42,21 @@ def _column_exists(cn, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
-def _add_col(cn, column: str, sqlite_ddl: str, mssql_ddl: str, quiet: bool) -> None:
+def _add_col(cn, column: str, mssql_ddl: str, quiet: bool) -> None:
     if _column_exists(cn, "fpoc_driver_capacitaciones", column):
         _log(f"[skip] driver_capacitaciones.{column}", quiet)
         return
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"ALTER TABLE fpoc_driver_capacitaciones ADD COLUMN {sqlite_ddl}")
-    else:
-        cur.execute(f"ALTER TABLE fpoc.driver_capacitaciones ADD {mssql_ddl}")
+    cur.execute(f"ALTER TABLE fpoc.driver_capacitaciones ADD {mssql_ddl}")
     cn.commit()
     _log(f"[ok]   driver_capacitaciones.{column}", quiet)
 
 
 def main(quiet: bool = False) -> None:
-    _log(f"[migrate-cap-validation] backend={backend()}", quiet)
+    _log("[migrate-cap-validation] backend=sqlserver", quiet)
     with get_conn() as cn:
-        _add_col(cn, "validated_by_user_id", "validated_by_user_id INTEGER",
-                  "validated_by_user_id INT NULL", quiet)
-        _add_col(cn, "validated_at", "validated_at TIMESTAMP",
-                  "validated_at DATETIME2(0) NULL", quiet)
+        _add_col(cn, "validated_by_user_id", "validated_by_user_id INT NULL", quiet)
+        _add_col(cn, "validated_at", "validated_at DATETIME2(0) NULL", quiet)
 
 
 if __name__ == "__main__":

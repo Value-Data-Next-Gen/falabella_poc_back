@@ -10,40 +10,32 @@ Cada migración se marca como aplicada DESPUÉS de correr sin error. Si falla,
 no se marca y se reintenta en el próximo arranque. Las migraciones existentes
 ya son idempotentes (IF NOT EXISTS / IF COL_LENGTH), así que aunque corran 2
 veces no rompen nada — solo evitamos el costo de reejecutarlas.
+
+Backend único: Azure SQL. El runner solo conoce sintaxis MSSQL.
 """
 from __future__ import annotations
 
 from typing import Callable
 from loguru import logger
 
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 
 def _ensure_migrations_table() -> None:
-    """Idempotente en SQLite + Azure SQL."""
+    """Crea fpoc.schema_migrations si no existe. Idempotente."""
     with get_conn() as cn:
         cur = cn.cursor()
-        if db_backend() == "sqlserver":
-            cur.execute(
-                """
-                IF OBJECT_ID('fpoc.schema_migrations', 'U') IS NULL
-                BEGIN
-                    CREATE TABLE fpoc.schema_migrations (
-                        migration_id NVARCHAR(200) NOT NULL PRIMARY KEY,
-                        applied_at DATETIME2(0) NOT NULL DEFAULT SYSDATETIME()
-                    )
-                END
-                """
-            )
-        else:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS fpoc_schema_migrations (
-                    migration_id TEXT PRIMARY KEY,
-                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        cur.execute(
+            """
+            IF OBJECT_ID('fpoc.schema_migrations', 'U') IS NULL
+            BEGIN
+                CREATE TABLE fpoc.schema_migrations (
+                    migration_id NVARCHAR(200) NOT NULL PRIMARY KEY,
+                    applied_at DATETIME2(0) NOT NULL DEFAULT SYSDATETIME()
                 )
-                """
-            )
+            END
+            """
+        )
         cn.commit()
 
 
@@ -88,9 +80,9 @@ def apply_migration(migration_id: str, fn: Callable[[], None]) -> bool:
 
 
 def apply_all(migrations: list[tuple[str, Callable[[], None]]]) -> None:
-    """Aplica una lista [(id, fn), …] en orden, deteniéndose en el primer fallo
-    duro NO — registramos y seguimos para no bloquear el arranque por una
-    migración legacy."""
+    """Aplica una lista [(id, fn), …] en orden. No corta en fallos duros:
+    registramos y seguimos para no bloquear el arranque por una migración
+    legacy."""
     _ensure_migrations_table()
     for mid, fn in migrations:
         apply_migration(mid, fn)
@@ -110,25 +102,13 @@ def _wrap_quiet(import_path: str, func_name: str = "main") -> Callable[[], None]
     return _run
 
 
-def _wrap_sqlite_only(import_path: str, func_name: str = "main") -> Callable[[], None]:
-    """Wrapper para migraciones escritas SOLO en sintaxis SQLite (IF NOT EXISTS,
-    AUTOINCREMENT, etc.). En SQL Server las estructuras se aplican manualmente
-    una vez y este wrapper las marca como aplicadas sin ejecutar SQL — evita
-    el ruido de 'Incorrect syntax near IF' en cada arranque.
-
-    Si en algún momento se necesita correr la migración contra una DB SQL
-    Server nueva, hay que escribir la versión Azure-compatible y registrarla
-    con _wrap_quiet."""
+def _noop(_label: str) -> Callable[[], None]:
+    """Stub para migraciones que históricamente eran sqlite-only. Las tablas
+    correspondientes ya están en Azure SQL (aplicadas a mano en sprints
+    anteriores); las dejamos registradas como aplicadas para preservar la
+    secuencia numérica del registry."""
     def _run() -> None:
-        if db_backend() == "sqlserver":
-            logger.debug(f"[migration] {import_path}: sqlite-only, marcando aplicada en sqlserver")
-            return  # no-op; apply_migration marca como aplicada
-        mod = __import__(import_path, fromlist=[func_name])
-        fn = getattr(mod, func_name)
-        try:
-            fn(quiet=True)
-        except TypeError:
-            fn()
+        logger.debug(f"[migration] {_label}: no-op (sqlite-only legacy, ya aplicada a mano en Azure)")
     return _run
 
 
@@ -151,27 +131,23 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("016_day_state_r3",              _wrap_quiet("fpoc_loader.migrate_day_state_r3")),
     ("017_split_multi_region_routes", _wrap_quiet("fpoc_loader.migrate_split_multi_region_routes")),
     ("018_driver_positions",          _wrap_quiet("fpoc_loader.migrate_driver_positions")),
-    # R7: migraciones que se aplicaron manualmente en sprints anteriores y
-    # quedaron sin registrar. Están escritas en sintaxis SQLite pura
-    # (CREATE TABLE IF NOT EXISTS, AUTOINCREMENT) que SQL Server rechaza.
-    # En SQL Server las tablas ya existen aplicadas a mano → _wrap_sqlite_only
-    # las marca como aplicadas sin ejecutar SQL. En SQLite (POC local) sí se
-    # ejecutan normalmente. Evita "Incorrect syntax near IF" en cada arranque.
-    ("019_drivers_whatsapp",          _wrap_sqlite_only("fpoc_loader.migrate_drivers_whatsapp")),
-    ("020_empresa_contactos_table",   _wrap_sqlite_only("fpoc_loader.migrate_empresa_contactos")),
-    ("021_motivo_corrections",        _wrap_sqlite_only("fpoc_loader.migrate_motivo_corrections")),
-    ("022_vip_deadline",              _wrap_sqlite_only("fpoc_loader.migrate_vip_deadline")),
+    # 019..022: históricamente escritas en SQLite puro (CREATE IF NOT EXISTS,
+    # AUTOINCREMENT). En Azure SQL las tablas ya existen aplicadas a mano —
+    # las dejamos como no-op para preservar el registry numerado y evitar
+    # 'Incorrect syntax near IF' en cada arranque.
+    ("019_drivers_whatsapp",          _noop("019_drivers_whatsapp")),
+    ("020_empresa_contactos_table",   _noop("020_empresa_contactos_table")),
+    ("021_motivo_corrections",        _noop("021_motivo_corrections")),
+    ("022_vip_deadline",              _noop("022_vip_deadline")),
     # CR-012 T0.3: alert_dispatch_log + supervisor_phone_e164 en empresas.
-    # Escrita bifurcada (sqlite + sqlserver) → _wrap_quiet la ejecuta en ambos.
     ("023_alert_dispatch_phones",     _wrap_quiet("fpoc_loader.migrate_alert_dispatch")),
     # CR-013: copiloto_decisions — feedback del operador sobre sugerencias IA.
-    # Escrita bifurcada (sqlite + sqlserver) → _wrap_quiet la ejecuta en ambos.
     ("024_copiloto_decisions",        _wrap_quiet("fpoc_loader.migrate_copiloto_decisions")),
     # CR-014: activation_token + activation_used_at en users/drivers/contactos.
     # Habilita wa.me activation links (workaround del error 63112 de Meta).
     ("025_activation_tokens",         _wrap_quiet("fpoc_loader.migrate_activation_tokens")),
-    # Validator fix #1: region/comuna/ruta_id en fpoc.simpli_visits — antes
-    # vivían SOLO en _legacy/bootstrap_azure_schema.py, quedaban huérfanas
-    # para deploys Azure nuevos. No-op en SQLite (ya están en sqlite_schema.sql).
+    # Validator fix #1: region/comuna/ruta_id en fpoc.simpli_visits.
     ("026_simpli_columns",            _wrap_quiet("fpoc_loader.migrate_simpli_columns")),
+    # Fase 3 MVP: piloto controlable. Agrega sim_clock_offset_min y lat/lon.
+    ("027_sim_clock",                 _wrap_quiet("fpoc_loader.migrate_sim_clock")),
 ]

@@ -1,16 +1,15 @@
 """Agrega columnas activation_token / activation_used_at a 3 tablas.
 
 Tablas afectadas:
-  - fpoc_users
-  - fpoc_drivers
-  - fpoc_empresa_contactos
+  - fpoc.users
+  - fpoc.drivers
+  - fpoc.empresa_contactos
 
 Cada una recibe:
-  - activation_token   VARCHAR(32) NULL  (TEXT en sqlite)
-  - activation_used_at DATETIME2(0) NULL (TEXT/TIMESTAMP en sqlite)
+  - activation_token   VARCHAR(32) NULL
+  - activation_used_at DATETIME2(0) NULL
 
-Idempotente en SQLite + SQL Server: chequea INFORMATION_SCHEMA / PRAGMA antes
-de ALTER TABLE.
+Idempotente en Azure SQL: chequea INFORMATION_SCHEMA antes de ALTER TABLE.
 
 Uso manual:
     python backend/fpoc_loader/migrate_activation_tokens.py
@@ -35,9 +34,11 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
         load_dotenv(_p)
         break
 
-from core.db import backend, get_conn  # noqa: E402
+from core.db import get_conn  # noqa: E402
 
 
+# (sqlite_table_legacy, mssql_table) — mantenemos el primer elemento solo
+# para preservar el formato de logs/skips ("fpoc_users no existe (...)" etc.).
 TABLES = (
     ("fpoc_users", "users"),
     ("fpoc_drivers", "drivers"),
@@ -50,14 +51,8 @@ def _log(msg: str, quiet: bool) -> None:
         print(msg)
 
 
-def _table_exists(cn, sqlite_table: str, mssql_table: str) -> bool:
+def _table_exists(cn, mssql_table: str) -> bool:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (sqlite_table,),
-        )
-        return cur.fetchone() is not None
     cur.execute(
         """
         SELECT 1 FROM INFORMATION_SCHEMA.TABLES
@@ -68,11 +63,8 @@ def _table_exists(cn, sqlite_table: str, mssql_table: str) -> bool:
     return cur.fetchone() is not None
 
 
-def _column_exists(cn, sqlite_table: str, mssql_table: str, column: str) -> bool:
+def _column_exists(cn, mssql_table: str, column: str) -> bool:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"PRAGMA table_info({sqlite_table})")
-        return any(str(r[1]).lower() == column.lower() for r in cur.fetchall())
     cur.execute(
         """
         SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
@@ -84,39 +76,32 @@ def _column_exists(cn, sqlite_table: str, mssql_table: str, column: str) -> bool
 
 
 def _add_column(cn, sqlite_table: str, mssql_table: str, column: str,
-                sqlite_type: str, mssql_type: str, quiet: bool) -> None:
-    # Si la tabla no existe (DB recién creada sin bootstrap), nos saltamos
-    # silenciosamente — la próxima corrida tras bootstrap aplicará la columna.
-    if not _table_exists(cn, sqlite_table, mssql_table):
-        _log(f"[skip] {sqlite_table} no existe (¿bootstrap pendiente?)", quiet)
+                mssql_type: str, quiet: bool) -> None:
+    if not _table_exists(cn, mssql_table):
+        _log(f"[skip] fpoc.{mssql_table} no existe (¿bootstrap pendiente?)", quiet)
         return
-    if _column_exists(cn, sqlite_table, mssql_table, column):
-        _log(f"[skip] {sqlite_table}.{column} ya existe", quiet)
+    if _column_exists(cn, mssql_table, column):
+        _log(f"[skip] fpoc.{mssql_table}.{column} ya existe", quiet)
         return
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"ALTER TABLE {sqlite_table} ADD COLUMN {column} {sqlite_type}")
-    else:
-        cur.execute(f"ALTER TABLE fpoc.{mssql_table} ADD {column} {mssql_type} NULL")
+    cur.execute(f"ALTER TABLE fpoc.{mssql_table} ADD {column} {mssql_type} NULL")
     cn.commit()
-    _log(f"[ok]   {sqlite_table}.{column} agregada", quiet)
+    _log(f"[ok]   fpoc.{mssql_table}.{column} agregada", quiet)
 
 
 def main(quiet: bool = False) -> None:
-    _log(f"[migrate-activation-tokens] backend={backend()}", quiet)
+    _log("[migrate-activation-tokens] backend=sqlserver", quiet)
     with get_conn() as cn:
         for sqlite_table, mssql_table in TABLES:
             _add_column(
                 cn, sqlite_table, mssql_table,
                 column="activation_token",
-                sqlite_type="TEXT",
                 mssql_type="VARCHAR(32)",
                 quiet=quiet,
             )
             _add_column(
                 cn, sqlite_table, mssql_table,
                 column="activation_used_at",
-                sqlite_type="TIMESTAMP",
                 mssql_type="DATETIME2(0)",
                 quiet=quiet,
             )

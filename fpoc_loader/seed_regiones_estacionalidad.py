@@ -36,7 +36,7 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
         load_dotenv(_p)
         break
 
-from core.db import backend, get_conn  # noqa: E402
+from core.db import get_conn  # noqa: E402
 
 
 # =============================================================================
@@ -103,10 +103,6 @@ EMPRESAS_VALIDAS = [22, 23, 25, 27, 33]
 # =============================================================================
 def _column_exists(cn, table: str, column: str) -> bool:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"PRAGMA table_info({table})")
-        rows = cur.fetchall()
-        return any(r[1].lower() == column.lower() for r in rows)
     cur.execute(
         "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?",
         table.replace("fpoc_", ""), column,
@@ -573,7 +569,7 @@ def _insert_visitas_estacionalidad(cn) -> int:
 # Main
 # =============================================================================
 def main() -> int:
-    print(f"[seed-regiones-estacionalidad] backend={backend()}")
+    print("[seed-regiones-estacionalidad] backend=sqlserver")
     with get_conn() as cn:
         n_cols = _add_columns_idempotent(cn)
         n_back_geo = _backfill_region_comuna(cn)

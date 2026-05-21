@@ -12,8 +12,9 @@ from core.auth import CurrentUser, current_user
 
 
 def refresh_state_maestros() -> None:
-    """Llamar tras CRUD de drivers/vehicles/clients. Recarga el cache in-memory
-    de STATE para que las vistas que dependen del snapshot vean los cambios."""
+    """Llamar tras CRUD de drivers/vehicles/clients. Recarga el cache de lookup
+    en STATE para que los handlers que dependen de STATE.drivers / STATE.vehicles_ext
+    vean los cambios sin esperar a un restart."""
     try:
         from core.state import STATE
         STATE.reload_maestros()

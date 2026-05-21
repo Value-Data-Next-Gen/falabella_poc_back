@@ -371,133 +371,9 @@ def list_imports(_: CurrentUser = Depends(current_user)) -> list[ImportLogRow]:
     return out
 
 
-@router.post("/api/planificacion/import-mock", response_model=ImportMockResponse)
-def import_mock(
-    fecha: Optional[str] = None,
-    force: bool = False,
-    user: CurrentUser = Depends(current_user),
-) -> ImportMockResponse:
-    """Importa visitas mock para una fecha y las persiste en fpoc_simpli_visits.
-
-    - `fecha`: 'YYYY-MM-DD'. Default: STATE.today si existe, sino hoy.
-    - `force=true`: re-importar aunque la fecha ya esté cargada (para demos
-      destructivas).
-
-    Idempotencia: marker en `fpoc_planificacion_imports`. Si ya hay para la
-    fecha, devuelve `already_imported=true` + el count anterior, sin duplicar.
-    """
-    from datetime import date as _date_cls
-    from core.state import STATE
-    if fecha:
-        try:
-            target_date = _date_cls.fromisoformat(fecha)
-        except ValueError:
-            raise HTTPException(400, f"fecha inválida: {fecha} (esperado YYYY-MM-DD)")
-    else:
-        target_date = getattr(STATE, "today", None) or _date_cls.today()
-
-    # Chequeo idempotencia
-    with get_conn() as cn:
-        cur = cn.cursor()
-        cur.execute(
-            "SELECT count, imported_at FROM fpoc_planificacion_imports WHERE fecha = ?",
-            (target_date.isoformat(),),
-        )
-        existing = cur.fetchone()
-
-    if existing and not force:
-        prev_count = int(existing[0])
-        prev_at = str(existing[1]) if existing[1] else "?"
-        conflicts_existing = _check_dotacion_conflicts(target_date.isoformat())
-        return ImportMockResponse(
-            ok=True,
-            count=prev_count,
-            fecha=target_date.isoformat(),
-            already_imported=True,
-            message=f"Ya cargaste el día {target_date.isoformat()} ({prev_count} visitas, {prev_at}). Mandá ?force=true para re-importar.",
-            conflicts=conflicts_existing,
-        )
-
-    # Importación real: usamos el live_generator (sintetiza visitas con todos
-    # los campos que requiere fpoc_simpli_visits, drivers de fpoc_drivers).
-    # Antes de insertar, limpiamos las visitas existentes para esa fecha así
-    # los drivers ficticios del seed inicial no se mezclan con los reales y el
-    # match driver↔visita queda 1:1.
-    try:
-        from sims.live_generator import _insert_batch
-        import random
-        n = random.randint(180, 320)
-        with get_conn() as cn:
-            cur = cn.cursor()
-            cur.execute("DELETE FROM fpoc_simpli_visits WHERE planned_date = ?", (target_date.isoformat(),))
-            deleted = cur.rowcount or 0
-            cn.commit()
-            inserted = _insert_batch(cn, target_date, n)
-            cur = cn.cursor()
-            # Upsert portátil sqlite/sqlserver: chequear primero, INSERT o UPDATE.
-            # ON CONFLICT es sqlite-only; MERGE es T-SQL. Esta forma anda en ambos.
-            cur.execute(
-                "SELECT 1 FROM fpoc_planificacion_imports WHERE fecha = ?",
-                (target_date.isoformat(),),
-            )
-            if cur.fetchone():
-                cur.execute(
-                    """UPDATE fpoc_planificacion_imports
-                          SET count = ?, imported_at = CURRENT_TIMESTAMP,
-                              imported_by_user_id = ?
-                        WHERE fecha = ?""",
-                    (inserted, user.user_id, target_date.isoformat()),
-                )
-            else:
-                cur.execute(
-                    """INSERT INTO fpoc_planificacion_imports
-                            (fecha, count, imported_by_user_id)
-                         VALUES (?, ?, ?)""",
-                    (target_date.isoformat(), inserted, user.user_id),
-                )
-            cn.commit()
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, f"Error importando: {e}")
-
-    msg = f"Importadas {inserted} visitas para {target_date.isoformat()}"
-    if deleted:
-        msg += f" (reemplazadas {deleted} visitas previas)"
-
-    # Si la fecha importada es la del simulador, refrescar el snapshot ML para
-    # que la analitica vea las visitas nuevas al instante.
-    try:
-        from core.state import STATE
-        if STATE.today and target_date.isoformat() == STATE.today.isoformat():
-            STATE.reset_day(start_date=target_date, day_seed=STATE.day_seed)
-            msg += f" (snapshot ML refrescado a {len(STATE.snapshot_df) if STATE.snapshot_df is not None else 0} visitas)"
-    except Exception:  # noqa: BLE001
-        pass
-
-    # CUADRATURA: pausar el live_generator para que no siga inyectando filas
-    # al planned_date recién importado. Antes esto causaba que las 288 visitas
-    # subidas se inflaran a 700+ luego de unos minutos.
-    try:
-        from core.state import STATE as _STATE
-        if _STATE.today and target_date.isoformat() == _STATE.today.isoformat():
-            from sims.live_generator import STATE as LIVE_STATE
-            if LIVE_STATE.enabled:
-                LIVE_STATE.enabled = False
-                msg += " · live_generator pausado (cuadratura)"
-    except Exception:  # noqa: BLE001
-        pass
-
-    conflicts = _check_dotacion_conflicts(target_date.isoformat())
-    if conflicts:
-        msg += f" · ⚠ {len(conflicts)} driver(s)/vehículo(s) marcados no operables"
-
-    return ImportMockResponse(
-        ok=True,
-        count=inserted,
-        fecha=target_date.isoformat(),
-        already_imported=False,
-        message=msg,
-        conflicts=conflicts,
-    )
+# Fase 2 MVP: endpoint `/api/planificacion/import-mock` removido.
+# Dependía de sims.live_generator._insert_batch (eliminado). La carga de visitas
+# ahora se hace exclusivamente via `/api/planificacion/import-xlsx`.
 
 
 class ImportXlsxResponse(BaseModel):
@@ -719,16 +595,12 @@ async def import_xlsx(
                 )
         cn.commit()
 
-    # Pausar live_gen si STATE.today coincide con alguna fecha
-    paused = False
+    # Fase 2 MVP: ya no existe live_generator. Si STATE.today coincide con alguna
+    # fecha, refrescamos STATE.today para mantener el cache de lookup alineado.
     try:
         from core.state import STATE
         if STATE.today and STATE.today.isoformat() in fechas:
-            from sims.live_generator import STATE as LIVE_STATE
-            if LIVE_STATE.enabled:
-                LIVE_STATE.enabled = False
-                paused = True
-            STATE.reset_day(start_date=STATE.today, day_seed=getattr(STATE, "day_seed", 42))
+            STATE.today = STATE.today  # idempotente; placeholder por si futuro refresh
     except Exception:  # noqa: BLE001
         pass
 
@@ -741,8 +613,6 @@ async def import_xlsx(
         msg += f" · {geo_count} suborders geo"
     if deduped:
         msg += f" · {deduped} duplicados omitidos"
-    if paused:
-        msg += " · live_gen pausado"
     if conflicts:
         msg += f" · ⚠ {len(conflicts)} conflictos de dotación"
 
@@ -778,14 +648,18 @@ def start_day(
 ) -> StartDayResponse:
     """Marca el comienzo del día operativo en la fecha indicada.
 
-    - Detiene el live_generator (deja de inyectar visitas al planned_date).
-    - Si reset_status=true (default): resetea status='pending' + limpia checkouts
-      en todas las visitas del día. Crucial porque el import-mock las trae con
-      status=completed/failed (datos sintéticos para ML); para operar el día
-      tienen que arrancar como pending.
-    - Setea STATE.today = fecha y refresca el snapshot ML/in-memory.
-    - Cuenta visitas reales en fpoc.simpli_visits para esa fecha (cuadratura).
+    Fase 2 MVP: ya no hay live_generator que pausar ni snapshot ML que refrescar.
+    El endpoint solo:
+    - Si reset_status=true (default): pasa todas las visitas a status='pending'
+      y limpia checkouts (comment/observation). Si la importación quedó con
+      visitas pre-completadas (datos sintéticos legacy), esto las pone listas
+      para operar.
+    - Setea STATE.today = fecha (placeholder de día operativo activo).
+    - Cuenta visitas en fpoc.simpli_visits para esa fecha (cuadratura).
     - Devuelve conflictos de dotación pendientes.
+
+    `live_gen_paused` y `snapshot_size` quedan con valores estables (False y 0)
+    para no romper el contrato del frontend mientras se migra.
     """
     if not user.is_falabella:
         raise HTTPException(403, "Solo admin/ops puede iniciar el día")
@@ -795,19 +669,7 @@ def start_day(
     except ValueError:
         raise HTTPException(400, f"fecha inválida: {fecha}")
 
-    # Pausar live_gen
-    paused = False
-    try:
-        from sims.live_generator import STATE as LIVE_STATE
-        if LIVE_STATE.enabled:
-            LIVE_STATE.enabled = False
-            paused = True
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Reset status del día a pending (para arrancar limpio).
-    # checkout_cl es NOT NULL en el schema; solo limpiamos los nullable
-    # (comment, observation). El status es la fuente de verdad operativa.
+    paused = False  # Compat: ya no hay live_gen
     visitas_reset = 0
     if reset_status:
         try:
@@ -827,16 +689,14 @@ def start_day(
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[start-day] reset status fallo: {e}")
 
-    # Setear STATE.today + refrescar snapshot
-    snapshot_size = 0
+    snapshot_size = 0  # Compat post-Fase-2 MVP
     state_today_iso: Optional[str] = None
     try:
         from core.state import STATE
-        STATE.reset_day(start_date=target, day_seed=getattr(STATE, "day_seed", 42))
-        state_today_iso = STATE.today.isoformat() if STATE.today else None
-        snapshot_size = len(STATE.snapshot_df) if STATE.snapshot_df is not None else 0
+        STATE.today = target
+        state_today_iso = STATE.today.isoformat()
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"[start-day] reset_day fallo: {e}")
+        logger.warning(f"[start-day] STATE.today set fallo: {e}")
 
     # Contar visitas
     visitas = 0
@@ -882,8 +742,6 @@ def start_day(
     msg_parts = [f"Día {fecha} iniciado", f"{visitas} visitas en DB"]
     if visitas_reset:
         msg_parts.append(f"{visitas_reset} reseteadas a pending")
-    if paused:
-        msg_parts.append("live_gen pausado")
     if conflicts:
         msg_parts.append(f"⚠ {len(conflicts)} conflictos de dotación")
 
@@ -981,15 +839,13 @@ def day_status(
 
     conflicts = _check_dotacion_conflicts(fecha) if user.is_falabella else []
 
-    # STATE.today + live_gen
+    # STATE.today (post Fase-2 MVP: live_gen eliminado, queda False permanente)
     is_state_today = False
     live_gen_running = False
     try:
         from core.state import STATE
         if STATE.today and STATE.today.isoformat() == fecha:
             is_state_today = True
-        from sims.live_generator import STATE as LIVE_STATE
-        live_gen_running = bool(LIVE_STATE.enabled)
     except Exception:  # noqa: BLE001
         pass
 

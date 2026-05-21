@@ -5,20 +5,16 @@ fpoc.vip_clients (que es el registry permanente). Si vip_marked_here=1
 significa que ese día se decidió marcarlo como VIP (info redundante con
 vip_clients pero útil para auditoría de qué se decidió en cada jornada).
 
-Idempotente. No-op en SQLite (esquema espejo se crea solo si DB_BACKEND=sqlite).
+Idempotente. Azure SQL es el único backend soportado.
 """
 from __future__ import annotations
 
 from loguru import logger
 
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 
 def main(quiet: bool = False) -> None:
-    if db_backend() != "sqlserver":
-        if not quiet:
-            logger.info("[client-day-notes] backend no-mssql, skip")
-        return
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(

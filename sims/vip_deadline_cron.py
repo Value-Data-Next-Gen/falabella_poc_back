@@ -1,18 +1,21 @@
-"""Cron VIP deadline checker.
+"""Cron VIP deadline checker (post Fase-2 MVP refactor).
 
 Cada 60s:
-  - Carga sim_clock actual desde STATE
+  - Carga sim_clock actual desde STATE (fallback UTC now)
   - Para cada VIP activa con deadline_time IS NOT NULL:
-      - Encuentra visitas pending del día actual que matcheen el VIP
-      - Si now >= (deadline_time - alert_minutes_before)
+      - Encuentra visitas pending de la fecha activa que matcheen el VIP
+        (match_type=title|customer_id|reference) — consultando fpoc.simpli_visits
+      - Si sim_clock >= (deadline_time - alert_minutes_before)
         Y (last_alert_sent_at IS NULL O last_alert_sent_at < hoy):
           - emite evento `vip_deadline_warning`
           - dispara WhatsApp via dispatcher unificado (admin + manager empresa
             + contactos opt-in con filtros)
-          - update fpoc_vip_clients.last_alert_sent_at = now()
+          - update fpoc.vip_clients.last_alert_sent_at = now()
 
-Registrado desde main.py:lifespan con APScheduler interval 60s (jobs adicional al
-existente, mismo scheduler).
+Tras Fase 2: ya no leemos STATE.snapshot_df (eliminado junto con el modelo ML).
+La fuente es la tabla real `fpoc.simpli_visits`.
+
+Registrado desde main.py:lifespan con APScheduler interval 60s.
 """
 from __future__ import annotations
 
@@ -39,36 +42,10 @@ def _parse_hhmm(value: str, base_date: date) -> Optional[datetime]:
         return None
 
 
-def _matching_visits_for_vip(df, vip: dict) -> list:
-    """Devuelve lista de filas (dict-like) del snapshot que matchean al VIP."""
-    mt = vip["match_type"]
-    mv = vip["match_value"]
-    eid = vip.get("empresa_id")
-    sub = df
-    # Scope por empresa si VIP no es global
-    if eid is not None:
-        sub = sub[sub["empresa_id"] == eid]
-    if mt == "title":
-        sub = sub[sub["title"].astype(str) == str(mv)]
-    elif mt == "customer_id":
-        # snapshot_df no siempre trae customer_id; best-effort por columna si existe
-        if "customer_id" in sub.columns:
-            sub = sub[sub["customer_id"].astype(str) == str(mv)]
-        else:
-            return []
-    elif mt == "reference":
-        if "reference" in sub.columns:
-            sub = sub[sub["reference"].astype(str) == str(mv)]
-        else:
-            return []
-    return [row for _, row in sub.iterrows()]
-
-
 def _last_alert_is_today(last_str: Optional[str], today: date) -> bool:
     if not last_str:
         return False
     try:
-        # SQLite stores as string "YYYY-MM-DD HH:MM:SS"
         if "T" in last_str:
             d = datetime.fromisoformat(last_str)
         else:
@@ -76,23 +53,6 @@ def _last_alert_is_today(last_str: Optional[str], today: date) -> bool:
         return d.date() == today
     except Exception:  # noqa: BLE001
         return False
-
-
-def _build_warning_body(*, cliente: str, deadline: str, mins_left: int,
-                       plate: Optional[str], transporte: Optional[str],
-                       tracking_id: str, eta: str, slack: float) -> str:
-    veh_line = transporte or "—"
-    if plate:
-        veh_line = f"{plate} ({transporte or '—'})"
-    return (
-        f"⏰ ALERTA VIP DEADLINE\n"
-        f"Cliente: {cliente}\n"
-        f"Llegar antes de: {deadline}\n"
-        f"Quedan: {mins_left} min\n"
-        f"Vehículo: {veh_line}\n"
-        f"ETA actual: {eta or '—'}  ·  Slack: {slack:+.0f} min\n"
-        f"Tracking: {tracking_id}"
-    )
 
 
 _VIP_SCHEMA_FIXED = False
@@ -108,10 +68,6 @@ def _ensure_vip_columns() -> None:
     if _VIP_SCHEMA_FIXED:
         return
     try:
-        from core.db import backend
-        if backend() != "sqlserver":
-            _VIP_SCHEMA_FIXED = True
-            return
         cols = [
             ("deadline_time", "NVARCHAR(8) NULL"),
             ("alert_minutes_before", "INT NOT NULL CONSTRAINT DF_vip_alert_min DEFAULT 60 WITH VALUES"),
@@ -139,17 +95,107 @@ def _ensure_vip_columns() -> None:
         logger.warning(f"[vip-deadline] auto-migracion fallo (reintenta despues): {e}")
 
 
+def _matching_visits_for_vip(today_iso: str, vip: dict) -> list[dict]:
+    """Lee fpoc.simpli_visits para encontrar visitas pending que matcheen al VIP.
+
+    Match types soportados (consistente con fpoc.vip_clients.match_type):
+      - "title"       → simpli_visits.title
+      - "customer_id" → fpoc.simpli_visits no tiene customer_id; devolvemos []
+      - "reference"   → simpli_visits.reference
+
+    Scope:
+      - planned_date = today_iso
+      - status = 'pending'
+      - empresa_falsa = vip.empresa_id (si VIP no es global)
+    """
+    mt = vip["match_type"]
+    mv = vip["match_value"]
+    eid = vip.get("empresa_id")
+
+    if mt == "title":
+        column = "title"
+    elif mt == "reference":
+        column = "reference"
+    else:
+        # customer_id u otro no soportado en simpli_visits
+        return []
+
+    sql_parts = [
+        f"SELECT id, title, reference, comuna, region, address,",
+        "       patente_falsa, driver_name, empresa_falsa, current_eta_cl",
+        "FROM fpoc.simpli_visits",
+        f"WHERE planned_date = ? AND status = 'pending' AND {column} = ?",
+    ]
+    params: list = [today_iso, str(mv)]
+    if eid is not None:
+        sql_parts.append("AND empresa_falsa = ?")
+        params.append(eid)
+
+    sql = "\n".join(sql_parts)
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(sql, *params)
+            return [
+                {
+                    "id": str(r.id),
+                    "title": r.title or "",
+                    "reference": r.reference,
+                    "comuna": r.comuna,
+                    "region": r.region,
+                    "address": r.address,
+                    "patente_falsa": int(r.patente_falsa) if r.patente_falsa is not None else None,
+                    "driver_name": r.driver_name,
+                    "empresa_falsa": int(r.empresa_falsa) if r.empresa_falsa is not None else None,
+                    "current_eta_cl": str(r.current_eta_cl) if r.current_eta_cl else None,
+                }
+                for r in cur.fetchall()
+            ]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vip-deadline] query visits falló (vip_id={vip.get('vip_id')}): {e}")
+        return []
+
+
+def _eta_to_hhmm(eta_raw: Optional[str]) -> str:
+    if not eta_raw:
+        return "—"
+    s = str(eta_raw)
+    if " " in s:
+        return s.split(" ", 1)[1][:5]
+    if "T" in s:
+        return s.split("T", 1)[1][:5]
+    return s[:5]
+
+
+def _mins_remaining(deadline_dt: datetime, sim_clock: datetime) -> int:
+    delta = (deadline_dt - sim_clock).total_seconds() // 60
+    return max(0, int(delta))
+
+
+def _build_warning_body(*, cliente: str, deadline: str, mins_left: int,
+                       plate: Optional[str], transporte: Optional[str],
+                       tracking_id: str, eta: str) -> str:
+    veh_line = transporte or "—"
+    if plate:
+        veh_line = f"{plate} ({transporte or '—'})"
+    return (
+        f"ALERTA VIP DEADLINE\n"
+        f"Cliente: {cliente}\n"
+        f"Llegar antes de: {deadline}\n"
+        f"Quedan: {mins_left} min\n"
+        f"Vehiculo: {veh_line}\n"
+        f"ETA actual: {eta or '—'}\n"
+        f"Tracking: {tracking_id}"
+    )
+
+
 def check_vip_deadlines() -> dict:
     """Función pública del cron. Devuelve resumen para logs/health."""
     _ensure_vip_columns()
-    if STATE.snapshot_df is None or STATE.sim_clock is None or STATE.today is None:
-        return {"checked": 0, "fired": 0, "skipped_warmup": True}
 
-    sim_clock: datetime = STATE.sim_clock
-    today: date = STATE.today
-
-    df = STATE.snapshot_df.copy()
-    df["empresa_id"] = df["vehicle_id"].astype(int).map(STATE.vehicle_empresa_map)
+    sim_clock: datetime = STATE.sim_clock or datetime.utcnow()
+    today: date = STATE.today or date.today()
+    today_iso = today.isoformat()
 
     vips: list[dict] = []
     try:
@@ -197,30 +243,27 @@ def check_vip_deadlines() -> dict:
 
         if sim_clock < alert_dt:
             continue
-        # Pasamos el umbral. Buscar visitas pending matching, no completadas.
-        matches = _matching_visits_for_vip(df, vip)
-        # solo pending
-        matches = [r for r in matches if str(r["status"]) == "pending"]
+
+        matches = _matching_visits_for_vip(today_iso, vip)
         if not matches:
             continue
 
         checked += 1
-        mins_left = max(0, int((deadline_dt - sim_clock).total_seconds() // 60))
+        mins_left = _mins_remaining(deadline_dt, sim_clock)
 
         for row in matches:
-            tid = str(row["tracking_id"])
-            cliente = str(row["title"])
-            vehicle_id = int(row["vehicle_id"])
-            plate = plate_by_vid.get(vehicle_id)
-            vehicle_name = str(row.get("vehicle_name", ""))
-            empresa_id = STATE.vehicle_empresa_map.get(vehicle_id) if vip["empresa_id"] is None else vip["empresa_id"]
-            eta = str(row.get("estimated_time_arrival", ""))[:5]
-            slack = float(row.get("slack_min", 0.0))
+            tid = row["id"]
+            cliente = row["title"]
+            vehicle_id = row["patente_falsa"]
+            plate = plate_by_vid.get(int(vehicle_id)) if vehicle_id is not None else None
+            vehicle_name = f"PAT-{vehicle_id}" if vehicle_id is not None else "—"
+            empresa_id = row["empresa_falsa"] if vip["empresa_id"] is None else vip["empresa_id"]
+            eta = _eta_to_hhmm(row["current_eta_cl"])
 
-            # Evento siempre
+            # Evento siempre (sirve al panel de Alertas Vivo)
             EVENTS.emit("vip_deadline_warning", sim_clock, {
                 "tracking_id": tid,
-                "vehicle_id": vehicle_id,
+                "vehicle_id": int(vehicle_id) if vehicle_id is not None else None,
                 "vehicle_name": vehicle_name,
                 "title": cliente,
                 "deadline_time": vip["deadline_time"],
@@ -241,9 +284,11 @@ def check_vip_deadlines() -> dict:
                         transporte=vehicle_name,
                         tracking_id=tid,
                         eta=eta,
-                        slack=slack,
                     )
-                    visit_region = _visit_region(row.get("latitude"), row.get("longitude"))
+                    # _visit_region acepta (lat, lon) o (lat, lon, region_hint).
+                    # No tenemos lat/lon discretos acá; usamos region directo.
+                    region_hint = (row.get("region") or "regiones")
+                    visit_region = "RM" if region_hint == "RM" else "regiones"
                     targets, contact_ids_by_phone = _resolve_alert_targets(
                         empresa_id=empresa_id,
                         severity="critical",
@@ -252,9 +297,6 @@ def check_vip_deadlines() -> dict:
                     )
                     if targets:
                         subject_line = f"VIP deadline {vip['deadline_time']} · {cliente}"
-                        # Template Meta-approved vd_vip_deadline_v2 — 6 vars.
-                        # Fallback freeform (legacy) si no hay content_sid o el
-                        # send levanta excepción.
                         from core.twilio_templates import vip_deadline_sid
                         content_sid = vip_deadline_sid()
                         content_variables = {
@@ -263,7 +305,7 @@ def check_vip_deadlines() -> dict:
                             "3": _sanitize_template_var(mins_left) or "0",
                             "4": _sanitize_template_var(f"{plate or '—'} ({vehicle_name or '—'})") or "—",
                             "5": _sanitize_template_var(eta) or "—",
-                            "6": _sanitize_template_var(f"{slack:+.0f}") or "0",
+                            "6": _sanitize_template_var("0") or "0",  # slack obsoleto post-ML
                         }
                         used_template = False
                         if content_sid:
@@ -318,7 +360,7 @@ def check_vip_deadlines() -> dict:
 
 
 def register_cron(scheduler) -> None:
-    """Registra el job en el scheduler dado (compartido con sim-tick)."""
+    """Registra el job en el scheduler dado."""
     scheduler.add_job(
         check_vip_deadlines,
         "interval",

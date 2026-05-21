@@ -9,13 +9,12 @@ Quedaron filas legacy. Esta migración:
   2. ALTER TABLE ADD CONSTRAINT CK_empresa_contactos_rol que limita a los 4 válidos.
 
 Idempotente: chequea por nombre de la constraint antes de agregar.
-No-op en SQLite.
 """
 from __future__ import annotations
 
 from loguru import logger
 
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 
 CONSTRAINT_NAME = "CK_empresa_contactos_rol"
@@ -23,10 +22,6 @@ ALLOWED = ("jefe", "coordinador", "dispatcher", "otro")
 
 
 def main(quiet: bool = False) -> None:
-    if db_backend() != "sqlserver":
-        if not quiet:
-            logger.info("[empcontactos-rol] backend no-mssql, skip")
-        return
     with get_conn() as cn:
         cur = cn.cursor()
 

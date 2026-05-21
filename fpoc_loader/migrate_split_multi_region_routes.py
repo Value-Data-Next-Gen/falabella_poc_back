@@ -23,7 +23,7 @@ import unicodedata
 
 from loguru import logger
 
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 
 REGION_CODE = {
@@ -85,10 +85,6 @@ def _update_by_ids_chunked(cur, ids: list[int], new_rid: str) -> int:
 
 
 def main(quiet: bool = False) -> None:
-    if db_backend() != "sqlserver":
-        if not quiet:
-            logger.info("[split-routes] backend no-mssql, skip")
-        return
     with get_conn() as cn:
         cur = cn.cursor()
         cur.execute(

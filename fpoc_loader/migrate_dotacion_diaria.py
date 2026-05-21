@@ -1,10 +1,11 @@
 """Driver/vehicle ownership + daily staffing availability.
 
-Idempotent migration for both SQLite and SQL Server:
-- Adds empresa_id to drivers and vehicles.
-- Creates dotacion_diaria for day-level availability/assignment overrides.
-- Backfills empresa_id from fpoc_simpli_visits when possible, with a stable
-  round-robin fallback over active empresas.
+Migración idempotente para Azure SQL:
+- Agrega empresa_id a drivers y vehicles.
+- Crea fpoc.dotacion_diaria para overrides de disponibilidad/asignación
+  a nivel día.
+- Backfillea empresa_id desde fpoc.simpli_visits cuando es posible, con
+  fallback round-robin estable sobre las empresas activas.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ for _p in (BACKEND / ".env", BACKEND.parent / ".env"):
         load_dotenv(_p)
         break
 
-from core.db import backend, get_conn  # noqa: E402
+from core.db import get_conn  # noqa: E402
 
 
 def _log(msg: str, quiet: bool) -> None:
@@ -33,9 +34,6 @@ def _log(msg: str, quiet: bool) -> None:
 
 def _column_exists(cn, table: str, column: str) -> bool:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"PRAGMA table_info({table})")
-        return any(str(r[1]).lower() == column.lower() for r in cur.fetchall())
     schema, table_name = ("fpoc", table.replace("fpoc_", ""))
     cur.execute(
         """
@@ -48,104 +46,60 @@ def _column_exists(cn, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
-def _add_column(cn, table: str, column: str, sqlite_ddl: str, mssql_ddl: str, quiet: bool) -> None:
+def _add_column(cn, table: str, column: str, mssql_ddl: str, quiet: bool) -> None:
     if _column_exists(cn, table, column):
         _log(f"[skip] {table}.{column}", quiet)
         return
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(f"ALTER TABLE {table} ADD COLUMN {sqlite_ddl}")
-    else:
-        cur.execute(f"ALTER TABLE fpoc.{table.replace('fpoc_', '')} ADD {mssql_ddl}")
+    cur.execute(f"ALTER TABLE fpoc.{table.replace('fpoc_', '')} ADD {mssql_ddl}")
     cn.commit()
     _log(f"[ok]   {table}.{column}", quiet)
 
 
 def _ensure_dotacion_table(cn, quiet: bool) -> None:
     cur = cn.cursor()
-    if backend() == "sqlite":
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fpoc_dotacion_diaria (
-                dotacion_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                fecha              DATE     NOT NULL,
-                empresa_id         INTEGER  NOT NULL,
-                driver_id          TEXT,
-                vehicle_id         INTEGER,
-                estado             TEXT     NOT NULL DEFAULT 'disponible',
-                motivo             TEXT,
-                updated_by_user_id INTEGER,
-                created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (empresa_id) REFERENCES fpoc_empresas_transporte(empresa_id),
-                FOREIGN KEY (driver_id) REFERENCES fpoc_drivers(driver_id),
-                FOREIGN KEY (vehicle_id) REFERENCES fpoc_vehicles(vehicle_id)
-            )
-            """
-        )
-        cur.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS UX_dotacion_diaria_driver
-            ON fpoc_dotacion_diaria(fecha, empresa_id, driver_id)
+    cur.execute(
+        """
+        IF OBJECT_ID('fpoc.dotacion_diaria', 'U') IS NULL
+        BEGIN
+            CREATE TABLE fpoc.dotacion_diaria (
+                dotacion_id        INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                fecha              DATE          NOT NULL,
+                empresa_id         INT           NOT NULL,
+                driver_id          NVARCHAR(20)  NULL,
+                vehicle_id         INT           NULL,
+                estado             NVARCHAR(30)  NOT NULL DEFAULT 'disponible',
+                motivo             NVARCHAR(500) NULL,
+                updated_by_user_id INT           NULL,
+                created_at         DATETIME2(0)  NOT NULL DEFAULT SYSDATETIME(),
+                updated_at         DATETIME2(0)  NOT NULL DEFAULT SYSDATETIME()
+            );
+        END
+        """
+    )
+    cur.execute(
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_dotacion_diaria_driver')
+            CREATE UNIQUE INDEX UX_dotacion_diaria_driver
+            ON fpoc.dotacion_diaria(fecha, empresa_id, driver_id)
             WHERE driver_id IS NOT NULL
-            """
-        )
-        cur.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS UX_dotacion_diaria_vehicle
-            ON fpoc_dotacion_diaria(fecha, empresa_id, vehicle_id)
+        """
+    )
+    cur.execute(
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_dotacion_diaria_vehicle')
+            CREATE UNIQUE INDEX UX_dotacion_diaria_vehicle
+            ON fpoc.dotacion_diaria(fecha, empresa_id, vehicle_id)
             WHERE vehicle_id IS NOT NULL
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS IX_dotacion_diaria_scope
-            ON fpoc_dotacion_diaria(fecha, empresa_id, estado)
-            """
-        )
-    else:
-        cur.execute(
-            """
-            IF OBJECT_ID('fpoc.dotacion_diaria', 'U') IS NULL
-            BEGIN
-                CREATE TABLE fpoc.dotacion_diaria (
-                    dotacion_id        INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-                    fecha              DATE          NOT NULL,
-                    empresa_id         INT           NOT NULL,
-                    driver_id          NVARCHAR(20)  NULL,
-                    vehicle_id         INT           NULL,
-                    estado             NVARCHAR(30)  NOT NULL DEFAULT 'disponible',
-                    motivo             NVARCHAR(500) NULL,
-                    updated_by_user_id INT           NULL,
-                    created_at         DATETIME2(0)  NOT NULL DEFAULT SYSDATETIME(),
-                    updated_at         DATETIME2(0)  NOT NULL DEFAULT SYSDATETIME()
-                );
-            END
-            """
-        )
-        cur.execute(
-            """
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_dotacion_diaria_driver')
-                CREATE UNIQUE INDEX UX_dotacion_diaria_driver
-                ON fpoc.dotacion_diaria(fecha, empresa_id, driver_id)
-                WHERE driver_id IS NOT NULL
-            """
-        )
-        cur.execute(
-            """
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_dotacion_diaria_vehicle')
-                CREATE UNIQUE INDEX UX_dotacion_diaria_vehicle
-                ON fpoc.dotacion_diaria(fecha, empresa_id, vehicle_id)
-                WHERE vehicle_id IS NOT NULL
-            """
-        )
-        cur.execute(
-            """
-            IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_dotacion_diaria_scope')
-                CREATE INDEX IX_dotacion_diaria_scope
-                ON fpoc.dotacion_diaria(fecha, empresa_id, estado)
-            """
-        )
+        """
+    )
+    cur.execute(
+        """
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_dotacion_diaria_scope')
+            CREATE INDEX IX_dotacion_diaria_scope
+            ON fpoc.dotacion_diaria(fecha, empresa_id, estado)
+        """
+    )
     cn.commit()
     _log("[ok]   dotacion_diaria", quiet)
 
@@ -221,10 +175,10 @@ def _backfill_empresas(cn, quiet: bool) -> None:
 
 
 def main(*, quiet: bool = False) -> int:
-    _log(f"[migrate-dotacion] backend={backend()}", quiet)
+    _log("[migrate-dotacion] backend=sqlserver", quiet)
     with get_conn() as cn:
-        _add_column(cn, "fpoc_drivers", "empresa_id", "empresa_id INTEGER", "empresa_id INT NULL", quiet)
-        _add_column(cn, "fpoc_vehicles", "empresa_id", "empresa_id INTEGER", "empresa_id INT NULL", quiet)
+        _add_column(cn, "fpoc_drivers", "empresa_id", "empresa_id INT NULL", quiet)
+        _add_column(cn, "fpoc_vehicles", "empresa_id", "empresa_id INT NULL", quiet)
         _ensure_dotacion_table(cn, quiet)
         _backfill_empresas(cn, quiet)
     return 0

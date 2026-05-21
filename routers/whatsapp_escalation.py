@@ -38,7 +38,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from core.auth import CurrentUser, current_user
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 from core.state import STATE
 
 
@@ -181,44 +181,23 @@ def _insert_dispatch(
     payload_json = json.dumps(payload, ensure_ascii=False)
     with get_conn() as cn:
         cur = cn.cursor()
-        if db_backend() == "sqlserver":
-            cur.execute(
-                """
-                INSERT INTO fpoc.alert_dispatch_log
-                  (tracking_id, type, channel, target, ruta_id, empresa_id,
-                   payload_json, created_by_user_id)
-                OUTPUT INSERTED.alert_id, INSERTED.sent_at
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                tracking_id, _DISPATCH_TYPE, _DISPATCH_CHANNEL, _DISPATCH_TARGET,
-                ruta_id, empresa_id, payload_json, user_id,
-            )
-            row = cur.fetchone()
-            if row is None:
-                cn.rollback()
-                raise HTTPException(500, "INSERT no devolvió fila")
-            dispatch_id = int(row[0])
-            sent_at_raw = row[1]
-        else:
-            cur.execute(
-                """
-                INSERT INTO fpoc.alert_dispatch_log
-                  (tracking_id, type, channel, target, ruta_id, empresa_id,
-                   payload_json, created_by_user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                tracking_id, _DISPATCH_TYPE, _DISPATCH_CHANNEL, _DISPATCH_TARGET,
-                ruta_id, empresa_id, payload_json, user_id,
-            )
-            cur.execute("SELECT last_insert_rowid()")
-            row_id = cur.fetchone()
-            dispatch_id = int(row_id[0]) if row_id and row_id[0] is not None else 0
-            cur.execute(
-                "SELECT sent_at FROM fpoc.alert_dispatch_log WHERE alert_id = ?",
-                dispatch_id,
-            )
-            row_ts = cur.fetchone()
-            sent_at_raw = row_ts[0] if row_ts else None
+        cur.execute(
+            """
+            INSERT INTO fpoc.alert_dispatch_log
+              (tracking_id, type, channel, target, ruta_id, empresa_id,
+               payload_json, created_by_user_id)
+            OUTPUT INSERTED.alert_id, INSERTED.sent_at
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tracking_id, _DISPATCH_TYPE, _DISPATCH_CHANNEL, _DISPATCH_TARGET,
+            ruta_id, empresa_id, payload_json, user_id,
+        )
+        row = cur.fetchone()
+        if row is None:
+            cn.rollback()
+            raise HTTPException(500, "INSERT no devolvió fila")
+        dispatch_id = int(row[0])
+        sent_at_raw = row[1]
         cn.commit()
 
     if isinstance(sent_at_raw, datetime):

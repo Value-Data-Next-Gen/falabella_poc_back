@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from core.db import backend as db_backend, get_conn
+from core.db import get_conn
 
 
 # (constraint_name, child_table, child_col, parent_table, parent_col, on_delete)
@@ -44,10 +44,6 @@ FKS: list[tuple[str, str, str, str, str, str]] = [
 
 
 def main(quiet: bool = False) -> None:
-    if db_backend() != "sqlserver":
-        if not quiet:
-            logger.info("[migrate-fk] backend no-mssql, skip")
-        return
     added = 0
     skipped = 0
     failed = 0
