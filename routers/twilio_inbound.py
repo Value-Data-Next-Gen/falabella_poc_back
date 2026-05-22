@@ -632,6 +632,134 @@ def _first_name(full: Optional[str], fallback: Optional[str]) -> str:
     return "tú"
 
 
+def _send_post_activation_summary(
+    *,
+    role: str,           # 'driver' | 'contact' | 'user'
+    row_id: str,
+    phone: str,
+    first_name: str,
+    sender_to: Optional[str] = None,
+) -> None:
+    """Tras ACTIVAR exitoso, envía un freeform con el resumen del rol:
+
+      - driver: "Tu ruta de hoy: N visitas. La primera: HH:MM, <cliente>"
+      - contact: "Empresa X, M drivers activos, P visitas hoy"
+      - user (admin/ops): "Vista admin: M empresas, P drivers, Q visitas hoy"
+
+    Aprovecha la ventana 24h recién abierta por el template `vd_cuenta_activada`.
+    Errores se loggean sin propagar (best-effort).
+    """
+    try:
+        from routers.notifications import send_whatsapp
+        from core.db import get_conn
+        from datetime import date as _dt
+        today = _dt.today().isoformat()
+
+        body = None
+        if role == "driver":
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT TOP 3 v.title, v.comuna, v.current_eta_cl "
+                    "FROM fpoc.simpli_visits v "
+                    "JOIN fpoc.drivers d ON d.vehicle_id = v.patente_falsa "
+                    "WHERE d.driver_id = ? AND v.planned_date = ? "
+                    "  AND LOWER(v.status) = 'pending' "
+                    "ORDER BY v.current_eta_cl ASC",
+                    row_id, today,
+                )
+                rows = cur.fetchall()
+            if rows:
+                first = rows[0]
+                eta = first[2].strftime("%H:%M") if hasattr(first[2], "strftime") else str(first[2])[11:16]
+                cliente = str(first[0] or "—")
+                comuna = str(first[1] or "")
+                comuna_part = f" ({comuna})" if comuna else ""
+                body = (
+                    f"¡Hola *{first_name}*! 👋\n\n"
+                    f"Tu ruta de hoy tiene *{len(rows)}+ visitas pendientes*.\n"
+                    f"📍 *Primera*: {cliente}{comuna_part} a las *{eta}*.\n\n"
+                    f"Mandá *'menu'* para ver opciones, *'1'* para tu ruta completa, "
+                    f"o *'2'* para tu próxima visita."
+                )
+            else:
+                body = (
+                    f"¡Hola *{first_name}*! 👋\n\n"
+                    f"Tu cuenta está activada. Cuando el equipo cargue las visitas "
+                    f"del día te aviso por acá. Mandá *'menu'* cuando quieras."
+                )
+
+        elif role == "contact":
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute(
+                    "SELECT c.nombre, c.rol, e.empresa_id, COALESCE(e.nombre,'') "
+                    "FROM fpoc.empresa_contactos c "
+                    "LEFT JOIN fpoc.empresas_transporte e ON e.empresa_id = c.empresa_id "
+                    "WHERE c.contact_id = ?",
+                    int(row_id),
+                )
+                c = cur.fetchone()
+                if not c:
+                    return
+                empresa_id = c[2]
+                empresa_nombre = str(c[3] or "tu empresa")
+                rol = str(c[1] or "manager").lower()
+                cur.execute(
+                    "SELECT COUNT(DISTINCT v.patente_falsa) AS drivers, COUNT(*) AS visitas "
+                    "FROM fpoc.simpli_visits v "
+                    "WHERE v.planned_date = ? AND v.empresa_falsa = ?",
+                    today, empresa_id,
+                )
+                r = cur.fetchone()
+                drivers = int(r[0] or 0)
+                visitas = int(r[1] or 0)
+            body = (
+                f"¡Hola *{first_name}*! 👋\n\n"
+                f"Sos *{rol}* de *{empresa_nombre}*.\n"
+                f"Hoy: *{drivers} drivers activos · {visitas} visitas* programadas.\n\n"
+                f"Vas a recibir alertas cuando un driver tenga atraso, complete entregas, "
+                f"o cuando el admin Falabella intervenga un folio de tu empresa.\n\n"
+                f"Mandá *'menu'* para consultar KPIs, alertas o buscar visitas."
+            )
+
+        elif role == "user":
+            with get_conn() as cn:
+                cur = cn.cursor()
+                cur.execute("SELECT role FROM fpoc.users WHERE user_id = ?", int(row_id))
+                r = cur.fetchone()
+                rol = str(r[0] if r else "ops")
+                cur.execute(
+                    "SELECT COUNT(DISTINCT empresa_falsa), COUNT(DISTINCT patente_falsa), COUNT(*) "
+                    "FROM fpoc.simpli_visits WHERE planned_date = ?",
+                    today,
+                )
+                r = cur.fetchone()
+                empresas = int(r[0] or 0)
+                drivers = int(r[1] or 0)
+                visitas = int(r[2] or 0)
+            role_label = "Falabella Admin" if rol == "falabella_admin" else "Falabella Ops"
+            body = (
+                f"¡Hola *{first_name}*! 👋\n\n"
+                f"Bienvenido al equipo *{role_label}*.\n"
+                f"Hoy globalmente: *{empresas} empresas · {drivers} drivers · {visitas} visitas*.\n\n"
+                f"Mandá *'menu'* para acceder a KPIs globales, alertas críticas, "
+                f"intervenciones, búsqueda por TRK y resumen por empresa."
+            )
+
+        if body:
+            send_whatsapp(
+                body=body,
+                targets=[(None, phone)],
+                subject="Bienvenida + resumen del día",
+                triggered_by="post_activation_welcome",
+                from_number=sender_to,
+            )
+            logger.info(f"[activation] welcome enviado a phone={_mask_phone(phone)} role={role}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[activation] post-activation welcome falló: {e}")
+
+
 def _send_activation_template(
     *,
     phone: str,
@@ -732,11 +860,16 @@ def _cmd_activar(
                 cn.commit()
                 logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched user_id={uid} phone={_mask_phone(phone)}")
                 first = _first_name(display_name, profile_name)
-                if _send_activation_template(
+                template_ok = _send_activation_template(
                     phone=phone, first_name=first, user_id=uid,
                     table="user_id", row_id=str(uid),
                     sender_to=sender_to,
-                ):
+                )
+                _send_post_activation_summary(
+                    role="user", row_id=str(uid),
+                    phone=phone, first_name=first, sender_to=sender_to,
+                )
+                if template_ok:
                     return None
                 return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
 
@@ -760,11 +893,16 @@ def _cmd_activar(
                 cn.commit()
                 logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched driver_id={drv_id} phone={_mask_phone(phone)}")
                 first = _first_name(name, profile_name)
-                if _send_activation_template(
+                template_ok = _send_activation_template(
                     phone=phone, first_name=first, user_id=None,
                     table="driver_id", row_id=drv_id,
                     sender_to=sender_to,
-                ):
+                )
+                _send_post_activation_summary(
+                    role="driver", row_id=drv_id,
+                    phone=phone, first_name=first, sender_to=sender_to,
+                )
+                if template_ok:
                     return None
                 return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
 
@@ -789,11 +927,16 @@ def _cmd_activar(
                 cn.commit()
                 logger.info(f"[twilio-inbound] ACTIVAR token={token_norm} matched contact_id={cid} phone={_mask_phone(phone)}")
                 first = _first_name(nombre, profile_name)
-                if _send_activation_template(
+                template_ok = _send_activation_template(
                     phone=phone, first_name=first, user_id=None,
                     table="contact_id", row_id=str(cid),
                     sender_to=sender_to,
-                ):
+                )
+                _send_post_activation_summary(
+                    role="contact", row_id=str(cid),
+                    phone=phone, first_name=first, sender_to=sender_to,
+                )
+                if template_ok:
                     return None
                 return f"✅ Cuenta activada, {first}! Mandá 'menu' para empezar."
     except Exception as e:  # noqa: BLE001
