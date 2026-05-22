@@ -124,6 +124,7 @@ from routers.copiloto import router as copiloto_router
 from routers.whatsapp_escalation import router as whatsapp_escalation_router
 from routers.admin_invitations import router as admin_invitations_router
 from routers.admin_day_notifications import router as admin_day_notifications_router
+from routers.admin_interventions import router as admin_interventions_router
 from routers.admin_pilot import router as admin_pilot_router
 from routers.operacion import router as operacion_router
 # Endpoints "legacy" sobrevivientes tras eliminar ML (system/fleet)
@@ -162,6 +163,7 @@ app.include_router(copiloto_router)
 app.include_router(whatsapp_escalation_router)
 app.include_router(admin_invitations_router)
 app.include_router(admin_day_notifications_router)
+app.include_router(admin_interventions_router)
 app.include_router(admin_pilot_router)
 app.include_router(operacion_router)
 app.include_router(system_router)

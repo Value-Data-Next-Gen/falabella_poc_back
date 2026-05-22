@@ -150,4 +150,6 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("026_simpli_columns",            _wrap_quiet("fpoc_loader.migrate_simpli_columns")),
     # Fase 3 MVP: piloto controlable. Agrega sim_clock_offset_min y lat/lon.
     ("027_sim_clock",                 _wrap_quiet("fpoc_loader.migrate_sim_clock")),
+    # Pieza #6: admin intervention sobre folios + audit table.
+    ("028_visit_interventions",       _wrap_quiet("fpoc_loader.migrate_visit_interventions")),
 ]
