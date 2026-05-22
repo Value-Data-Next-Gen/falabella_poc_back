@@ -926,10 +926,11 @@ def dispatch_visit_completed(
     hora_str = datetime.now().strftime("%H:%M")
 
     driver_notified = False
-    logger.info(
-        f"[visit-completed] filtro driver: phone={driver_phone!r} starts_plus={driver_phone.startswith('+')} "
+    _filtro_debug = (
+        f"phone_starts_plus={driver_phone.startswith('+')} "
         f"notify={driver_notify} optin_not_none={driver_optin is not None}"
     )
+    logger.info(f"[visit-completed] filtro driver: {_filtro_debug}")
     if (driver_phone.startswith("+") and driver_notify and driver_optin is not None):
         body_driver = (
             f"✅ *Entrega OK*: {cliente_label}\n"
@@ -970,7 +971,8 @@ def dispatch_visit_completed(
 
     detail = (
         f"driver_notified={driver_notified} mgrs={manager_notified} "
-        f"admins={admin_notified} ({completed_count}/{total_count})"
+        f"admins={admin_notified} ({completed_count}/{total_count}) "
+        f"[FILTRO: {_filtro_debug}]"
     )
     logger.info(f"[visit-completed] TID={tid} {detail}")
 
