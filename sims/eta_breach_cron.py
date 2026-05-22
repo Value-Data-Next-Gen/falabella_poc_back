@@ -66,7 +66,11 @@ def check_eta_breaches() -> dict:
     sim_clock = get_sim_clock(today_iso)
     threshold = sim_clock - timedelta(minutes=GRACE_MINUTES)
 
-    # Query: visitas pending con ETA vencida.
+    # Query: visitas pending con ETA vencida, ordenadas por ETA (la más antigua primero).
+    # Crítico para anti-spam: si un driver tiene múltiples visitas vencidas
+    # solo le mandamos UNA alerta (la más urgente) por ciclo. Las siguientes
+    # se procesan en los próximos ticks (cuando el driver ya resolvió la 1ra,
+    # o si sigue trabado, recién entonces priorizamos la siguiente).
     try:
         with get_conn() as cn:
             cur = cn.cursor()
@@ -81,6 +85,7 @@ def check_eta_breaches() -> dict:
                   AND LOWER(v.status) = 'pending'
                   AND v.current_eta_cl < ?
                   AND d.active = 1
+                ORDER BY v.patente_falsa, v.current_eta_cl ASC
                 """,
                 today_iso, threshold,
             )
@@ -94,22 +99,35 @@ def check_eta_breaches() -> dict:
     skipped = 0
     checked = len(rows)
 
+    # ANTI-SPAM: agrupar por driver, mandar 1 alerta por driver por ciclo.
+    # Estructura: { patente_falsa: [rows ordenados por eta asc] }
+    by_driver: dict = {}
+    for r in rows:
+        by_driver.setdefault(int(r.patente_falsa), []).append(r)
+
     # Import lazy para evitar circulares en boot.
     from routers.admin_day_notifications import dispatch_eta_breach
 
-    for r in rows:
-        tid = str(r.id)
-        if tid in alerted_today:
-            skipped += 1
+    for patente, driver_rows in by_driver.items():
+        # Buscar la primera visita aún no alertada (la más antigua).
+        target_row = None
+        for r in driver_rows:
+            tid = str(r.id)
+            if tid not in alerted_today:
+                target_row = r
+                break
+        if target_row is None:
+            # Todas las visitas vencidas de este driver ya fueron alertadas
+            # alguna vez hoy → skip silencioso. El driver tiene que resolver
+            # alguna para que volvamos a alertar sobre él.
+            skipped += len(driver_rows)
             continue
-        # Pre-validacion: driver debe tener phone E164 + notify + opt-in.
-        # dispatch_eta_breach ya valida esto pero rebienta con HTTPException;
-        # acá filtramos antes para no llenar de excepciones el log.
-        phone = (str(r.phone_e164) if r.phone_e164 else "").strip()
-        notify = bool(r.notify_whatsapp) if r.notify_whatsapp is not None else False
-        opted_in: Optional[datetime] = r.opted_in_at
+
+        tid = str(target_row.id)
+        phone = (str(target_row.phone_e164) if target_row.phone_e164 else "").strip()
+        notify = bool(target_row.notify_whatsapp) if target_row.notify_whatsapp is not None else False
+        opted_in: Optional[datetime] = target_row.opted_in_at
         if not phone or not phone.startswith("+") or not notify or opted_in is None:
-            # Igual lo marcamos como alertado para no spamear chequeos vacios.
             alerted_today.add(tid)
             skipped += 1
             continue
@@ -118,6 +136,17 @@ def check_eta_breaches() -> dict:
             alerted_today.add(tid)
             if resp.status in ("queued", "sent", "dry_run"):
                 fired += 1
+                # Las OTRAS visitas vencidas del mismo driver NO se alertan en
+                # este ciclo: solo se loggean como "skipped por anti-spam".
+                # No se agregan a alerted_today para que el próximo ciclo
+                # pueda alertar la siguiente si el driver no resolvió.
+                others = len(driver_rows) - 1
+                if others > 0:
+                    skipped += others
+                    logger.debug(
+                        f"[eta-breach] driver={target_row.driver_id} alertado TID={tid}, "
+                        f"{others} visitas vencidas adicionales suprimidas (anti-spam)"
+                    )
             else:
                 skipped += 1
                 logger.warning(
@@ -125,7 +154,6 @@ def check_eta_breaches() -> dict:
                     f"error={resp.error}"
                 )
         except Exception as e:  # noqa: BLE001
-            # No marcamos como alertado para reintentar el ciclo siguiente.
             logger.warning(f"[eta-breach] dispatch TID={tid} excepcion: {e}")
             skipped += 1
 
