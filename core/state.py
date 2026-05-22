@@ -251,10 +251,24 @@ def _read_offset(fecha_iso: str) -> int:
 
 
 def get_sim_clock(fecha: Union[date, str]) -> datetime:
-    """Sim clock para la fecha. Default: now UTC. Si hay offset manual, lo aplica."""
+    """Sim clock para la fecha en hora LOCAL Chile (naive).
+
+    El piloto inserta `simpli_visits.current_eta_cl` como datetime naive en
+    hora Chile (ej. 11:36). Si devolviéramos UTC acá, la comparación
+    sim_clock vs eta sería incoherente (4h de diferencia). Devolvemos
+    Chile time naive para que ambos vivan en la misma referencia temporal.
+    """
     fecha_iso = _to_iso_date(fecha)
     offset = _read_offset(fecha_iso)
-    return datetime.utcnow() + timedelta(minutes=offset)
+    try:
+        from zoneinfo import ZoneInfo
+        chile_now = datetime.now(ZoneInfo("America/Santiago")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001
+        # Fallback: Chile suele ser UTC-4 (verano) o UTC-3 (invierno).
+        # Usamos -4 como aproximación; el offset manual del piloto
+        # absorbe inconsistencias.
+        chile_now = datetime.utcnow() - timedelta(hours=4)
+    return chile_now + timedelta(minutes=offset)
 
 
 def advance_sim_clock(fecha: Union[date, str], minutes_delta: int) -> int:
