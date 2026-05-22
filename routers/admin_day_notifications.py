@@ -838,6 +838,99 @@ def dispatch_day_close_summary(
     )
 
 
+def dispatch_day_start_per_driver(
+    fecha: str,
+    *,
+    triggered_by: str = "day_start_auto",
+) -> dict:
+    """Cuando el día inicia (BORRADOR/VALIDADO → EN_CURSO), envía a cada driver
+    opted-in con visitas hoy un mensaje "Buenos días! Tu ruta de hoy: N visitas".
+
+    Idempotencia: usa cache in-memory por fecha. Solo broadcast 1 vez por día.
+    En operación real esto se ejecuta una sola vez (al click de "Iniciar día").
+    """
+    from routers.notifications import send_whatsapp
+
+    # Cache: { fecha: True } para no duplicar
+    if not hasattr(dispatch_day_start_per_driver, "_sent"):
+        dispatch_day_start_per_driver._sent = {}  # type: ignore[attr-defined]
+    cache = dispatch_day_start_per_driver._sent  # type: ignore[attr-defined]
+    if cache.get(fecha):
+        logger.info(f"[day-start] {fecha} ya broadcast'd antes, skip")
+        return {"drivers_notified": 0, "skipped": "already_sent"}
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        # 1) drivers opt-in con visitas pending hoy + count + ETA mínima
+        cur.execute(
+            """
+            SELECT d.driver_id, d.name, d.phone_e164, d.vehicle_id,
+                   COUNT(v.id) AS visitas, MIN(v.current_eta_cl) AS first_eta
+            FROM fpoc.drivers d
+            JOIN fpoc.simpli_visits v ON v.patente_falsa = d.vehicle_id
+            WHERE v.planned_date = ?
+              AND LOWER(v.status) = 'pending'
+              AND d.active = 1
+              AND d.phone_e164 IS NOT NULL
+              AND d.opted_in_at IS NOT NULL
+              AND d.notify_whatsapp = 1
+            GROUP BY d.driver_id, d.name, d.phone_e164, d.vehicle_id
+            """,
+            fecha,
+        )
+        rows = list(cur.fetchall())
+
+    drivers_notified = 0
+    for r in rows:
+        phone = str(r[2]).strip()
+        if not phone.startswith("+"):
+            continue
+        name = str(r[1] or "—")
+        first_name = name.split(" ")[0]
+        vehicle_id = int(r[3])
+        visitas = int(r[4] or 0)
+        first_eta_raw = r[5]
+        first_eta = first_eta_raw.strftime("%H:%M") if hasattr(first_eta_raw, "strftime") else (str(first_eta_raw)[11:16] if first_eta_raw else "—")
+        # Segunda query: nombre del cliente de la primera visita
+        first_cliente = "—"
+        try:
+            with get_conn() as cn2:
+                cur2 = cn2.cursor()
+                cur2.execute(
+                    "SELECT TOP 1 title FROM fpoc.simpli_visits "
+                    "WHERE planned_date=? AND patente_falsa=? AND LOWER(status)='pending' "
+                    "ORDER BY current_eta_cl ASC",
+                    fecha, vehicle_id,
+                )
+                rc = cur2.fetchone()
+                if rc:
+                    first_cliente = str(rc[0] or "—")
+        except Exception:  # noqa: BLE001
+            pass
+
+        body = (
+            f"☀️ ¡Buenos días, *{first_name}*!\n\n"
+            f"Tu jornada arranca. Hoy tenés *{visitas} visitas* programadas.\n"
+            f"📍 Primera: *{first_cliente}* a las *{first_eta}*.\n\n"
+            f"Mandá *'menu'* para ver opciones, *'1'* para tu ruta completa.\n"
+            f"Cualquier atraso, mandá *'3'* y nos avisamos."
+        )
+        try:
+            send_whatsapp(
+                body=body,
+                targets=[(None, phone)],
+                subject=f"Inicio de jornada · {fecha}",
+                triggered_by=triggered_by,
+            )
+            drivers_notified += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[day-start] driver {r[0]} envio fallo: {e}")
+
+    cache[fecha] = True
+    logger.info(f"[day-start] {fecha} broadcast → drivers_notified={drivers_notified}")
+    return {"drivers_notified": drivers_notified, "candidates": len(rows)}
+
+
 def dispatch_visit_completed(
     tracking_id: str,
     *,

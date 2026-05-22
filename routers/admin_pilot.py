@@ -625,10 +625,18 @@ def simulate_event(
             detail = f"ETA +30min, pero alerta fallo: {e}"
 
     elif req.event == "complete":
+        # Idempotencia: si la visita ya estaba completed, NO re-disparar notif.
+        # Evita duplicados cuando se reseteo el día varias veces en QA o
+        # cuando el admin click "complete" dos veces sin querer.
+        if str(v.status or "").lower() == "completed":
+            return SimulateEventResponse(
+                tracking_id=tid,
+                event=req.event,
+                status="completed",
+                current_eta_cl=None,
+                detail="Visita ya estaba completed (idempotente, sin notif).",
+            )
         # Seteamos checkout_cl = sim_clock (timestamp efectivo de entrega).
-        # La interpolación del mapa (operacion.py) lo usa como eta_a del
-        # siguiente segmento. Sin esto, el driver quedaba "pegado" en la
-        # coord del último completed sin avanzar al próximo cliente.
         with get_conn() as cn:
             cur = cn.cursor()
             cur.execute(

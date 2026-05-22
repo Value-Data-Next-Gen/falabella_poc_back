@@ -376,6 +376,18 @@ def transition_day_state(
             STATE.today = _date_cls.fromisoformat(req.fecha)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[day-state] sync STATE.today falló: {e}")
+        # Auto-broadcast: cuando el día pasa a EN_CURSO, mandar a cada driver
+        # opted-in su ruta de hoy. Equivalente al manual notify-day-start,
+        # pero disparado al iniciar el día.
+        try:
+            from routers.admin_day_notifications import dispatch_day_start_per_driver
+            resp = dispatch_day_start_per_driver(req.fecha, triggered_by="day_start_auto")
+            logger.info(
+                f"[day-state] {req.fecha} EN_CURSO: auto-day-start "
+                f"drivers_notified={resp.get('drivers_notified', 0)}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[day-state] auto-day-start fallo: {e}")
     elif target == "BORRADOR":
         # R7: volver a BORRADOR limpia el ring buffer del stream para que
         # el panel de Alertas en vivo no muestre el residuo del día anterior.
@@ -385,6 +397,14 @@ def transition_day_state(
             logger.info(f"[day-state] {req.fecha}: buffer eventos limpiado ({n} evt)")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[day-state] EVENTS.reset falló: {e}")
+        # Reset cache de day-start broadcast para permitir re-broadcast en
+        # próxima transición a EN_CURSO.
+        try:
+            from routers.admin_day_notifications import dispatch_day_start_per_driver
+            cache = getattr(dispatch_day_start_per_driver, "_sent", {})
+            cache.pop(req.fecha, None)
+        except Exception:  # noqa: BLE001
+            pass
     elif target == "CERRADO":
         # Disparar resumen WhatsApp a driver + managers + admins.
         try:
