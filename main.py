@@ -67,8 +67,12 @@ async def lifespan(_: FastAPI):
     # WhatsApp si una visita pending pasa su ETA + GRACE_MINUTES.
     from sims.eta_breach_cron import register_cron as register_eta_breach_cron
     register_eta_breach_cron(scheduler)
+    # Pieza #2: pre-aviso ETA (interval 5min) — recordatorio amistoso
+    # 10-20 min ANTES de la ETA de la próxima visita.
+    from sims.eta_preview_cron import register_cron as register_eta_preview_cron
+    register_eta_preview_cron(scheduler)
     scheduler.start()
-    logger.info("Scheduler started: VIP deadline + ETA breach crons")
+    logger.info("Scheduler started: VIP deadline + ETA breach + ETA preview crons")
 
     try:
         yield
