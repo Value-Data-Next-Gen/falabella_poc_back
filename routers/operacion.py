@@ -99,8 +99,13 @@ def _interpolate_position(
             "detenido",
         )
 
-    # ambos -> interpolar
-    eta_a = _parse_eta(last_done.get("current_eta_cl")) if last_done else None
+    # ambos -> interpolar.
+    # Para el completed preferimos checkout_cl (timestamp real de entrega
+    # registrado por simulate-event/complete); fallback a current_eta_cl
+    # (ETA prevista) si no hay checkout aún.
+    eta_a = None
+    if last_done:
+        eta_a = _parse_eta(last_done.get("checkout_cl")) or _parse_eta(last_done.get("current_eta_cl"))
     eta_b = _parse_eta(next_pending.get("current_eta_cl")) if next_pending else None
     lat_a = last_done.get("latitude") if last_done else None
     lon_a = last_done.get("longitude") if last_done else None
@@ -159,7 +164,7 @@ def driver_positions(
         cur.execute(
             f"""
             SELECT d.driver_id, d.name AS driver_name, d.vehicle_id,
-                   v.id, v.title, v.status, v.current_eta_cl,
+                   v.id, v.title, v.status, v.current_eta_cl, v.checkout_cl,
                    v.latitude, v.longitude, v.comuna, v.[order]
             FROM fpoc.drivers d
             JOIN fpoc.simpli_visits v ON v.patente_falsa = d.vehicle_id
@@ -180,6 +185,7 @@ def driver_positions(
             "title": r.title,
             "status": str(r.status or "").lower(),
             "current_eta_cl": r.current_eta_cl,
+            "checkout_cl": r.checkout_cl,
             "latitude": float(r.latitude) if r.latitude is not None else None,
             "longitude": float(r.longitude) if r.longitude is not None else None,
             "comuna": r.comuna,

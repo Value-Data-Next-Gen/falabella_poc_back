@@ -625,15 +625,15 @@ def simulate_event(
             detail = f"ETA +30min, pero alerta fallo: {e}"
 
     elif req.event == "complete":
-        # Seteamos CompletedAt = sim_clock para que la interpolación del mapa
-        # (operacion.py:_interpolate_position) pueda usar este timestamp como
-        # eta_a del siguiente segmento. Sin esto, el driver quedaba "pegado"
-        # en la coord del último completed sin avanzar al próximo cliente.
+        # Seteamos checkout_cl = sim_clock (timestamp efectivo de entrega).
+        # La interpolación del mapa (operacion.py) lo usa como eta_a del
+        # siguiente segmento. Sin esto, el driver quedaba "pegado" en la
+        # coord del último completed sin avanzar al próximo cliente.
         with get_conn() as cn:
             cur = cn.cursor()
             cur.execute(
                 "UPDATE fpoc.simpli_visits "
-                "SET status = 'completed', CompletedAt = ? "
+                "SET status = 'completed', checkout_cl = ? "
                 "WHERE CAST(id AS VARCHAR(32)) = ?",
                 sim_clock, tid,
             )
