@@ -926,6 +926,10 @@ def dispatch_visit_completed(
     hora_str = datetime.now().strftime("%H:%M")
 
     driver_notified = False
+    logger.info(
+        f"[visit-completed] filtro driver: phone={driver_phone!r} starts_plus={driver_phone.startswith('+')} "
+        f"notify={driver_notify} optin_not_none={driver_optin is not None}"
+    )
     if (driver_phone.startswith("+") and driver_notify and driver_optin is not None):
         body_driver = (
             f"✅ *Entrega OK*: {cliente_label}\n"
@@ -933,16 +937,24 @@ def dispatch_visit_completed(
             f"Mandá 'menu' para ver tu ruta restante."
         )
         try:
-            send_whatsapp(
+            res = send_whatsapp(
                 body=body_driver,
                 targets=[(None, driver_phone)],
                 subject=f"Entrega OK · TID:{tid}",
                 tracking_id=tid,
                 triggered_by=triggered_by,
             )
-            driver_notified = True
+            first = res.results[0] if res.results else None
+            logger.info(
+                f"[visit-completed] send_whatsapp result: status={first.status if first else 'no-results'} "
+                f"sid={first.twilio_sid if first else None} err={first.error if first else None}"
+            )
+            if first and first.status in ("sent", "queued", "delivered", "dry_run"):
+                driver_notified = True
+            else:
+                logger.warning(f"[visit-completed] driver {driver_id} no enviado: {first.error if first else 'no-result'}")
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"[visit-completed] driver {driver_id} envio fallo: {e}")
+            logger.exception(f"[visit-completed] driver {driver_id} excepcion: {e}")
 
     # 4-5) Broadcast a supervisors (managers de la empresa + admins Falabella).
     body_supervisors = (
