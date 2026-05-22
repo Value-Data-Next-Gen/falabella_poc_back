@@ -121,7 +121,7 @@ class ContactoOut(BaseModel):
     email: Optional[str] = None
     severities_in: Optional[list[str]] = None  # NULL/None = todas
     motivos_in: Optional[list[str]] = None     # NULL/None = todos
-    region_filter: str = "all"                  # RM | regiones | all
+    region_filter: Optional[str] = "all"         # RM | regiones | all (None tolerado en data legacy)
     opted_in_at: Optional[str] = None
     active: bool = True
     notes: Optional[str] = None

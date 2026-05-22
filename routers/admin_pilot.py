@@ -389,6 +389,23 @@ def pilot_setup(
     # Resolver drivers
     resolved: list[dict] = [_resolve_driver(did) for did in req.driver_ids]
 
+    # Anti-conflict: 2 drivers no pueden compartir vehicle_id (las visitas
+    # son por patente_falsa). Si hay duplicados, error 409 al user con
+    # detalle para que pueda corregir la asignación driver↔vehículo.
+    vehicle_to_drivers: dict[int, list[str]] = {}
+    for d in resolved:
+        vehicle_to_drivers.setdefault(d["vehicle_id"], []).append(d["driver_id"])
+    dupes = {v: ds for v, ds in vehicle_to_drivers.items() if len(ds) > 1}
+    if dupes:
+        msg = ", ".join(
+            f"vehicle_id={v} compartido por {ds}" for v, ds in dupes.items()
+        )
+        raise HTTPException(
+            409,
+            f"Conflict driver↔vehicle: {msg}. Asigná vehículos distintos a "
+            f"cada driver antes de armar el piloto (Mantenedores → Drivers).",
+        )
+
     # Limpieza previa: borrar visitas del dia para los vehicle_ids elegidos
     vehicle_ids = [d["vehicle_id"] for d in resolved]
     if vehicle_ids:
@@ -608,12 +625,17 @@ def simulate_event(
             detail = f"ETA +30min, pero alerta fallo: {e}"
 
     elif req.event == "complete":
+        # Seteamos CompletedAt = sim_clock para que la interpolación del mapa
+        # (operacion.py:_interpolate_position) pueda usar este timestamp como
+        # eta_a del siguiente segmento. Sin esto, el driver quedaba "pegado"
+        # en la coord del último completed sin avanzar al próximo cliente.
         with get_conn() as cn:
             cur = cn.cursor()
             cur.execute(
-                "UPDATE fpoc.simpli_visits SET status = 'completed' "
+                "UPDATE fpoc.simpli_visits "
+                "SET status = 'completed', CompletedAt = ? "
                 "WHERE CAST(id AS VARCHAR(32)) = ?",
-                tid,
+                sim_clock, tid,
             )
             cn.commit()
         new_status = "completed"

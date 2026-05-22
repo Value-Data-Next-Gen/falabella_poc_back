@@ -152,4 +152,6 @@ MIGRATIONS: list[tuple[str, Callable[[], None]]] = [
     ("027_sim_clock",                 _wrap_quiet("fpoc_loader.migrate_sim_clock")),
     # Pieza #6: admin intervention sobre folios + audit table.
     ("028_visit_interventions",       _wrap_quiet("fpoc_loader.migrate_visit_interventions")),
+    # QA fix: PUT /api/admin/drivers fallaba 500 por columna ausente.
+    ("029_drivers_updated_at",        _wrap_quiet("fpoc_loader.migrate_drivers_updated_at")),
 ]
