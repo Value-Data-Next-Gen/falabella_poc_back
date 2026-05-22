@@ -245,7 +245,9 @@ _RE_REAGENDAR = re.compile(
 _RE_MOTIVO = re.compile(
     r"^\s*motivo\s+(\S+)\s+([A-ZÁÉÍÓÚÑ /]+):\s*(.+)$", re.IGNORECASE
 )
-_RE_HELP = re.compile(r"^\s*(help|ayuda|menu|comandos)\s*$", re.IGNORECASE)
+_RE_HELP = re.compile(r"^\s*(help|ayuda|comandos)\s*$", re.IGNORECASE)
+# Nota: 'menu' NO va acá — debe llegar al FSM en sims.whatsapp_agent.handle
+# para renderizar el menú estructurado con iconos (no la lista de comandos).
 _RE_INFO = re.compile(r"^\s*(info|que es esto|qué es esto|sobre)\s*$", re.IGNORECASE)
 _RE_HUMAN = re.compile(
     r"^\s*(humano|operador|hablar con alguien|persona|atencion|atención)\s*$",
