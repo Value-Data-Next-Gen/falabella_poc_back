@@ -23,6 +23,12 @@ Templates actuales (al 2026-05-20):
     por motivo_corrections (driver + manager).
   - `vd_cuenta_activada` (1 var: first_name). Usado por twilio_inbound
     en respuesta a ACTIVAR <TOKEN>.
+  - `vd_entrega_ok` (3 vars: conductor, cliente, pendientes). Pending Meta
+    approval — usado por dispatch_visit_completed cuando ventana 24h cerrada.
+  - `vd_pre_aviso` (2 vars: cliente, hora). Pending Meta approval — usado
+    por eta_preview_cron.
+  - `vd_resumen_dia` (5 vars: fecha, empresa, ok, total, pct). Pending
+    Meta approval — usado por dispatch_day_close_summary.
 """
 from __future__ import annotations
 
@@ -36,6 +42,10 @@ _FALLBACKS = {
     "INVITACION": "HXb810bbcc6365876cdade57471d7f85ca",
     "REVISION_IA": "HXd49ad45c3dc35c4aa131ebcf3ab8522e",
     "CUENTA_ACTIVADA": "HX13bdf3c0eaecfb740ec3f21760790c38",
+    # Submitted to Meta 2026-05-22, pending approval (~1-2 días).
+    "ENTREGA_OK": "HXdbf674af2f4f6bda901642f822653756",
+    "PRE_AVISO": "HX4a4c230c78ce754c19b7a074a6a7d42f",
+    "RESUMEN_DIA": "HXa1eb52b7f0e582b4c62331e347b1ac46",
 }
 
 
@@ -71,3 +81,18 @@ def revision_ia_sid() -> str:
 def cuenta_activada_sid() -> str:
     """Content SID para `vd_cuenta_activada`."""
     return _get("CUENTA_ACTIVADA")
+
+
+def entrega_ok_sid() -> str:
+    """Content SID para `vd_entrega_ok` (pending Meta approval 2026-05-22)."""
+    return _get("ENTREGA_OK")
+
+
+def pre_aviso_sid() -> str:
+    """Content SID para `vd_pre_aviso` (pending Meta approval 2026-05-22)."""
+    return _get("PRE_AVISO")
+
+
+def resumen_dia_sid() -> str:
+    """Content SID para `vd_resumen_dia` (pending Meta approval 2026-05-22)."""
+    return _get("RESUMEN_DIA")
