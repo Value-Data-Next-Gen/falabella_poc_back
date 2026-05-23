@@ -9,8 +9,9 @@ ya validaron antes (este endpoint asume que el phone está opted-in en los
 """
 from __future__ import annotations
 
+import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -277,3 +278,142 @@ def trigger_multirole_event(
         perspectives_sent=perspectives_sent,
         detail=detail,
     )
+
+
+# ---------------------------------------------------------------------------
+# Bulk normalize ETAs a horario operativo realista
+# ---------------------------------------------------------------------------
+
+class NormalizeEtasRequest(BaseModel):
+    fecha: str
+    start_hour: int = 9
+    end_hour: int = 19
+    only_pending: bool = True
+
+
+class NormalizeEtasResponse(BaseModel):
+    fecha: str
+    updated_count: int
+    sample: list[dict]
+    detail: str
+
+
+@router.post("/normalize-etas", response_model=NormalizeEtasResponse)
+def normalize_etas(
+    req: NormalizeEtasRequest,
+    user: CurrentUser = Depends(current_user),
+) -> NormalizeEtasResponse:
+    """Bulk-update current_eta_cl + fecha_inicio_ruta a horario realista
+    9-19h. Ordena visitas por orden de ruta y las distribuye uniformemente.
+    """
+    if not user.is_falabella:
+        raise HTTPException(403, "Solo admin/ops")
+    if req.start_hour < 0 or req.end_hour > 23 or req.start_hour >= req.end_hour:
+        raise HTTPException(400, "rango horas inválido")
+
+    fecha = req.fecha
+    sh, eh = req.start_hour, req.end_hour
+
+    where_status = " AND LOWER(status) = 'pending'" if req.only_pending else ""
+
+    with get_conn() as cn:
+        cur = cn.cursor()
+        # Agrupar por (patente_falsa, ruta_id) y ordenar
+        cur.execute(
+            f"""
+            SELECT CAST(id AS VARCHAR(32)), patente_falsa, ruta_id,
+                   title, current_eta_cl, [order]
+            FROM fpoc.simpli_visits
+            WHERE planned_date = ?{where_status}
+            ORDER BY patente_falsa, ruta_id, [order], current_eta_cl
+            """,
+            fecha,
+        )
+        rows = list(cur.fetchall())
+
+    if not rows:
+        return NormalizeEtasResponse(fecha=fecha, updated_count=0, sample=[], detail="sin visitas")
+
+    # Agrupar por patente: cada driver recibe sus stops distribuidos en sh-eh
+    by_pat: dict[int, list] = {}
+    for r in rows:
+        pat = int(r[1]) if r[1] is not None else 0
+        by_pat.setdefault(pat, []).append(r)
+
+    updates = []
+    for pat, group in by_pat.items():
+        n = len(group)
+        # Distribuir en sh-eh con padding 30min entre stops
+        total_min = (eh - sh) * 60
+        step_min = max(20, total_min // max(1, n))  # min 20min entre stops
+        cur_min = sh * 60 + random.randint(0, 30)   # start con jitter 0-30min
+        for r in group:
+            tid = r[0]
+            hour = cur_min // 60
+            mins = cur_min % 60
+            new_eta_str = f"{fecha} {hour:02d}:{mins:02d}:00"
+            updates.append((tid, new_eta_str))
+            cur_min += step_min
+            if cur_min // 60 >= eh:
+                cur_min = (eh - 1) * 60 + 30  # cap a 18:30 si excedió
+
+    # Aplicar updates
+    with get_conn() as cn:
+        cur = cn.cursor()
+        for tid, new_eta_str in updates:
+            new_eta_dt = datetime.fromisoformat(new_eta_str.replace(" ", "T"))
+            cur.execute(
+                "UPDATE fpoc.simpli_visits SET current_eta_cl = ? "
+                "WHERE CAST(id AS VARCHAR(32)) = ?",
+                new_eta_dt, tid,
+            )
+        cn.commit()
+
+    sample = [
+        {"tid": tid, "new_eta": new_eta_str}
+        for tid, new_eta_str in updates[:8]
+    ]
+    detail = (
+        f"Updated {len(updates)} visitas en {fecha}, horario {sh:02d}-{eh:02d}h. "
+        f"{len(by_pat)} drivers, max {max((len(g) for g in by_pat.values()), default=0)} stops/driver."
+    )
+    logger.info(f"[debug-normalize-etas] {detail}")
+    return NormalizeEtasResponse(
+        fecha=fecha,
+        updated_count=len(updates),
+        sample=sample,
+        detail=detail,
+    )
+
+
+@router.get("/list-visits", response_model=list[dict])
+def list_visits_debug(
+    fecha: str,
+    user: CurrentUser = Depends(current_user),
+) -> list[dict]:
+    """Devuelve TODAS las visitas del día con shape simplificado para debug.
+    Sin scope filtering (sólo admin/ops)."""
+    if not user.is_falabella:
+        raise HTTPException(403, "Solo admin/ops")
+    with get_conn() as cn:
+        cur = cn.cursor()
+        cur.execute(
+            """
+            SELECT CAST(id AS VARCHAR(32)), title, comuna, patente_falsa,
+                   status, current_eta_cl, ruta_id, [order], empresa_falsa
+            FROM fpoc.simpli_visits
+            WHERE planned_date = ?
+            ORDER BY patente_falsa, [order], current_eta_cl
+            """,
+            fecha,
+        )
+        rows = list(cur.fetchall())
+    out = []
+    for r in rows:
+        eta_str = r[5].strftime("%Y-%m-%d %H:%M") if hasattr(r[5], "strftime") else str(r[5] or "")
+        out.append({
+            "id": r[0], "title": r[1], "comuna": r[2],
+            "patente": r[3], "status": r[4], "eta": eta_str,
+            "ruta_id": r[6], "order": r[7], "empresa_falsa": r[8],
+        })
+    return out
