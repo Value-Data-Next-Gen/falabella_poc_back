@@ -1,6 +1,13 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
+# Deploy backend Python a Azure App Service poc-fal-back.
+#
+# Estrategia (post fix QA 2026-05-22):
+#   - Un solo job: checkout → zip → deploy. Sin upload/download artifact
+#     intermedio (causaba files stale en wwwroot del container).
+#   - Zip explícito antes del deploy, excluyendo lo innecesario.
+#   - Oryx build (SCM_DO_BUILD_DURING_DEPLOYMENT=1) instala deps al boot.
+#   - clean: true en webapps-deploy borra wwwroot antes de aplicar el zip
+#     (evita .pyc viejos / archivos huérfanos).
+#   - Restart explícito post-deploy para garantizar reload del módulo.
 
 name: Build and deploy Python app to Azure Web App - poc-fal-back
 
@@ -11,59 +18,38 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: read #This is required for actions/checkout
+      id-token: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python version
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # NOTA: NO instalamos dependencias localmente. Oryx (en App Service) lo
-      # hace al deploy, gracias a SCM_DO_BUILD_DURING_DEPLOYMENT=1. Esto evita
-      # que el artifact incluya antenv/ (~800 MB con xgboost+shap+scikit) y
-      # rompa el upload por size/timeout.
+      - name: Create deployment package
+        run: |
+          # Zip solo lo necesario para el runtime. Excluir:
+          #   - .git, .github (metadata)
+          #   - __pycache__, *.pyc (bytecode local que confunde a Oryx)
+          #   - antenv/ (.venv local; Oryx lo regenera en App Service)
+          #   - docs/, *.md, tests/ (no runtime)
+          zip -r release.zip . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "__pycache__/*" "*/__pycache__/*" \
+            -x "*.pyc" \
+            -x "antenv/*" ".venv/*" "venv/*" \
+            -x "docs/*" "*.md" \
+            -x "tests/*" \
+            -x "*.db" "*.db-shm" "*.db-wal"
+          ls -lh release.zip
 
-      - name: Upload artifact for deployment jobs
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-app
-          path: |
-            .
-            !antenv/
-            !.git/
-            !.github/
-            !**/__pycache__/
-            !*.db
-            !*.db-shm
-            !*.db-wal
-            !docs/
-            !*.md
-
-      # 🚫 Opting Out of Oryx Build
-      # If you prefer to disable the Oryx build process during deployment, follow these steps:
-      # 1. Remove the SCM_DO_BUILD_DURING_DEPLOYMENT app setting from your Azure App Service Environment variables.
-      # 2. Refer to sample workflows for alternative deployment strategies: https://github.com/Azure/actions-workflow-samples/tree/master/AppService
-      
-
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
-
-    steps:
-      - name: Download artifact from build job
-        uses: actions/download-artifact@v4
-        with:
-          name: python-app
-      
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -71,14 +57,17 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_690EAEC90401441486B634F354DB5727 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_5A7AD340BD9C4323A3A5D448A9838B82 }}
 
-      - name: 'Deploy to Azure Web App'
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
           app-name: 'poc-fal-back'
           slot-name: 'Production'
+          package: 'release.zip'
+          clean: true
 
       - name: Restart Azure Web App
         run: |
-          rg=$(az resource list --name poc-fal-back --resource-type Microsoft.Web/sites --query "[0].resourceGroup" -o tsv)
-          az webapp restart --name poc-fal-back --resource-group "$rg"
+          az webapp restart \
+            --name poc-fal-back \
+            --resource-group poc-fal-_group
