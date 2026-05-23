@@ -48,7 +48,7 @@ system_router = APIRouter(tags=["system"])
 
 @system_router.get("/api/health")
 def health():
-    return {"status": "ok", "ready": True}
+    return {"status": "ok", "ready": True, "build_marker": "v2-2026-05-22-2330"}
 
 
 class AppConfigEntry(BaseModel):
