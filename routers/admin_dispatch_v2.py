@@ -229,7 +229,10 @@ def dispatch_visit_completed_v2(
                 f"status={first.status if first else 'no-result'} "
                 f"sid={first.twilio_sid if first else None}"
             )
-            if first and first.status in ("sent", "queued", "delivered", "dry_run"):
+            # Twilio devuelve 'queued' inmediatamente y 'sent'/'delivered'
+            # despues. Cualquier estado no-error cuenta como notificado.
+            ok_states = {"sent", "queued", "delivered", "dry_run", "pending", "scheduled"}
+            if first and (first.status in ok_states or (first.twilio_sid and not first.error)):
                 driver_notified = True
         except Exception as e:  # noqa: BLE001
             logger.exception(f"[dispatch-v2/visit-completed] TID={tid} exception: {e}")
@@ -282,12 +285,30 @@ def dispatch_day_start_per_driver_v2(
 ) -> dict:
     """Cuando day-state pasa a EN_CURSO, a cada driver opted-in con visitas
     pending hoy le manda "Buenos días! Hoy tenés N visitas..."
-    Idempotente por fecha (cache in-memory).
+    Idempotente por (fecha, started_at) — el started_at cambia cada vez que
+    se reabre el día (vía reset + transition), invalidando el cache.
     """
     from routers.notifications import send_whatsapp
 
-    if _day_start_sent_v2.get(fecha):
-        logger.info(f"[dispatch-v2/day-start] {fecha} ya broadcast'd, skip")
+    # Cache key incluye started_at: si el día se re-arrancó, started_at cambió
+    # y la entry vieja del cache no aplica. Esto evita el bug multi-worker
+    # donde un worker tenía el cache marcado y otro lo había limpiado.
+    cache_key = fecha
+    try:
+        with get_conn() as cn:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT started_at FROM fpoc.planificacion_imports WHERE fecha = ?",
+                fecha,
+            )
+            r = cur.fetchone()
+            if r and r[0]:
+                cache_key = f"{fecha}@{r[0]}"
+    except Exception:  # noqa: BLE001
+        pass
+
+    if _day_start_sent_v2.get(cache_key):
+        logger.info(f"[dispatch-v2/day-start] {cache_key} ya broadcast'd, skip")
         return {"drivers_notified": 0, "skipped": "already_sent"}
 
     with get_conn() as cn:

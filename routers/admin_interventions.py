@@ -184,18 +184,29 @@ def visit_intervention(
             )
             cn.commit()
         after_value = json.dumps({"current_eta_cl": req.new_eta})
+        # Si la nueva ETA es de otro día, prefijar 'mañana' o la fecha DD-mmm
+        # para evitar el bug "Nueva ETA: 10:00" cuando es de mañana.
+        from datetime import date as _date_cls, timedelta as _td
         hora = new_eta_dt.strftime("%H:%M")
+        new_eta_date = new_eta_dt.date()
+        today = _date_cls.today()
+        if new_eta_date == today:
+            fecha_label = hora
+        elif new_eta_date == today + _td(days=1):
+            fecha_label = f"mañana {hora}"
+        else:
+            fecha_label = new_eta_dt.strftime("%d-%b %H:%M")
         body_driver = (
             f"📅 *Falabella reagendó* esta visita:\n"
             f"• Cliente: {cliente_label}\n"
-            f"• Nueva ETA: *{hora}*"
+            f"• Nueva ETA: *{fecha_label}*"
             + (f"\n• Motivo: {req.reason}" if req.reason else "")
         )
         body_supervisors = (
             f"📅 *Admin reagendó* folio TID:{tid}\n"
             f"• Empresa: {empresa_nombre}\n"
             f"• Driver: {driver_name} → {cliente_label}\n"
-            f"• Nueva ETA: {hora}"
+            f"• Nueva ETA: {fecha_label}"
             + (f"\n• Razón: {req.reason}" if req.reason else "")
         )
 
