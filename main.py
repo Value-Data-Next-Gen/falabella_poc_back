@@ -131,6 +131,7 @@ from routers.admin_day_notifications import router as admin_day_notifications_ro
 from routers.admin_day_stats import router as admin_day_stats_router
 from routers.admin_interventions import router as admin_interventions_router
 from routers.admin_pilot import router as admin_pilot_router
+from routers.debug_multirole import router as debug_multirole_router
 from routers.operacion import router as operacion_router
 # Endpoints "legacy" sobrevivientes tras eliminar ML (system/fleet)
 from routers.legacy_routes import (
@@ -171,6 +172,7 @@ app.include_router(admin_day_notifications_router)
 app.include_router(admin_day_stats_router)
 app.include_router(admin_interventions_router)
 app.include_router(admin_pilot_router)
+app.include_router(debug_multirole_router)
 app.include_router(operacion_router)
 app.include_router(system_router)
 app.include_router(fleet_router)
