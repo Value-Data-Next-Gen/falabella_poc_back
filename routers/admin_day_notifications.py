@@ -1,5 +1,7 @@
 """Endpoints administrativos para disparar notificaciones operativas E2E.
 
+# build_marker_v3_2026-05-22  — force re-deploy of this module
+
 Provee dos triggers manuales pensados para QA / demo / arranque de jornada:
 
   POST /api/admin/notify-day-start   — broadcast "inicio de jornada" a todos
