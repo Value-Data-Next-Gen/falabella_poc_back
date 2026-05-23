@@ -9,6 +9,7 @@ ya validaron antes (este endpoint asume que el phone está opted-in en los
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -109,6 +110,9 @@ def trigger_multirole_event(
             sent_count += 1
             perspectives_sent.append(role_label)
             logger.info(f"[debug-multirole] sent {role_label} body to {phone[:6]}...")
+            # Twilio WhatsApp rate-limita ~1 msg/segundo al mismo phone.
+            # Sleep entre envios para que los 3 lleguen al mismo numero.
+            time.sleep(2.5)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[debug-multirole] {role_label} fallo: {e}")
 
