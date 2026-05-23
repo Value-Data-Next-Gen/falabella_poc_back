@@ -380,10 +380,10 @@ def transition_day_state(
         # opted-in su ruta de hoy. Equivalente al manual notify-day-start,
         # pero disparado al iniciar el día.
         try:
-            from routers.admin_day_notifications import dispatch_day_start_per_driver
-            resp = dispatch_day_start_per_driver(req.fecha, triggered_by="day_start_auto")
+            from routers.admin_dispatch_v2 import dispatch_day_start_per_driver_v2
+            resp = dispatch_day_start_per_driver_v2(req.fecha, triggered_by="day_start_auto")
             logger.info(
-                f"[day-state] {req.fecha} EN_CURSO: auto-day-start "
+                f"[day-state] {req.fecha} EN_CURSO: auto-day-start v2 "
                 f"drivers_notified={resp.get('drivers_notified', 0)}"
             )
         except Exception as e:  # noqa: BLE001
@@ -400,9 +400,8 @@ def transition_day_state(
         # Reset cache de day-start broadcast para permitir re-broadcast en
         # próxima transición a EN_CURSO.
         try:
-            from routers.admin_day_notifications import dispatch_day_start_per_driver
-            cache = getattr(dispatch_day_start_per_driver, "_sent", {})
-            cache.pop(req.fecha, None)
+            from routers.admin_dispatch_v2 import reset_day_start_cache_v2
+            reset_day_start_cache_v2(req.fecha)
         except Exception:  # noqa: BLE001
             pass
     elif target == "CERRADO":

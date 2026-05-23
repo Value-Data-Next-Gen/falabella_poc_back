@@ -45,9 +45,23 @@ fi
 
 PORT="${PORT:-8000}"
 
-# 1 worker porque el modelo + SHAP + STATE viven en memoria del proceso.
-# Si escalas horizontal, hay que mover STATE a Redis/DB antes.
+# Oryx Express extrae el bundle a /tmp/<hash>/ con antenv pero NO incluye
+# todas las carpetas top-level del repo (core/, routers/, etc). Resultado:
+# uvicorn falla con ModuleNotFoundError 'core' porque busca main desde
+# /tmp/<hash>/main.py y `from core...` no resuelve.
+#
+# Fix: usar --app-dir + cwd + PYTHONPATH apuntando a /home/site/wwwroot
+# (filesystem real con todos los archivos), no al staging /tmp/<hash>/.
+APP_DIR="/home/site/wwwroot"
+if [ -d "$APP_DIR" ] && [ -f "$APP_DIR/main.py" ]; then
+  cd "$APP_DIR"
+  export PYTHONPATH="${APP_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+  echo "[startup] cwd=$APP_DIR PYTHONPATH=$PYTHONPATH"
+fi
+
+# 1 worker porque STATE/lookup tables viven en memoria del proceso.
 exec python -m uvicorn main:app \
+  --app-dir "$APP_DIR" \
   --host 0.0.0.0 \
   --port "${PORT}" \
   --workers 1 \

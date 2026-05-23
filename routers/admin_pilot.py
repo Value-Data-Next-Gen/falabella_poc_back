@@ -648,8 +648,8 @@ def simulate_event(
             cn.commit()
         new_status = "completed"
         try:
-            from routers.admin_day_notifications import dispatch_visit_completed
-            resp = dispatch_visit_completed(tid, triggered_by="pilot_simulate_complete")
+            from routers.admin_dispatch_v2 import dispatch_visit_completed_v2
+            resp = dispatch_visit_completed_v2(tid, triggered_by="pilot_simulate_complete")
             detail = (
                 f"Visita completed. "
                 f"Notif: driver={resp.driver_notified} mgrs={resp.manager_notified_count} "

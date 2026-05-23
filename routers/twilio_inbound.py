@@ -632,6 +632,27 @@ def _first_name(full: Optional[str], fallback: Optional[str]) -> str:
     return "tú"
 
 
+def _send_post_activation_summary_v2_wrap(
+    *,
+    role: str,
+    row_id: str,
+    phone: str,
+    first_name: str,
+    sender_to: Optional[str] = None,
+) -> None:
+    """Wrapper que delega al módulo nuevo admin_dispatch_v2 para esquivar
+    bytecode cacheado de la función `_send_post_activation_summary` original
+    en este archivo (ver memoria azure_deploy_issue)."""
+    try:
+        from routers.admin_dispatch_v2 import send_post_activation_summary_v2
+        send_post_activation_summary_v2(
+            role=role, row_id=row_id, phone=phone,
+            first_name=first_name, sender_to=sender_to,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[twilio-inbound] post-activation-v2 fallo: {e}")
+
+
 def _send_post_activation_summary(
     *,
     role: str,           # 'driver' | 'contact' | 'user'
@@ -865,7 +886,7 @@ def _cmd_activar(
                     table="user_id", row_id=str(uid),
                     sender_to=sender_to,
                 )
-                _send_post_activation_summary(
+                _send_post_activation_summary_v2_wrap(
                     role="user", row_id=str(uid),
                     phone=phone, first_name=first, sender_to=sender_to,
                 )
@@ -898,7 +919,7 @@ def _cmd_activar(
                     table="driver_id", row_id=drv_id,
                     sender_to=sender_to,
                 )
-                _send_post_activation_summary(
+                _send_post_activation_summary_v2_wrap(
                     role="driver", row_id=drv_id,
                     phone=phone, first_name=first, sender_to=sender_to,
                 )
@@ -932,7 +953,7 @@ def _cmd_activar(
                     table="contact_id", row_id=str(cid),
                     sender_to=sender_to,
                 )
-                _send_post_activation_summary(
+                _send_post_activation_summary_v2_wrap(
                     role="contact", row_id=str(cid),
                     phone=phone, first_name=first, sender_to=sender_to,
                 )
