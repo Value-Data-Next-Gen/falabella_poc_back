@@ -38,6 +38,7 @@ from app.api.v1 import (
     ingest,
     mapa,
     motivos,
+    onboarding,
     operacion,
     reference,
     reports,
@@ -212,3 +213,4 @@ app.include_router(ingest.router)
 app.include_router(admin_geocoding.router)
 app.include_router(alerts.router)
 app.include_router(mapa.router)
+app.include_router(onboarding.router)

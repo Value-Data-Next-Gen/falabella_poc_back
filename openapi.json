@@ -6842,6 +6842,68 @@
           }
         }
       }
+    },
+    "/api/v1/onboarding": {
+      "get": {
+        "tags": [
+          "onboarding"
+        ],
+        "summary": "Get Onboarding",
+        "description": "Aggregated, role-scoped activation list. Conductores + contactos are\nscoped to the actor's empresas; usuarios are included only for Falabella\nadmin/ops (platform users aren't empresa-scoped).",
+        "operationId": "getOnboarding",
+        "parameters": [
+          {
+            "name": "solo_pendientes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Solo no activados",
+              "default": false,
+              "title": "Solo Pendientes"
+            },
+            "description": "Solo no activados"
+          },
+          {
+            "name": "td_session",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Td Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardingSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11452,6 +11514,113 @@
         ],
         "title": "OnTime",
         "description": "Punctuality over visitas that have both eta_estimada and completada_at."
+      },
+      "OnboardingItem": {
+        "properties": {
+          "tipo": {
+            "type": "string",
+            "title": "Tipo"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "nombre": {
+            "type": "string",
+            "title": "Nombre"
+          },
+          "empresa_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Id"
+          },
+          "empresa_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Nombre"
+          },
+          "phone_e164": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone E164"
+          },
+          "activation_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activation Token"
+          },
+          "activado": {
+            "type": "boolean",
+            "title": "Activado"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tipo",
+          "id",
+          "nombre",
+          "empresa_id",
+          "empresa_nombre",
+          "phone_e164",
+          "activation_token",
+          "activado"
+        ],
+        "title": "OnboardingItem"
+      },
+      "OnboardingSummary": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "activados": {
+            "type": "integer",
+            "title": "Activados"
+          },
+          "pendientes": {
+            "type": "integer",
+            "title": "Pendientes"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OnboardingItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "activados",
+          "pendientes",
+          "items"
+        ],
+        "title": "OnboardingSummary"
       },
       "OutcomeCounts": {
         "properties": {
