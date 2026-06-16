@@ -56,9 +56,8 @@ async def get_onboarding(
     }
     items: list[OnboardingItem] = []
 
-    drivers = (await db.execute(
-        apply_scope(select(Driver).where(Driver.activo.is_(True)), user, Driver.empresa_id)
-    )).scalars().all()
+    d_stmt = select(Driver).where(Driver.activo == True)  # noqa: E712
+    drivers = (await db.execute(apply_scope(d_stmt, user, Driver.empresa_id))).scalars().all()
     items += [
         OnboardingItem(
             tipo="conductor", id=d.driver_id, nombre=d.nombre, empresa_id=d.empresa_id,
@@ -67,10 +66,8 @@ async def get_onboarding(
         ) for d in drivers
     ]
 
-    contactos = (await db.execute(
-        apply_scope(select(EmpresaContacto).where(EmpresaContacto.activo.is_(True)),
-                    user, EmpresaContacto.empresa_id)
-    )).scalars().all()
+    c_stmt = select(EmpresaContacto).where(EmpresaContacto.activo == True)  # noqa: E712
+    contactos = (await db.execute(apply_scope(c_stmt, user, EmpresaContacto.empresa_id))).scalars().all()
     items += [
         OnboardingItem(
             tipo="contacto", id=str(c.contact_id), nombre=c.nombre, empresa_id=c.empresa_id,
@@ -80,7 +77,8 @@ async def get_onboarding(
     ]
 
     if user.role in ("falabella_admin", "falabella_ops"):
-        users = (await db.execute(select(User).where(User.activo.is_(True)))).scalars().all()
+        u_stmt = select(User).where(User.activo == True)  # noqa: E712
+        users = (await db.execute(u_stmt)).scalars().all()
         items += [
             OnboardingItem(
                 tipo="usuario", id=str(u.user_id), nombre=u.display_name, empresa_id=u.empresa_id,
