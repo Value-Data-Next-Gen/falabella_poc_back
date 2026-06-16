@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.onboarding import send_invitation
 from app.core.security import current_user
 from app.core.security.scope import can_access_empresa
 from app.db.models.empresa import Empresa
@@ -273,6 +274,8 @@ async def regenerate_activation(
     contacto.updated_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(contacto)
+
+    await send_invitation(contacto.phone_e164, contacto.nombre)
 
     return RegenerateContactoActivationResponse(
         contact_id=contacto.contact_id,

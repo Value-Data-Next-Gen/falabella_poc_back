@@ -244,7 +244,89 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "obtener_reporte",
+            "description": (
+                "Genera un reporte operativo (visitas, % de exito, puntualidad, "
+                "motivos de no-entrega, peor conductor) de una empresa. Por "
+                "defecto cubre el ultimo dia operativo; usa `rango_dias` para "
+                "agregar varios dias (ej. 7 para la semana). Util para 'reporte "
+                "de hoy', 'como vamos', 'reporte de la semana'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "empresa_id": {
+                        "type": "integer",
+                        "description": "Empresa a reportar (opcional para roles con una sola empresa).",
+                    },
+                    "rango_dias": {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "Cuantos dias operativos recientes incluir (1 = ultimo dia).",
+                    },
+                },
+            },
+        },
+    },
 ]
+
+
+# ----------------------------------------------------------------------------
+# Role-based tool exposure.
+#
+# Tenant scope (below) stops cross-empresa reads, but a *driver* still
+# shouldn't be offered admin tooling like "lista todos los conductores" or
+# "resumen de la empresa". We additionally gate which tools each actor type is
+# even *shown*, so the LLM answers each user with role-appropriate capabilities.
+#
+# Roles: driver | contacto (jefe/coordinador) | manager (transport_manager) |
+# falabella (falabella_admin/ops, full ops). `anon` (no actor) gets nothing.
+# ----------------------------------------------------------------------------
+
+_DRIVER_TOOLS = {
+    "clasificar_motivo",
+    "listar_motivos",
+    "obtener_info_cliente_por_folio",
+    "cancelar_visita_manual",
+    "crear_alerta_manual",
+}
+# Oversight roles (contacto / manager / falabella) get the driver tools plus
+# the read/aggregate ops tools and the report tool.
+_OVERSIGHT_TOOLS = _DRIVER_TOOLS | {
+    "listar_alertas_abiertas",
+    "contar_entidades",
+    "listar_conductores",
+    "resumen_empresa",
+    "verificar_compliance_documentos",
+    "obtener_reporte",
+}
+_TOOLS_BY_ROLE: dict[str, set[str]] = {
+    "driver": _DRIVER_TOOLS,
+    "contacto": _OVERSIGHT_TOOLS,
+    "manager": _OVERSIGHT_TOOLS,
+    "falabella": _OVERSIGHT_TOOLS,
+    "anon": set(),
+}
+
+
+def actor_role(actor: Actor) -> str:
+    """Coarse role label used for tool exposure + prompt tailoring."""
+    if isinstance(actor, Driver):
+        return "driver"
+    if isinstance(actor, EmpresaContacto):
+        return "contacto"
+    if isinstance(actor, User):
+        return "falabella" if actor.role in ("falabella_admin", "falabella_ops") else "manager"
+    return "anon"
+
+
+def tool_definitions_for(actor: Actor) -> list[dict]:
+    """The subset of TOOL_DEFINITIONS this actor is allowed to invoke."""
+    allowed = _TOOLS_BY_ROLE.get(actor_role(actor), set())
+    return [t for t in TOOL_DEFINITIONS if t["function"]["name"] in allowed]
 
 
 # ----------------------------------------------------------------------------
@@ -324,6 +406,10 @@ async def execute_tool(  # noqa: PLR0911 -- one branch per tool reads better tha
     (alerts). Read-only legacy tools ignore it for now to keep behavior
     identical to pre-CR-022 chat turns.
     """
+    # Defense-in-depth: the LLM is only *shown* role-appropriate tools, but
+    # never trust that — reject any call outside the actor's allow-list.
+    if name not in _TOOLS_BY_ROLE.get(actor_role(actor), set()):
+        return json.dumps({"error": "Herramienta no disponible para tu rol."})
     if name == "contar_entidades":
         return await _contar_entidades(db, actor=actor, **args)
     elif name == "listar_conductores":
@@ -344,6 +430,8 @@ async def execute_tool(  # noqa: PLR0911 -- one branch per tool reads better tha
         return await _obtener_info_cliente_por_folio(db, actor=actor, **args)
     elif name == "cancelar_visita_manual":
         return await _cancelar_visita_manual(db, actor=actor, **args)
+    elif name == "obtener_reporte":
+        return await _obtener_reporte(db, actor=actor, **args)
     return json.dumps({"error": f"Tool {name} not found"})
 
 
@@ -816,3 +904,65 @@ async def _cancelar_visita_manual(
     visita.motivo = f"Cancelado: {motivo_s[:200]}"
     await db.commit()
     return json.dumps({"ok": True, "visita_id": visita.visita_id})
+
+
+# ----------------------------------------------------------------------------
+# Reports tool — role-scoped operational report over WhatsApp / web chat.
+# ----------------------------------------------------------------------------
+
+
+async def _obtener_reporte(
+    db: AsyncSession, actor: Actor = None, empresa_id: int | None = None, rango_dias: int = 1,
+) -> str:
+    """Compact operational report for an empresa, scoped to the actor.
+
+    Reuses the report aggregation that powers /api/v1/reports so the bot and the
+    web report show the same numbers. Default is the latest día; `rango_dias`>1
+    aggregates the most recent N días.
+    """
+    # Lazy import: the report aggregation lives in the API layer; importing it
+    # at module top would invert the core→api layering and risk a cycle.
+    from app.api.v1.reports import _aggregate
+    from app.core.config import settings
+
+    eid, err = _resolve_scope(actor, empresa_id)
+    if err:
+        return json.dumps({"error": err})
+    if eid is None:
+        return json.dumps({"error": "Indica de que empresa quieres el reporte."})
+
+    n = max(1, min(int(rango_dias or 1), 60))
+    dias = (await db.execute(
+        select(DiaOperativo.dia_id, DiaOperativo.fecha)
+        .where(DiaOperativo.empresa_id == eid)
+        .order_by(DiaOperativo.fecha.desc())
+        .limit(n)
+    )).all()
+    if not dias:
+        return json.dumps({"empresa_id": eid, "info": "Sin dias operativos para esta empresa."})
+
+    dia_ids = [d for d, _ in dias]
+    fechas = sorted(str(f) for _, f in dias)
+    totals, vip, on_time, _by_region, by_driver, by_motivo = await _aggregate(
+        db, dia_ids, settings.alerts_grace_min
+    )
+    empresa_nombre = await db.scalar(select(Empresa.nombre).where(Empresa.empresa_id == eid))
+
+    # Worst performer (success%) among drivers with a meaningful sample.
+    cands = [d for d in by_driver if d.visitas >= 5 and d.success_pct is not None]
+    peor = None
+    if cands:
+        w = min(cands, key=lambda d: d.success_pct)
+        peor = {"nombre": w.nombre, "driver_id": w.driver_id,
+                "success_pct": w.success_pct, "visitas": w.visitas}
+
+    return json.dumps({
+        "empresa": empresa_nombre, "empresa_id": eid,
+        "dias": len(dia_ids), "desde": fechas[0], "hasta": fechas[-1],
+        "visitas": totals.visitas, "entregado": totals.entregado,
+        "no_entregado": totals.no_entregado, "success_pct": totals.success_pct,
+        "on_time_pct": on_time.on_time_pct,
+        "vip_entregado": vip.entregado, "vip_total": vip.visitas,
+        "top_motivos": [{"motivo": m.motivo, "count": m.count} for m in by_motivo[:3]],
+        "peor_conductor": peor,
+    }, default=str)

@@ -116,14 +116,17 @@ async def test_listar_admin_filter_by_empresa(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_listar_driver_only_sees_own_empresa(db_session: AsyncSession):
-    """A driver on empresa 1 cannot see empresa 2's alerts, even if asked."""
-    driver = Driver(driver_id="DRV-1", empresa_id=1, nombre="D",
-                    phone_e164="+56900000001", activo=True)
+async def test_listar_contacto_only_sees_own_empresa(db_session: AsyncSession):
+    """A contacto on empresa 1 cannot see empresa 2's alerts, even if asked.
+
+    (Drivers no longer get the alerts-listing tool under the role model — that's
+    oversight territory; contactos are the scoped, pinned principal here.)"""
+    contacto = EmpresaContacto(contact_id=1, empresa_id=1, nombre="Jefe", rol="jefe",
+                               phone_e164="+56900000001", activo=True)
     raw = await execute_tool(
         db_session, "listar_alertas_abiertas",
         {"empresa_id": 2},  # LLM tries to pivot — must be ignored.
-        actor=driver,
+        actor=contacto,
     )
     out = json.loads(raw)
     assert out["total"] == 2  # A1 + A2 in empresa 1
@@ -149,11 +152,11 @@ async def test_listar_transport_manager_no_scope_empty(db_session: AsyncSession)
 
 
 @pytest.mark.asyncio
-async def test_listar_actor_none_is_empty(db_session: AsyncSession):
+async def test_listar_actor_none_rejected(db_session: AsyncSession):
+    # anon actor has no role → the execute_tool guard denies before the tool runs.
     raw = await execute_tool(db_session, "listar_alertas_abiertas", {}, actor=None)
     out = json.loads(raw)
-    assert out["total"] == 0
-    assert "warning" in out
+    assert "error" in out
 
 
 @pytest.mark.asyncio

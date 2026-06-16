@@ -26,7 +26,10 @@ from app.core import alert_dispatcher as disp
 from app.db import models  # noqa: F401
 from app.db.base import Base
 from app.db.models.alert import Alert
+from app.db.models.driver import Driver
 from app.db.models.empresa import Empresa
+from app.db.models.ruta import Ruta
+from app.db.models.vehicle import Vehicle
 from app.db.models.visita import Visita
 
 
@@ -61,8 +64,16 @@ async def test_build_message_eta_breach(sm):
     async with sm() as db:
         db.add(Empresa(empresa_id=1, nombre="Empresa Uno", activo=True))
         await db.flush()
+        # Template text is "vehiculo {{3}} con conductor {{4}}, cliente {{5}}",
+        # so the vars must come from the visita's ruta (plate + driver), not the
+        # folio/empresa the dispatcher used to (mis)send.
+        db.add(Driver(driver_id="DRV-1", empresa_id=1, nombre="Ana Pérez", activo=True))
+        db.add(Vehicle(vehicle_id=1, empresa_id=1, nombre="Camión 1", plate="ABCD-12", activo=True))
+        await db.flush()
+        db.add(Ruta(ruta_id=1, dia_id=1, driver_id="DRV-1", vehicle_id=1, orden=1))
+        await db.flush()
         v = Visita(
-            visita_id=1, dia_id=1, empresa_id=1, orden=1, cliente_nombre="Cli X",
+            visita_id=1, dia_id=1, empresa_id=1, ruta_id=1, orden=1, cliente_nombre="Cli X",
             direccion="d", estado="no_entregado", motivo="SIN MORADORES",
             folio_cliente="FAL-1", es_vip=0,
         )
@@ -75,8 +86,9 @@ async def test_build_message_eta_breach(sm):
     _assert_six_string_vars(cvars)
     assert cvars["1"] == "ALTA"            # severity upper
     assert cvars["2"] == "SIN MORADORES"   # motivo
-    assert cvars["3"] == "FAL-1"           # folio
-    assert cvars["5"] == "Empresa Uno"     # empresa
+    assert cvars["3"] == "ABCD-12"         # vehiculo (patente)
+    assert cvars["4"] == "Ana Pérez"       # conductor
+    assert cvars["5"] == "Cli X"           # cliente
 
 
 @pytest.mark.asyncio
@@ -97,5 +109,6 @@ async def test_build_message_vip_deadline(sm):
     assert sid == disp.vip_deadline_sid()
     _assert_six_string_vars(cvars)
     assert cvars["1"] == "Maria"   # cliente
-    assert cvars["2"] == "10:20"   # eta HH:MM
+    assert cvars["2"] == "10:20"   # deadline HH:MM (promised time)
     assert cvars["3"] == "25"      # minutes remaining
+    assert cvars["5"] == "10:20"   # ETA estimada — the ETA, not the wall clock

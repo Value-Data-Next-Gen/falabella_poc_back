@@ -27,6 +27,7 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 from app.db.models.driver import Driver
 from app.db.models.empresa import Empresa
+from app.db.models.empresa_contacto import EmpresaContacto
 from app.db.models.user import User
 
 
@@ -55,8 +56,11 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         yield s
 
 
-def _driver1() -> Driver:
-    return Driver(driver_id="D1A", empresa_id=1, nombre="d1a", activo=True)
+def _contacto1() -> EmpresaContacto:
+    """A scoped oversight principal bound to empresa 1. Used to exercise the
+    info tools' tenant-scope flooring under the role model (drivers no longer
+    get these oversight tools; contactos do, and are pinned to one empresa)."""
+    return EmpresaContacto(contact_id=1, empresa_id=1, nombre="c1", rol="jefe", activo=True)
 
 
 def _admin() -> User:
@@ -70,11 +74,11 @@ def _admin() -> User:
 async def test_contar_floored_to_actor_empresa(db_session):
     # driver of empresa 1 → only empresa 1's 2 drivers, regardless of request.
     r = json.loads(await execute_tool(db_session, "contar_entidades",
-                                      {"entidad": "conductores"}, actor=_driver1()))
+                                      {"entidad": "conductores"}, actor=_contacto1()))
     assert r["total"] == 2 and r["empresa_id"] == 1, r
     # even asking for empresa 2 is overridden to the driver's own empresa.
     r2 = json.loads(await execute_tool(db_session, "contar_entidades",
-                                       {"entidad": "conductores", "empresa_id": 2}, actor=_driver1()))
+                                       {"entidad": "conductores", "empresa_id": 2}, actor=_contacto1()))
     assert r2["total"] == 2 and r2["empresa_id"] == 1, r2
 
 
@@ -87,17 +91,17 @@ async def test_admin_sees_all(db_session):
 
 @pytest.mark.asyncio
 async def test_listar_conductores_scoped(db_session):
-    r = json.loads(await execute_tool(db_session, "listar_conductores", {}, actor=_driver1()))
+    r = json.loads(await execute_tool(db_session, "listar_conductores", {}, actor=_contacto1()))
     assert {c["empresa_id"] for c in r["conductores"]} == {1}, r
 
 
 @pytest.mark.asyncio
 async def test_resumen_empresa_cross_tenant_denied(db_session):
     deny = json.loads(await execute_tool(db_session, "resumen_empresa",
-                                         {"empresa_id": 2}, actor=_driver1()))
+                                         {"empresa_id": 2}, actor=_contacto1()))
     assert "error" in deny, deny
     ok = json.loads(await execute_tool(db_session, "resumen_empresa",
-                                       {"empresa_id": 1}, actor=_driver1()))
+                                       {"empresa_id": 1}, actor=_contacto1()))
     assert ok.get("empresa") == "E1", ok
 
 
@@ -106,7 +110,7 @@ async def test_compliance_cross_tenant_denied(db_session):
     # driver of empresa 1 cannot inspect a conductor of empresa 2.
     r = json.loads(await execute_tool(db_session, "verificar_compliance_documentos",
                                       {"tipo_entidad": "conductor", "entidad_id": "D2A"},
-                                      actor=_driver1()))
+                                      actor=_contacto1()))
     assert "error" in r, r
 
 

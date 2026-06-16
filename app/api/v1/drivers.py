@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.onboarding import send_invitation
 from app.core.security import current_user
 from app.core.security.scope import apply_scope, can_access_empresa
 from app.db.models.driver import Driver
@@ -321,6 +322,10 @@ async def regenerate_activation(
     driver.updated_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(driver)
+
+    # System-driven onboarding: push the WhatsApp invite so the driver can just
+    # reply to activate (best-effort; the wa.me link below is the fallback).
+    await send_invitation(driver.phone_e164, driver.nombre)
 
     return RegenerateActivationResponse(
         driver_id=driver.driver_id,

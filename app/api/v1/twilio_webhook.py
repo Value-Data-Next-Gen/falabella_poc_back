@@ -14,7 +14,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.ai_tools import TOOL_DEFINITIONS, execute_tool
+from app.core.ai_tools import actor_role, execute_tool, tool_definitions_for
 from app.core.config import settings
 from app.core.twilio_templates import cuenta_activada_sid
 from app.core.whatsapp import send_whatsapp
@@ -27,26 +27,35 @@ router = APIRouter(prefix="/api/v1/twilio", tags=["twilio"])
 
 TWIML_EMPTY = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
-BOT_SYSTEM_PROMPT = """Eres el bot de WhatsApp de Torre de Control (Falabella ultima milla).
-Estas hablando con {nombre} ({tipo}).
-
-Tu rol:
-- Si es un conductor: ayudar con consultas de ruta, reportar motivos de no-entrega, verificar estado
-- Si es un contacto/usuario: dar KPIs, alertas, estado de conductores, clasificar motivos
+_BOT_BASE = """Eres el bot de WhatsApp de Torre de Control (Falabella ultima milla).
+Estas hablando con {nombre}.
 
 Reglas:
-- Responde en espanol chileno, breve y directo (maximo 300 caracteres por mensaje)
-- Usa los tools para consultar datos reales
-- Para motivos de no-entrega, usa el catalogo oficial (tool clasificar_motivo)
-- Si no entiendes, pide que repita
-- Cuando un conductor o usuario pregunta sobre un folio cliente, un destinatario especifico, o una proxima entrega, llama SIEMPRE el tool `obtener_info_cliente_por_folio`. Si el cliente tiene `es_vip=true` o `notas_operativas` no vacias, mencionalo PROMINENTEMENTE en tu respuesta (ej: "Cliente VIP: razon X. Nota operativa: Y"). Esto es critico para que el conductor sepa como manejar la entrega.
-
-Menu rapido (el usuario puede escribir el numero):
-1. Estado operativo
-2. Documentos pendientes
-3. Clasificar motivo
-4. Ayuda
+- Responde en espanol chileno, breve y directo (maximo 300 caracteres por mensaje).
+- Usa los tools para consultar datos reales; nunca inventes cifras.
+- Si no entiendes, pide que repita. Solo puedes ayudar con lo correspondiente al rol del usuario.
 """
+
+# Role-tailored guidance. Each actor only sees the tools its role allows
+# (see ai_tools.tool_definitions_for), so the prompt matches the capabilities.
+_ROLE_GUIDE = {
+    "driver": """El usuario es un CONDUCTOR. Ayudalo SOLO con su operacion:
+- Consultar un cliente por folio: usa SIEMPRE `obtener_info_cliente_por_folio`. Si el cliente es VIP o tiene notas operativas, dilo PROMINENTEMENTE (ej: "Cliente VIP: razon X. Nota: Y").
+- Reportar un motivo de no-entrega: usa `clasificar_motivo` con el catalogo oficial.
+- Cancelar una visita por motivo legitimo: `cancelar_visita_manual`.
+- Reportar un incidente en ruta (siniestro, demora grave): `crear_alerta_manual`.
+No tienes acceso a datos administrativos ni de otros conductores.""",
+    "contacto": """El usuario es un CONTACTO/JEFE de la empresa transportista. Ayudalo con la operacion de SU empresa unicamente:
+alertas abiertas, resumen operativo, estado/lista de conductores, compliance de documentos, clasificar motivos, info de clientes por folio, y reportes (`obtener_reporte`).""",
+    "manager": """El usuario es un TRANSPORT MANAGER. Ayudalo con la operacion de las empresas asignadas a el:
+alertas, resumenes, conductores, compliance, clasificar motivos, info de clientes, y reportes (`obtener_reporte`).""",
+    "falabella": """El usuario es de FALABELLA (admin/ops) con visibilidad de TODAS las empresas.
+Ayudalo con KPIs, alertas, resumenes operativos, compliance, conductores, info de clientes y reportes (`obtener_reporte`) de cualquier empresa.""",
+}
+
+
+def _system_prompt(nombre: str, role: str) -> str:
+    return _BOT_BASE.format(nombre=nombre) + "\n" + _ROLE_GUIDE.get(role, _ROLE_GUIDE["driver"])
 
 
 def _twiml() -> Response:
@@ -101,22 +110,39 @@ async def twilio_webhook(
 
     logger.info(f"[twilio] inbound from={from_number} body={body[:100]}")
 
+    # Explicit token activation (wa.me link path): "ACTIVAR <token>".
     if body.upper().startswith("ACTIVAR"):
         token = body.split(maxsplit=1)[1].strip() if " " in body else ""
         if token:
             await _handle_activation(db, from_number, token)
+        else:
+            await send_whatsapp(to=from_number, body="Para activarte responde: ACTIVAR seguido de tu codigo.")
         return _twiml()
 
-    # Find who's messaging
+    # Find who's messaging (by phone) — INCLUDING not-yet-activated invitees.
     driver = (await db.execute(select(Driver).where(Driver.phone_e164 == from_number))).scalar_one_or_none()
     contacto = (await db.execute(select(EmpresaContacto).where(EmpresaContacto.phone_e164 == from_number))).scalar_one_or_none() if not driver else None
     user = (await db.execute(select(User).where(User.phone_e164 == from_number))).scalar_one_or_none() if not driver and not contacto else None
+    entity = driver or contacto or user
+
+    # Opt-out (Meta requires honoring STOP). Only meaningful for a known number.
+    if entity is not None and body.strip().upper() in ("STOP", "BAJA", "SALIR", "CANCELAR", "NO"):
+        await _handle_optout(db, entity)
+        await send_whatsapp(to=from_number, body="Listo, no recibiras mas mensajes. Responde ACTIVAR <codigo> para reactivar.")
+        return _twiml()
+
+    if entity is None:
+        await send_whatsapp(to=from_number, body="No te tengo registrado. Pide a tu supervisor que te invite, o responde: ACTIVAR seguido de tu codigo.")
+        return _twiml()
+
+    # Reply-to-activate (hybrid onboarding): an invited person whose phone we
+    # already have but who hasn't activated yet — any reply is consent. This
+    # makes the INVITACION template ("responde para activarte") actually work.
+    if not _is_activated(entity):
+        await _activate_entity(db, entity, from_number)
+        return _twiml()
 
     nombre, tipo, entity_id = _find_person_sync(driver, contacto, user)
-
-    if tipo == "desconocido":
-        await send_whatsapp(to=from_number, body="No te tengo registrado. Pide a tu supervisor que te invite a Torre de Control.")
-        return _twiml()
 
     # The actor for ai_tools is whichever entity resolved by phone — drives
     # tenant scope for alerts tools (CR-022 Part B). Drivers and contactos are
@@ -148,7 +174,8 @@ async def _ai_reply(
             api_version=settings.azure_openai_api_version,
         )
 
-        system = BOT_SYSTEM_PROMPT.format(nombre=nombre, tipo=tipo)
+        system = _system_prompt(nombre, actor_role(actor))
+        tools = tool_definitions_for(actor)
 
         messages: list[dict] = [
             {"role": "system", "content": system},
@@ -159,7 +186,7 @@ async def _ai_reply(
             response = await client.chat.completions.create(
                 model=settings.azure_openai_chat_deployment,
                 messages=messages,
-                tools=TOOL_DEFINITIONS,
+                tools=tools,
                 tool_choice="auto",
                 max_tokens=300,
             )
@@ -184,42 +211,58 @@ async def _ai_reply(
         return "Error del sistema. Intenta de nuevo en unos minutos."
 
 
-async def _handle_activation(db: AsyncSession, phone: str, token: str) -> None:
+def _entity_nombre(entity: Driver | EmpresaContacto | User) -> str:
+    return entity.display_name if isinstance(entity, User) else entity.nombre
+
+
+def _is_activated(entity: Driver | EmpresaContacto | User) -> bool:
+    """Has this invitee already opted in? Drivers/contactos use opted_in_at;
+    users use activation_used_at (they have no opt-in step)."""
+    if isinstance(entity, Driver | EmpresaContacto):
+        return entity.opted_in_at is not None
+    return entity.activation_used_at is not None
+
+
+async def _activate_entity(db: AsyncSession, entity: Driver | EmpresaContacto | User, phone: str) -> None:
+    """Mark an invitee activated + opted-in and send the welcome template.
+    Shared by the token path and the reply-to-activate (phone-match) path."""
     now = datetime.now(UTC)
+    entity.phone_e164 = phone
+    entity.activation_used_at = now
+    if isinstance(entity, Driver | EmpresaContacto):
+        entity.opted_in_at = now
+    if hasattr(entity, "notify_whatsapp"):
+        entity.notify_whatsapp = True
+    await db.commit()
+    nombre = _entity_nombre(entity) or ""
+    kind = type(entity).__name__
+    logger.info(f"[activation] {kind} activated phone={phone}")
+    first = nombre.split()[0] if nombre.strip() else "👋"
+    await send_whatsapp(to=phone, content_sid=cuenta_activada_sid(), content_variables={"1": first})
 
-    result = await db.execute(select(Driver).where(Driver.activation_token == token))
-    driver = result.scalar_one_or_none()
-    if driver:
-        driver.phone_e164 = phone
-        driver.opted_in_at = now
-        driver.activation_used_at = now
-        driver.notify_whatsapp = True
-        await db.commit()
-        logger.info(f"[activation] driver {driver.driver_id} activated")
-        await send_whatsapp(to=phone, content_sid=cuenta_activada_sid(), content_variables={"1": driver.nombre.split()[0]})
-        return
 
-    result = await db.execute(select(EmpresaContacto).where(EmpresaContacto.activation_token == token))
-    contacto = result.scalar_one_or_none()
-    if contacto:
-        contacto.phone_e164 = phone
-        contacto.opted_in_at = now
-        contacto.activation_used_at = now
-        await db.commit()
-        logger.info(f"[activation] contacto {contacto.contact_id} activated")
-        await send_whatsapp(to=phone, content_sid=cuenta_activada_sid(), content_variables={"1": contacto.nombre.split()[0]})
-        return
+async def _handle_optout(db: AsyncSession, entity: Driver | EmpresaContacto | User) -> None:
+    """Honor STOP/BAJA: stop notifying. Drivers/users have notify_whatsapp;
+    for all we clear opted_in_at so they must re-activate to resume."""
+    if hasattr(entity, "notify_whatsapp"):
+        entity.notify_whatsapp = False
+    if isinstance(entity, Driver | EmpresaContacto):
+        entity.opted_in_at = None
+    await db.commit()
+    logger.info(f"[optout] {type(entity).__name__} opted out")
 
-    result = await db.execute(select(User).where(User.activation_token == token))
-    user = result.scalar_one_or_none()
-    if user:
-        user.phone_e164 = phone
-        user.activation_used_at = now
-        user.notify_whatsapp = True
-        await db.commit()
-        logger.info(f"[activation] user {user.user_id} activated")
-        await send_whatsapp(to=phone, content_sid=cuenta_activada_sid(), content_variables={"1": user.display_name.split()[0]})
-        return
+
+async def _handle_activation(db: AsyncSession, phone: str, token: str) -> None:
+    """Token-based activation (wa.me link). Looks the token up across the three
+    invitee types and activates the match."""
+    for model in (Driver, EmpresaContacto, User):
+        entity = (await db.execute(
+            select(model).where(model.activation_token == token)
+        )).scalar_one_or_none()
+        if entity is not None:
+            await _activate_entity(db, entity, phone)
+            return
+    logger.warning(f"[activation] token {token[:8]}... not found for phone {phone}")
 
     logger.warning(f"[activation] token {token[:8]}... not found for phone {phone}")
 

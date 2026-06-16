@@ -66,6 +66,27 @@ def _hhmm(dt: datetime | None) -> str:
     return dt.strftime("%H:%M") if dt is not None else "-"
 
 
+async def _ruta_vehicle_driver(db: AsyncSession, visita: Visita | None) -> tuple[str, str]:
+    """Resolve (patente, conductor_nombre) for a visita via its ruta.
+
+    The approved alert templates print the vehicle plate and the driver name,
+    so we must populate those — not the folio/empresa the dispatcher used to
+    send (which rendered as 'conductor <cliente>' to recipients).
+    """
+    if visita is None or visita.ruta_id is None:
+        return "-", "-"
+    row = (await db.execute(
+        select(Vehicle.plate, Driver.nombre)
+        .select_from(Ruta)
+        .join(Vehicle, Ruta.vehicle_id == Vehicle.vehicle_id, isouter=True)
+        .join(Driver, Ruta.driver_id == Driver.driver_id, isouter=True)
+        .where(Ruta.ruta_id == visita.ruta_id)
+    )).first()
+    if row is None:
+        return "-", "-"
+    return (row[0] or "-"), (row[1] or "-")
+
+
 def _clip(value: object, n: int = 120) -> str:
     """Twilio content variables must be non-empty strings; clip + default."""
     s = "" if value is None else str(value)
@@ -79,8 +100,9 @@ async def _build_template_message(db: AsyncSession, alert: Alert) -> tuple[str, 
     The approved templates take 6 numbered variables each (verified against the
     Twilio Content API). All 6 MUST be provided or Twilio rejects the send.
 
-      ALERTA_MOTIVO: 1=severidad 2=motivo 3=folio 4=cliente 5=empresa 6=detalle
-      VIP_DEADLINE : 1=cliente 2=eta 3=min_restantes 4=patente 5=hora_actual 6=margen
+    Variable order matches the approved template TEXT exactly:
+      ALERTA_MOTIVO: 1=severidad 2=motivo 3=vehículo(patente) 4=conductor 5=cliente 6=detalle
+      VIP_DEADLINE : 1=cliente 2=deadline(hh:mm) 3=min_restantes 4=patente 5=eta 6=margen
     """
     content_sid = _template_for(alert.tipo)
 
@@ -118,32 +140,27 @@ async def _build_template_message(db: AsyncSession, alert: Alert) -> tuple[str, 
             mins = int(payload["deadline_min"])
         else:
             mins = None
-        patente = "-"
-        if visita is not None and visita.ruta_id is not None:
-            patente = await db.scalar(
-                select(Vehicle.plate)
-                .select_from(Ruta)
-                .join(Vehicle, Ruta.vehicle_id == Vehicle.vehicle_id)
-                .where(Ruta.ruta_id == visita.ruta_id)
-            ) or "-"
+        patente, _conductor = await _ruta_vehicle_driver(db, visita)
         cliente = (visita.cliente_nombre if visita else None) or empresa_nombre
         return content_sid, {
             "1": _clip(cliente, 60),
-            "2": _hhmm(eta),
+            "2": _hhmm(eta),                         # deadline (promised time)
             "3": _clip(mins if mins is not None else "-", 6),
             "4": _clip(patente, 20),
-            "5": _hhmm(sim_now),
+            "5": _hhmm(eta),                         # template label is "ETA estimada" — show the ETA, not the wall clock
             "6": _clip(f"{mins:+d}" if mins is not None else "-", 6),  # signed margin (+25 / -5), never "+-5"
         }
 
     # Generic operational alert (eta_breach / eta_preview / manual).
+    # Template text: "vehiculo {{3}} con conductor {{4}}, cliente {{5}}".
     motivo = (visita.motivo if visita else None) or alert.tipo
+    patente, conductor = await _ruta_vehicle_driver(db, visita)
     return content_sid, {
         "1": _clip((alert.severity or "alta").upper(), 12),
         "2": _clip(motivo, 60),
-        "3": _clip(visita.folio_cliente if visita else "-", 40),
-        "4": _clip(visita.cliente_nombre if visita else "-", 60),
-        "5": _clip(empresa_nombre, 60),
+        "3": _clip(patente, 20),
+        "4": _clip(conductor, 60),
+        "5": _clip(visita.cliente_nombre if visita else "-", 60),
         "6": _clip(alert.descripcion, 200),
     }
 
@@ -412,11 +429,9 @@ async def dispatch_alert(db: AsyncSession, alert: Alert, motivo: str | None = No
     # outage), we deliberately LEAVE the alert 'abierta' so the cron retries —
     # otherwise a momentary outage permanently suppresses a real eta_breach /
     # vip_deadline and operators silently never hear about it.
-    from datetime import UTC
-    from datetime import datetime as _dt
     if sent_count > 0 or not matched:
         alert.estado = "notificada"
-        alert.notified_at = _dt.now(UTC)
+        alert.notified_at = datetime.now(UTC)
         alert.notified_recipients_count = sent_count
     else:
         logger.warning(

@@ -8,7 +8,7 @@ from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.ai_tools import TOOL_DEFINITIONS, execute_tool
+from app.core.ai_tools import execute_tool, tool_definitions_for
 from app.core.config import settings
 from app.core.motivos_catalogo import DESAMBIGUACION, MOTIVOS
 from app.core.security import current_user
@@ -79,6 +79,7 @@ async def chat(
         messages.append({"role": m.role, "content": m.content})
 
     tool_calls_made: list[str] = []
+    tools = tool_definitions_for(user)
 
     for iteration in range(10):
         # After 3 tool calls, force the model to synthesize (no more tools).
@@ -86,7 +87,7 @@ async def chat(
         response = await client.chat.completions.create(
             model=settings.azure_openai_chat_deployment,
             messages=messages,
-            tools=TOOL_DEFINITIONS,
+            tools=tools,
             tool_choice="none" if force_synthesize else "auto",
         )
 
