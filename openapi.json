@@ -2635,6 +2635,91 @@
         }
       }
     },
+    "/api/v1/reports/rango": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Get Range Report",
+        "description": "Aggregate report over every día of an empresa within [desde, hasta].",
+        "operationId": "getRangeReport",
+        "parameters": [
+          {
+            "name": "empresa_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "Empresa a reportar",
+              "title": "Empresa Id"
+            },
+            "description": "Empresa a reportar"
+          },
+          {
+            "name": "desde",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "Fecha inicial (inclusive)",
+              "title": "Desde"
+            },
+            "description": "Fecha inicial (inclusive)"
+          },
+          {
+            "name": "hasta",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "Fecha final (inclusive)",
+              "title": "Hasta"
+            },
+            "description": "Fecha final (inclusive)"
+          },
+          {
+            "name": "td_session",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Td Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RangeReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/documents/types": {
       "get": {
         "tags": [
@@ -11499,6 +11584,93 @@
         "title": "PromoteVipsResult",
         "description": "POST /api/v1/operacion/rutas/{ruta_id}/promote-vips response."
       },
+      "RangeReport": {
+        "properties": {
+          "empresa_id": {
+            "type": "integer",
+            "title": "Empresa Id"
+          },
+          "empresa_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Nombre"
+          },
+          "desde": {
+            "type": "string",
+            "format": "date",
+            "title": "Desde"
+          },
+          "hasta": {
+            "type": "string",
+            "format": "date",
+            "title": "Hasta"
+          },
+          "dias": {
+            "type": "integer",
+            "title": "Dias"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/OutcomeCounts"
+          },
+          "vip": {
+            "$ref": "#/components/schemas/OutcomeCounts"
+          },
+          "on_time": {
+            "$ref": "#/components/schemas/OnTime"
+          },
+          "by_region": {
+            "items": {
+              "$ref": "#/components/schemas/RegionRow"
+            },
+            "type": "array",
+            "title": "By Region"
+          },
+          "by_driver": {
+            "items": {
+              "$ref": "#/components/schemas/DriverRow"
+            },
+            "type": "array",
+            "title": "By Driver"
+          },
+          "by_motivo": {
+            "items": {
+              "$ref": "#/components/schemas/MotivoRow"
+            },
+            "type": "array",
+            "title": "By Motivo"
+          },
+          "trend": {
+            "items": {
+              "$ref": "#/components/schemas/TrendPoint"
+            },
+            "type": "array",
+            "title": "Trend"
+          }
+        },
+        "type": "object",
+        "required": [
+          "empresa_id",
+          "empresa_nombre",
+          "desde",
+          "hasta",
+          "dias",
+          "totals",
+          "vip",
+          "on_time",
+          "by_region",
+          "by_driver",
+          "by_motivo",
+          "trend"
+        ],
+        "title": "RangeReport",
+        "description": "Aggregate over every día of an empresa in [desde, hasta], plus a per-día\ntrend so the UI can chart the evolution across the range."
+      },
       "ReadyResponse": {
         "properties": {
           "status": {
@@ -11866,6 +12038,60 @@
           "total_visitas"
         ],
         "title": "TopRuta"
+      },
+      "TrendPoint": {
+        "properties": {
+          "fecha": {
+            "type": "string",
+            "format": "date",
+            "title": "Fecha"
+          },
+          "dia_id": {
+            "type": "integer",
+            "title": "Dia Id"
+          },
+          "visitas": {
+            "type": "integer",
+            "title": "Visitas"
+          },
+          "entregado": {
+            "type": "integer",
+            "title": "Entregado"
+          },
+          "success_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Pct"
+          },
+          "on_time_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Time Pct"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fecha",
+          "dia_id",
+          "visitas",
+          "entregado",
+          "success_pct",
+          "on_time_pct"
+        ],
+        "title": "TrendPoint",
+        "description": "One point in the per-día trend of a range report."
       },
       "UserCreate": {
         "properties": {

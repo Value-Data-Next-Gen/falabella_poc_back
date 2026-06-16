@@ -12,8 +12,9 @@ return a handful of rows each. The only per-row fetch is the punctuality pair
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +35,9 @@ from app.schemas.report import (
     MotivoRow,
     OnTime,
     OutcomeCounts,
+    RangeReport,
     RegionRow,
+    TrendPoint,
 )
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
@@ -60,9 +63,11 @@ def _outcome(c: dict) -> OutcomeCounts:
     )
 
 
-async def _estado_counts(db: AsyncSession, dia_id: int, *, vip_only: bool = False) -> dict:
-    """{estado: count} for a día via SQL GROUP BY."""
-    stmt = select(Visita.estado, func.count()).where(Visita.dia_id == dia_id).group_by(Visita.estado)
+async def _estado_counts(db: AsyncSession, dia_ids: list[int], *, vip_only: bool = False) -> dict:
+    """{estado: count} across one or more días via SQL GROUP BY."""
+    if not dia_ids:
+        return {}
+    stmt = select(Visita.estado, func.count()).where(Visita.dia_id.in_(dia_ids)).group_by(Visita.estado)
     if vip_only:
         stmt = stmt.where(Visita.es_vip == 1)
     return {estado: n for estado, n in (await db.execute(stmt)).all()}
@@ -96,7 +101,9 @@ def _on_time_row(medidas, a_tiempo, sum_delay_sec, grace: int) -> OnTime:
     )
 
 
-async def _on_time_overall(db: AsyncSession, dia_id: int, grace: int) -> OnTime:
+async def _on_time_overall(db: AsyncSession, dia_ids: list[int], grace: int) -> OnTime:
+    if not dia_ids:
+        return _on_time_row(0, 0, 0, grace)
     delay = _delay_seconds(db)
     row = (await db.execute(
         select(
@@ -104,7 +111,7 @@ async def _on_time_overall(db: AsyncSession, dia_id: int, grace: int) -> OnTime:
             func.sum(case((delay <= grace * 60, 1), else_=0)),
             func.coalesce(func.sum(delay), 0),
         ).where(
-            Visita.dia_id == dia_id,
+            Visita.dia_id.in_(dia_ids),
             Visita.eta_estimada.isnot(None),
             Visita.completada_at.isnot(None),
         )
@@ -112,7 +119,9 @@ async def _on_time_overall(db: AsyncSession, dia_id: int, grace: int) -> OnTime:
     return _on_time_row(row[0], row[1], row[2], grace)
 
 
-async def _on_time_by_driver(db: AsyncSession, dia_id: int, grace: int) -> dict:
+async def _on_time_by_driver(db: AsyncSession, dia_ids: list[int], grace: int) -> dict:
+    if not dia_ids:
+        return {}
     delay = _delay_seconds(db)
     rows = (await db.execute(
         select(
@@ -124,7 +133,7 @@ async def _on_time_by_driver(db: AsyncSession, dia_id: int, grace: int) -> dict:
         .select_from(Visita)
         .join(Ruta, Visita.ruta_id == Ruta.ruta_id, isouter=True)
         .where(
-            Visita.dia_id == dia_id,
+            Visita.dia_id.in_(dia_ids),
             Visita.eta_estimada.isnot(None),
             Visita.completada_at.isnot(None),
         )
@@ -139,42 +148,30 @@ def _delta(a: float | None, b: float | None) -> float | None:
 
 async def _day_summary(db: AsyncSession, dia_id: int, grace: int) -> tuple[OutcomeCounts, OnTime]:
     """Totals + punctuality for a día (used for the comparison baseline)."""
-    counts = await _estado_counts(db, dia_id)
-    on_time = await _on_time_overall(db, dia_id, grace)
+    counts = await _estado_counts(db, [dia_id])
+    on_time = await _on_time_overall(db, [dia_id], grace)
     return _outcome(counts), on_time
 
 
-@router.get("/dia/{dia_id}", operation_id="getDiaReport", response_model=DiaReport)
-async def get_dia_report(
-    dia_id: int,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(current_user),
-) -> DiaReport:
-    dia = (await db.execute(
-        select(DiaOperativo).where(DiaOperativo.dia_id == dia_id)
-    )).scalar_one_or_none()
-    if dia is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Día no encontrado")
-    if not can_access_empresa(user, dia.empresa_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Sin acceso a esta empresa")
+async def _aggregate(
+    db: AsyncSession, dia_ids: list[int], grace: int,
+) -> tuple[OutcomeCounts, OutcomeCounts, OnTime, list[RegionRow], list[DriverRow], list[MotivoRow]]:
+    """Totals, VIP, punctuality and region/driver/motivo breakdowns across one or
+    more días. Shared by the single-día and date-range report endpoints; every
+    aggregation is pushed into SQL (GROUP BY) so it scales with the result set,
+    not the visita count."""
+    totals = _outcome(await _estado_counts(db, dia_ids))
+    vip = _outcome(await _estado_counts(db, dia_ids, vip_only=True))
+    on_time = await _on_time_overall(db, dia_ids, grace)
+    driver_ot = await _on_time_by_driver(db, dia_ids, grace)
 
-    empresa_nombre = await db.scalar(
-        select(Empresa.nombre).where(Empresa.empresa_id == dia.empresa_id)
-    )
-    grace = settings.alerts_grace_min
-
-    # ---- totals + VIP (grouped) ----
-    totals = _outcome(await _estado_counts(db, dia_id))
-    vip = _outcome(await _estado_counts(db, dia_id, vip_only=True))
-
-    # ---- punctuality: computed in SQL (no per-row transfer) ----
-    on_time = await _on_time_overall(db, dia_id, grace)
-    driver_ot = await _on_time_by_driver(db, dia_id, grace)
+    if not dia_ids:
+        return totals, vip, on_time, [], [], []
 
     # ---- by region (grouped) ----
     region_rows = (await db.execute(
         select(Visita.region, Visita.estado, func.count())
-        .where(Visita.dia_id == dia_id)
+        .where(Visita.dia_id.in_(dia_ids))
         .group_by(Visita.region, Visita.estado)
     )).all()
     region_acc: dict = defaultdict(lambda: defaultdict(int))
@@ -197,7 +194,7 @@ async def get_dia_report(
         select(Ruta.driver_id, Visita.estado, func.count())
         .select_from(Visita)
         .join(Ruta, Visita.ruta_id == Ruta.ruta_id, isouter=True)
-        .where(Visita.dia_id == dia_id)
+        .where(Visita.dia_id.in_(dia_ids))
         .group_by(Ruta.driver_id, Visita.estado)
     )).all()
     driver_acc: dict = defaultdict(lambda: defaultdict(int))
@@ -227,7 +224,7 @@ async def get_dia_report(
     motivo_rows = (await db.execute(
         select(Visita.motivo, func.count())
         .where(
-            Visita.dia_id == dia_id,
+            Visita.dia_id.in_(dia_ids),
             Visita.estado.in_(("no_entregado", "cancelado")),
             Visita.motivo.isnot(None),
         )
@@ -237,6 +234,29 @@ async def get_dia_report(
         (MotivoRow(motivo=m, count=n) for m, n in motivo_rows),
         key=lambda r: r.count, reverse=True,
     )
+    return totals, vip, on_time, by_region, by_driver, by_motivo
+
+
+@router.get("/dia/{dia_id}", operation_id="getDiaReport", response_model=DiaReport)
+async def get_dia_report(
+    dia_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> DiaReport:
+    dia = (await db.execute(
+        select(DiaOperativo).where(DiaOperativo.dia_id == dia_id)
+    )).scalar_one_or_none()
+    if dia is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Día no encontrado")
+    if not can_access_empresa(user, dia.empresa_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Sin acceso a esta empresa")
+
+    empresa_nombre = await db.scalar(
+        select(Empresa.nombre).where(Empresa.empresa_id == dia.empresa_id)
+    )
+    grace = settings.alerts_grace_min
+
+    totals, vip, on_time, by_region, by_driver, by_motivo = await _aggregate(db, [dia_id], grace)
 
     # ---- comparison vs the empresa's previous día ----
     prev = (await db.execute(
@@ -265,4 +285,91 @@ async def get_dia_report(
         totals=totals, vip=vip, on_time=on_time,
         by_region=by_region, by_driver=by_driver, by_motivo=by_motivo,
         comparison=comparison,
+    )
+
+
+async def _trend(db: AsyncSession, dias: list[tuple[int, date]], grace: int) -> list[TrendPoint]:
+    """Per-día trend across a range, in two grouped queries (not N)."""
+    dia_ids = [d for d, _ in dias]
+    if not dia_ids:
+        return []
+    # totals + entregado per día
+    est_rows = (await db.execute(
+        select(Visita.dia_id, Visita.estado, func.count())
+        .where(Visita.dia_id.in_(dia_ids))
+        .group_by(Visita.dia_id, Visita.estado)
+    )).all()
+    est_acc: dict = defaultdict(lambda: defaultdict(int))
+    for did, estado, n in est_rows:
+        est_acc[did][estado] = n
+    # punctuality per día
+    delay = _delay_seconds(db)
+    ot_rows = (await db.execute(
+        select(
+            Visita.dia_id,
+            func.count(),
+            func.sum(case((delay <= grace * 60, 1), else_=0)),
+        )
+        .where(
+            Visita.dia_id.in_(dia_ids),
+            Visita.eta_estimada.isnot(None),
+            Visita.completada_at.isnot(None),
+        )
+        .group_by(Visita.dia_id)
+    )).all()
+    ot_acc = {did: (int(n or 0), int(a or 0)) for did, n, a in ot_rows}
+
+    points = []
+    for did, fecha in dias:
+        c = est_acc.get(did, {})
+        medidas, a_tiempo = ot_acc.get(did, (0, 0))
+        points.append(TrendPoint(
+            fecha=fecha, dia_id=did,
+            visitas=sum(c.values()),
+            entregado=c.get("entregado", 0),
+            success_pct=_success_pct(c),
+            on_time_pct=_pct(a_tiempo, medidas),
+        ))
+    return points
+
+
+@router.get("/rango", operation_id="getRangeReport", response_model=RangeReport)
+async def get_range_report(
+    empresa_id: int = Query(..., description="Empresa a reportar"),
+    desde: date = Query(..., description="Fecha inicial (inclusive)"),
+    hasta: date = Query(..., description="Fecha final (inclusive)"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+) -> RangeReport:
+    """Aggregate report over every día of an empresa within [desde, hasta]."""
+    if desde > hasta:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "'desde' debe ser <= 'hasta'")
+    if not can_access_empresa(user, empresa_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Sin acceso a esta empresa")
+
+    empresa_nombre = await db.scalar(
+        select(Empresa.nombre).where(Empresa.empresa_id == empresa_id)
+    )
+    grace = settings.alerts_grace_min
+
+    dias = (await db.execute(
+        select(DiaOperativo.dia_id, DiaOperativo.fecha)
+        .where(
+            DiaOperativo.empresa_id == empresa_id,
+            DiaOperativo.fecha >= desde,
+            DiaOperativo.fecha <= hasta,
+        )
+        .order_by(DiaOperativo.fecha)
+    )).all()
+    dia_ids = [d for d, _ in dias]
+
+    totals, vip, on_time, by_region, by_driver, by_motivo = await _aggregate(db, dia_ids, grace)
+    trend = await _trend(db, dias, grace)
+
+    return RangeReport(
+        empresa_id=empresa_id, empresa_nombre=empresa_nombre,
+        desde=desde, hasta=hasta, dias=len(dia_ids),
+        totals=totals, vip=vip, on_time=on_time,
+        by_region=by_region, by_driver=by_driver, by_motivo=by_motivo,
+        trend=trend,
     )

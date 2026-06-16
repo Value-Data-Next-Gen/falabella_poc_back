@@ -72,3 +72,30 @@ class DiaReport(BaseModel):
     by_driver: list[DriverRow]
     by_motivo: list[MotivoRow]
     comparison: Comparison
+
+
+class TrendPoint(BaseModel):
+    """One point in the per-día trend of a range report."""
+    fecha: date
+    dia_id: int
+    visitas: int
+    entregado: int
+    success_pct: float | None
+    on_time_pct: float | None
+
+
+class RangeReport(BaseModel):
+    """Aggregate over every día of an empresa in [desde, hasta], plus a per-día
+    trend so the UI can chart the evolution across the range."""
+    empresa_id: int
+    empresa_nombre: str | None
+    desde: date
+    hasta: date
+    dias: int                 # how many días fell in the range
+    totals: OutcomeCounts
+    vip: OutcomeCounts
+    on_time: OnTime
+    by_region: list[RegionRow]
+    by_driver: list[DriverRow]
+    by_motivo: list[MotivoRow]
+    trend: list[TrendPoint]

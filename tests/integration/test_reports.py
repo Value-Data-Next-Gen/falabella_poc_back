@@ -167,3 +167,61 @@ def test_dia_report_cross_tenant_403(client_factory, seeded):
     c = client_factory("transport_manager", 20, [1])  # scoped to empresa 1
     r = c.get(f"/api/v1/reports/dia/{seeded['d_other']}")  # empresa 2's day
     assert r.status_code == 403, r.text
+
+
+def test_range_report_aggregates_both_days(client_factory, seeded):
+    c = client_factory("falabella_admin", 10, [])
+    r = c.get("/api/v1/reports/rango", params={
+        "empresa_id": 1, "desde": "2026-06-09", "hasta": "2026-06-10"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["dias"] == 2
+    # d1: 1 entregado + 1 no_entregado; d2: 3 entregado + 1 no_entregado
+    assert body["totals"]["visitas"] == 6
+    assert body["totals"]["entregado"] == 4
+    assert body["totals"]["no_entregado"] == 2
+    assert body["totals"]["success_pct"] == round(100 * 4 / 6, 1)  # 66.7
+    # punctuality only measurable on d2 (2 medidas, 1 on time)
+    assert body["on_time"]["medidas"] == 2
+    assert body["on_time"]["on_time_pct"] == 50.0
+    # regions across both days: RM=4, Valpo=2
+    regions = {row["region"]: row["visitas"] for row in body["by_region"]}
+    assert regions["RM"] == 4
+    assert regions["Valpo"] == 2
+    # motivos across both: SIN MORADORES (d1) + CLIENTE RECHAZA (d2)
+    assert {m["motivo"] for m in body["by_motivo"]} == {"SIN MORADORES", "CLIENTE RECHAZA"}
+
+
+def test_range_report_trend_is_per_day_in_order(client_factory, seeded):
+    c = client_factory("falabella_admin", 10, [])
+    body = c.get("/api/v1/reports/rango", params={
+        "empresa_id": 1, "desde": "2026-06-09", "hasta": "2026-06-10"}).json()
+    trend = body["trend"]
+    assert [p["fecha"] for p in trend] == ["2026-06-09", "2026-06-10"]
+    assert trend[0]["visitas"] == 2 and trend[0]["success_pct"] == 50.0
+    assert trend[1]["visitas"] == 4 and trend[1]["success_pct"] == 75.0
+    assert trend[1]["on_time_pct"] == 50.0
+
+
+def test_range_report_empty_window_is_zeroed(client_factory, seeded):
+    c = client_factory("falabella_admin", 10, [])
+    body = c.get("/api/v1/reports/rango", params={
+        "empresa_id": 1, "desde": "2030-01-01", "hasta": "2030-01-31"}).json()
+    assert body["dias"] == 0
+    assert body["totals"]["visitas"] == 0
+    assert body["trend"] == []
+    assert body["by_region"] == []
+
+
+def test_range_report_rejects_inverted_range(client_factory, seeded):
+    c = client_factory("falabella_admin", 10, [])
+    r = c.get("/api/v1/reports/rango", params={
+        "empresa_id": 1, "desde": "2026-06-10", "hasta": "2026-06-09"})
+    assert r.status_code == 400, r.text
+
+
+def test_range_report_cross_tenant_403(client_factory, seeded):
+    c = client_factory("transport_manager", 20, [1])  # scoped to empresa 1
+    r = c.get("/api/v1/reports/rango", params={
+        "empresa_id": 2, "desde": "2026-06-09", "hasta": "2026-06-10"})
+    assert r.status_code == 403, r.text
