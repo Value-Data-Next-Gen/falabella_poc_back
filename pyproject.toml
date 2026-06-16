@@ -1,0 +1,133 @@
+[project]
+name = "torre-de-control-backend"
+version = "2.0.0"
+description = "Torre de Control v2 — Falabella last-mile control tower (backend)"
+authors = [{ name = "ValueData SpA", email = "hello@valuedata.cl" }]
+requires-python = ">=3.11,<3.13"
+readme = "../README.md"
+license = { text = "Proprietary" }
+
+dependencies = [
+    # Web
+    "fastapi>=0.115,<1.0",
+    "starlette>=1.0.1",         # explicit floor: <1.0.1 has PYSEC-2026-161
+    "uvicorn[standard]>=0.34,<1.0",
+    "pydantic>=2.10,<3.0",
+    "pydantic-settings>=2.7,<3.0",
+    "email-validator>=2.0,<3.0",   # required by pydantic EmailStr (schemas/auth.py)
+    "python-multipart>=0.0.9,<0.1",  # required by FastAPI for UploadFile / form data
+
+    # DB
+    "sqlalchemy[asyncio]>=2.0,<3.0",
+    "aioodbc>=0.5,<1.0",
+    "pyodbc>=5.2,<6.0",          # sync fallback + driver discovery
+    "alembic>=1.14,<2.0",
+
+    # Auth
+    "pyjwt>=2.10,<3.0",
+    "passlib[bcrypt]>=1.7,<2.0",
+    "bcrypt>=4.0.1,<4.1",        # HARD CAP: passlib 1.7.4 breaks on bcrypt>=4.1 (removed __about__) → verify_password silently fails for all users
+
+    # Logging / observability
+    "loguru>=0.7,<1.0",
+    "python-json-logger>=2.0,<3.0",
+
+    # Config / env
+    "python-dotenv>=1.0,<2.0",
+
+    # External services
+    "httpx>=0.28,<1.0",
+    "twilio>=9.4,<10.0",
+    "openai>=1.60,<2.0",
+    "azure-identity>=1.19,<2.0",
+    "azure-keyvault-secrets>=4.9,<5.0",
+    "azure-storage-blob>=12.20,<13.0",  # imported in core/storage.py (was undeclared)
+
+    # Schedulers
+    "apscheduler>=3.11,<4.0",
+
+    # File processing
+    "openpyxl>=3.1,<4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8,<1.0",
+    "mypy>=1.14,<2.0",
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.25,<1.0",
+    "pytest-cov>=6.0,<7.0",
+    "bandit>=1.8,<2.0",
+    "pip-audit>=2.7,<3.0",
+    "respx>=0.22,<1.0",          # httpx mocking
+    "freezegun>=1.5,<2.0",
+    "aiosqlite>=0.20,<1.0",      # in-memory async DB for the test suite (was undeclared)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ----------------------------------------------------------------------------
+# Ruff — lint + format
+# ----------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F",   # pycodestyle + pyflakes
+    "I",        # isort
+    "B",        # flake8-bugbear
+    "UP",       # pyupgrade
+    "SIM",      # flake8-simplify
+    "RUF",      # ruff-specific
+    "PL",       # pylint subset
+    "ASYNC",    # async good practices
+]
+ignore = [
+    "PLR0913",  # too many arguments (FastAPI handlers commonly have many)
+    "E501",     # line length handled by formatter
+    "B008",     # Depends() in defaults is the FastAPI convention
+    "PLW0603",  # global statement for engine singleton pattern
+    "PLR2004",  # magic values in config thresholds are readable inline
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["PLR2004", "S101"]  # magic numbers + assert OK in tests
+
+# ----------------------------------------------------------------------------
+# Mypy — type checking
+# ----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/versions/"]
+
+# ----------------------------------------------------------------------------
+# Pytest
+# ----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "integration: requires DB or external services",
+    "security: security-related test",
+    "slow: takes >1s",
+]
+
+# ----------------------------------------------------------------------------
+# Bandit — security
+# ----------------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", "alembic"]
+skips = ["B101"]  # assert in code is fine (Pydantic validators use them)
