@@ -925,6 +925,7 @@ async def _obtener_reporte(
     from app.api.v1.reports import _aggregate
     from app.core.config import settings
 
+    requested = empresa_id
     eid, err = _resolve_scope(actor, empresa_id)
     if err:
         return json.dumps({"error": err})
@@ -956,7 +957,7 @@ async def _obtener_reporte(
         peor = {"nombre": w.nombre, "driver_id": w.driver_id,
                 "success_pct": w.success_pct, "visitas": w.visitas}
 
-    return json.dumps({
+    out = {
         "empresa": empresa_nombre, "empresa_id": eid,
         "dias": len(dia_ids), "desde": fechas[0], "hasta": fechas[-1],
         "visitas": totals.visitas, "entregado": totals.entregado,
@@ -965,4 +966,13 @@ async def _obtener_reporte(
         "vip_entregado": vip.entregado, "vip_total": vip.visitas,
         "top_motivos": [{"motivo": m.motivo, "count": m.count} for m in by_motivo[:3]],
         "peor_conductor": peor,
-    }, default=str)
+    }
+    # If the caller asked for a different empresa than they can see, the scope
+    # was floored — tell the LLM so it doesn't mislabel this as the requested
+    # empresa's report (data is correctly the actor's own).
+    if requested is not None and requested != eid:
+        out["aviso"] = (
+            f"Solo tienes acceso a tu empresa ({empresa_nombre}); se ignoro la "
+            f"empresa {requested} solicitada. Este reporte es de TU empresa."
+        )
+    return json.dumps(out, default=str)

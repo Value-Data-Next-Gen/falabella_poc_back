@@ -64,10 +64,12 @@ async def test_reporte_for_own_empresa(db_session):
 
 @pytest.mark.asyncio
 async def test_reporte_scoped_to_actor_empresa(db_session):
-    # contacto of empresa 1 asking for empresa 2 is floored back to empresa 1.
+    # contacto of empresa 1 asking for empresa 2 is floored back to empresa 1,
+    # and the result carries an `aviso` so the bot phrases it accurately.
     out = json.loads(await execute_tool(
         db_session, "obtener_reporte", {"empresa_id": 2}, actor=_contacto(1)))
     assert out["empresa_id"] == 1
+    assert "aviso" in out and "tu empresa" in out["aviso"].lower()
 
 
 @pytest.mark.asyncio
