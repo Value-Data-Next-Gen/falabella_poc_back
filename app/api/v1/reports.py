@@ -75,7 +75,10 @@ def _delay_seconds(db: AsyncSession):
     eta, comp = Visita.eta_estimada, Visita.completada_at
     name = db.get_bind().dialect.name
     if name == "mssql":
-        return func.datediff(text("second"), eta, comp)
+        # DATEDIFF_BIG (BIGINT), not DATEDIFF (INT): SUM() over many rows with
+        # large eta→completada gaps overflows a 32-bit INT accumulator on SQL
+        # Server (caused 500s on días with lots of delivered visitas).
+        return func.datediff_big(text("second"), eta, comp)
     return (func.julianday(comp) - func.julianday(eta)) * 86400.0
 
 
