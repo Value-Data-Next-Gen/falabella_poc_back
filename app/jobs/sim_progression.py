@@ -205,6 +205,7 @@ async def auto_progression_job(rng: random.Random | None = None) -> dict[str, in
             # at the operational (sim) time. `closed` is logged only — NOT added
             # to `counts`, whose shape is asserted by tests.
             closed = 0
+            closed_dias: list[DiaOperativo] = []
             for dia in dias:
                 total = await db.scalar(
                     select(func.count()).select_from(Visita).where(Visita.dia_id == dia.dia_id)
@@ -219,6 +220,7 @@ async def auto_progression_job(rng: random.Random | None = None) -> dict[str, in
                     dia.estado = "CERRADO"
                     dia.cerrado_at = sim_now
                     closed += 1
+                    closed_dias.append(dia)
                     logger.info(
                         f"[sim_progression] auto-closed dia {dia.dia_id} "
                         f"({total} visitas, 0 pending) at sim_now={sim_now.isoformat()}"
@@ -231,6 +233,13 @@ async def auto_progression_job(rng: random.Random | None = None) -> dict[str, in
                     f"delivered={counts['delivered']} failed={counts['failed']} "
                     f"closed={closed} sim_now={sim_now.isoformat()}"
                 )
+                # CR-3b: end-of-day report push for auto-closed dias (best-effort).
+                for d in closed_dias:
+                    try:
+                        from app.core.report_push import push_dia_report
+                        await push_dia_report(db, d)
+                    except Exception:
+                        logger.exception(f"[sim_progression] report push failed dia {d.dia_id}")
     except Exception:
         logger.exception("[sim_progression] tick failed")
     return counts

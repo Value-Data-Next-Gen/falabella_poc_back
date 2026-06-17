@@ -13,6 +13,9 @@ _FALLBACKS = {
     "ALERTA_MOTIVO": "HX6821f9cad06ce1980bee5ad410006e43",
     "VIP_DEADLINE": "HX679d07e0eb57dec69f27ef169adee32e",
     "REVISION_IA": "HXd49ad45c3dc35c4aa131ebcf3ab8522e",
+    # End-of-day report push (CR-3b). Submitted to Meta for approval on
+    # 2026-06-16; the push is a no-op until WhatsApp approves it.
+    "REPORTE_DIA": "HXa8aa137c623e7bb564d7ed2f611a6e36",
 }
 
 
@@ -39,3 +42,9 @@ def vip_deadline_sid() -> str:
 
 def revision_ia_sid() -> str:
     return _get("REVISION_IA")
+
+
+def reporte_dia_sid() -> str:
+    """End-of-day report template (6 vars: empresa, fecha, visitas, entregadas,
+    %exito, %puntualidad)."""
+    return _get("REPORTE_DIA")

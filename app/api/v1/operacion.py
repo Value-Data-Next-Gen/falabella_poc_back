@@ -311,6 +311,16 @@ async def transition_dia(dia_id: int, nuevo_estado: str, user: User = Depends(cu
             )
     await db.commit()
     await db.refresh(dia)
+
+    # CR-3b: push the end-of-day report to the empresa's contactos/usuarios.
+    # Best-effort — never let a notification failure undo the close.
+    if nuevo_estado == "CERRADO" and not is_reopen:
+        try:
+            from app.core.report_push import push_dia_report
+            await push_dia_report(db, dia)
+        except Exception:
+            logger.exception(f"[transition] dia {dia_id} report push failed")
+
     return await _dia_to_out(db, dia)
 
 
