@@ -12140,6 +12140,11 @@
           "avisos_enviados": {
             "type": "integer",
             "title": "Avisos Enviados"
+          },
+          "sin_whatsapp": {
+            "type": "integer",
+            "title": "Sin Whatsapp",
+            "default": 0
           }
         },
         "type": "object",
@@ -13728,6 +13733,11 @@
               }
             ],
             "title": "Estado Fuente"
+          },
+          "cliente_retener": {
+            "type": "boolean",
+            "title": "Cliente Retener",
+            "default": false
           }
         },
         "type": "object",

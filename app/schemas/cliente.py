@@ -256,6 +256,7 @@ class RetenerResult(BaseModel):
     retener: bool
     visitas_afectadas: int   # pending visitas of this cliente in active días
     avisos_enviados: int     # WhatsApp alerts actually sent to drivers
+    sin_whatsapp: int = 0     # drivers that couldn't be alerted (not opted-in)
 
 
 # ── CR-024 — Visitas futuras (lookahead) ────────────────────────────────────

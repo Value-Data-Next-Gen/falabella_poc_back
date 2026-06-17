@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import current_user
 from app.core.twilio_templates import alerta_motivo_sid
 from app.core.whatsapp import send_whatsapp
+from app.db.models.alert import Alert
 from app.db.models.cliente import Cliente
 from app.db.models.dia_operativo import DiaOperativo
 from app.db.models.driver import Driver
@@ -780,12 +781,19 @@ async def delete_cliente(
 _RETENER_ESTADOS = ("pendiente", "en_camino")
 
 
-async def _alert_drivers_no_entregar(db: AsyncSession, cliente: Cliente) -> tuple[int, int]:
-    """For each pending visita of `cliente` in an EN_CURSO día, WhatsApp the
-    assigned driver a CRITICA 'NO ENTREGAR' alert (reusing the approved
-    ALERTA_MOTIVO template). Returns (visitas_afectadas, avisos_enviados)."""
+_ACTIVE_DIA_ESTADOS = ("BORRADOR", "VALIDADO", "EN_CURSO")
+
+
+async def _alert_drivers_no_entregar(db: AsyncSession, cliente: Cliente) -> tuple[int, int, int]:
+    """Handle the 'No entregar' alert. For each pending visita of `cliente` in an
+    EN_CURSO día: create a CRITICA alert-board record AND WhatsApp the assigned
+    driver (approved ALERTA_MOTIVO template). Returns
+    (visitas_afectadas, avisos_enviados, conductores_sin_whatsapp) where
+    `visitas_afectadas` counts pending visitas across ALL active días (incl.
+    future BORRADOR/VALIDADO), not just those alertable today."""
     rows = (await db.execute(
-        select(Visita.visita_id, Vehicle.plate, Driver.nombre, Driver.phone_e164, Driver.opted_in_at)
+        select(Visita.visita_id, Visita.dia_id, Visita.empresa_id,
+               Vehicle.plate, Driver.nombre, Driver.phone_e164, Driver.opted_in_at)
         .select_from(Visita)
         .join(DiaOperativo, Visita.dia_id == DiaOperativo.dia_id)
         .join(Ruta, Visita.ruta_id == Ruta.ruta_id, isouter=True)
@@ -800,10 +808,16 @@ async def _alert_drivers_no_entregar(db: AsyncSession, cliente: Cliente) -> tupl
 
     sid = alerta_motivo_sid()
     motivo = (cliente.retener_motivo or "Cliente retenido").strip()[:200]
-    sent = 0
-    for _vid, plate, conductor, phone, opted_in in rows:
+    sent = sin_whatsapp = 0
+    for vid, did, eid, plate, conductor, phone, opted_in in rows:
+        # #6 — alert-board record so the block is visible/auditable in Alertas.
+        db.add(Alert(
+            tipo="manual", severity="critica", empresa_id=eid, dia_id=did, visita_id=vid,
+            descripcion=f"NO ENTREGAR — {cliente.nombre}: {motivo}", estado="abierta", dedupe_key=None,
+        ))
         if not phone or opted_in is None:
-            continue  # driver not activated on WhatsApp
+            sin_whatsapp += 1  # #3 — driver not on WhatsApp; can't alert them
+            continue
         ok = await send_whatsapp(
             to=phone,
             content_sid=sid,
@@ -818,7 +832,21 @@ async def _alert_drivers_no_entregar(db: AsyncSession, cliente: Cliente) -> tupl
         )
         if ok:
             sent += 1
-    return len(rows), sent
+
+    # #2 — pending visitas across ALL active días (today + future), so the
+    # operator sees the full exposure even if some aren't alertable yet.
+    total_pending = (await db.execute(
+        select(func.count()).select_from(Visita)
+        .join(DiaOperativo, Visita.dia_id == DiaOperativo.dia_id)
+        .where(
+            Visita.cliente_id == cliente.cliente_id,
+            Visita.estado.in_(_RETENER_ESTADOS),
+            DiaOperativo.estado.in_(_ACTIVE_DIA_ESTADOS),
+        )
+    )).scalar_one()
+
+    await db.commit()  # persist the alert-board records
+    return int(total_pending), sent, sin_whatsapp
 
 
 @router.post(
@@ -843,14 +871,15 @@ async def retener_cliente(
     cliente.updated_at = datetime.now(UTC)
     await db.commit()
 
-    visitas_afectadas = avisos = 0
+    visitas_afectadas = avisos = sin_whatsapp = 0
     if body.retener and body.avisar_whatsapp:
-        visitas_afectadas, avisos = await _alert_drivers_no_entregar(db, cliente)
+        visitas_afectadas, avisos, sin_whatsapp = await _alert_drivers_no_entregar(db, cliente)
         logger.info(
-            f"[retener] cliente {cliente_id} retenido — visitas={visitas_afectadas} avisos={avisos}"
+            f"[retener] cliente {cliente_id} retenido — visitas={visitas_afectadas} "
+            f"avisos={avisos} sin_whatsapp={sin_whatsapp}"
         )
 
     return RetenerResult(
         cliente_id=cliente_id, retener=cliente.retener,
-        visitas_afectadas=visitas_afectadas, avisos_enviados=avisos,
+        visitas_afectadas=visitas_afectadas, avisos_enviados=avisos, sin_whatsapp=sin_whatsapp,
     )

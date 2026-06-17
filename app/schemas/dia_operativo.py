@@ -115,5 +115,7 @@ class VisitaOut(BaseModel):
     region: str | None = None
     fecha_pactada: date | None = None
     estado_fuente: str | None = None
+    # ⛔ True when this visita's cliente is flagged "No entregar" (retener).
+    cliente_retener: bool = False
 
     model_config = ConfigDict(from_attributes=True)

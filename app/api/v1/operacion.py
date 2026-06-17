@@ -431,8 +431,20 @@ async def create_ruta(dia_id: int, body: RutaCreate, user: User = Depends(curren
 @router.get("/dias/{dia_id}/visitas", operation_id="listVisitas", response_model=list[VisitaOut])
 async def list_visitas(dia_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)) -> list[VisitaOut]:
     await _load_dia_for_user(db, dia_id, user)
-    result = await db.execute(select(Visita).where(Visita.dia_id == dia_id).order_by(Visita.ruta_id, Visita.orden))
-    return [VisitaOut.model_validate(v) for v in result.scalars().all()]
+    visitas = (await db.execute(
+        select(Visita).where(Visita.dia_id == dia_id).order_by(Visita.ruta_id, Visita.orden)
+    )).scalars().all()
+    out = [VisitaOut.model_validate(v) for v in visitas]
+    # Mark visitas whose cliente is flagged "No entregar" (one batched query).
+    cids = {v.cliente_id for v in visitas if v.cliente_id}
+    if cids:
+        retained = set((await db.execute(
+            select(Cliente.cliente_id).where(Cliente.cliente_id.in_(cids), Cliente.retener == True)  # noqa: E712
+        )).scalars().all())
+        for o in out:
+            if o.cliente_id in retained:
+                o.cliente_retener = True
+    return out
 
 
 @router.post("/dias/{dia_id}/visitas", operation_id="createVisita", response_model=VisitaOut, status_code=status.HTTP_201_CREATED)
