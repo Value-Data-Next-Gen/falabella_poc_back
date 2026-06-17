@@ -48,6 +48,12 @@ class Cliente(Base):
     vip_razon: Mapped[str | None] = mapped_column(String(500), nullable=True)
     notas_operativas: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
+    # "No entregar" / retener: block deliveries to this cliente (fraud, theft,
+    # dispute). Surfaced PROMINENTLY to the driver bot and can fire a WhatsApp
+    # alert to the assigned driver(s).
+    retener: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retener_motivo: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     direccion_default: Mapped[str | None] = mapped_column(String(300), nullable=True)
     comuna_default: Mapped[str | None] = mapped_column(String(100), nullable=True)
     region_default: Mapped[str | None] = mapped_column(String(100), nullable=True)

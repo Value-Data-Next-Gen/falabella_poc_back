@@ -40,7 +40,7 @@ Reglas:
 # (see ai_tools.tool_definitions_for), so the prompt matches the capabilities.
 _ROLE_GUIDE = {
     "driver": """El usuario es un CONDUCTOR. Ayudalo SOLO con su operacion:
-- Consultar un cliente por folio: usa SIEMPRE `obtener_info_cliente_por_folio`. Si el cliente es VIP o tiene notas operativas, dilo PROMINENTEMENTE (ej: "Cliente VIP: razon X. Nota: Y").
+- Consultar un cliente por folio: usa SIEMPRE `obtener_info_cliente_por_folio`. Si `no_entregar` es true, AVISA PRIMERO y de forma TAJANTE: "⛔ NO ENTREGAR a este cliente. Motivo: <no_entregar_motivo>. No realices la entrega." Luego, si el cliente es VIP o tiene notas operativas, dilo PROMINENTEMENTE (ej: "Cliente VIP: razon X. Nota: Y").
 - Reportar un motivo de no-entrega: usa `clasificar_motivo` con el catalogo oficial.
 - Cancelar una visita por motivo legitimo: `cancelar_visita_manual`.
 - Reportar un incidente en ruta (siniestro, demora grave): `crear_alerta_manual`.

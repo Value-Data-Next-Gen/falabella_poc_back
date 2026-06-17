@@ -68,6 +68,8 @@ class ClienteBase(BaseModel):
     es_vip: bool = False
     vip_razon: str | None = Field(default=None, max_length=500)
     notas_operativas: str | None = Field(default=None, max_length=1000)
+    retener: bool = False
+    retener_motivo: str | None = Field(default=None, max_length=500)
     direccion_default: str | None = Field(default=None, max_length=300)
     comuna_default: str | None = Field(default=None, max_length=100)
     region_default: str | None = Field(default=None, max_length=100)
@@ -104,6 +106,8 @@ class ClienteUpdate(BaseModel):
     es_vip: bool | None = None
     vip_razon: str | None = Field(default=None, max_length=500)
     notas_operativas: str | None = Field(default=None, max_length=1000)
+    retener: bool | None = None
+    retener_motivo: str | None = Field(default=None, max_length=500)
     direccion_default: str | None = Field(default=None, max_length=300)
     comuna_default: str | None = Field(default=None, max_length=100)
     region_default: str | None = Field(default=None, max_length=100)
@@ -238,6 +242,20 @@ class CancelPendingVisitasResult(BaseModel):
     cancelled_count: int
     dia_ids: list[int]
     visita_ids: list[int]
+
+
+class RetenerRequest(BaseModel):
+    """Body for POST /api/v1/clientes/{id}/retener — flag/unflag 'No entregar'."""
+    retener: bool = True
+    motivo: str | None = Field(default=None, max_length=500)
+    avisar_whatsapp: bool = True  # send a WhatsApp alert to the assigned driver(s)
+
+
+class RetenerResult(BaseModel):
+    cliente_id: int
+    retener: bool
+    visitas_afectadas: int   # pending visitas of this cliente in active días
+    avisos_enviados: int     # WhatsApp alerts actually sent to drivers
 
 
 # ── CR-024 — Visitas futuras (lookahead) ────────────────────────────────────

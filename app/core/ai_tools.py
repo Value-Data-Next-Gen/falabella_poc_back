@@ -847,6 +847,9 @@ async def _obtener_info_cliente_por_folio(
         "cliente_id": cliente.cliente_id,
         "nombre": cliente.nombre,
         "telefono": cliente.telefono,
+        # ⛔ Hard block: if true the driver must NOT deliver. Surface FIRST.
+        "no_entregar": bool(cliente.retener),
+        "no_entregar_motivo": cliente.retener_motivo,
         "es_vip": bool(cliente.es_vip),
         "vip_razon": cliente.vip_razon,
         "notas_operativas": cliente.notas_operativas,

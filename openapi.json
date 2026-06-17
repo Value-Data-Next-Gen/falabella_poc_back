@@ -5898,6 +5898,74 @@
         }
       }
     },
+    "/api/v1/clientes/{cliente_id}/retener": {
+      "post": {
+        "tags": [
+          "clientes"
+        ],
+        "summary": "Marcar/desmarcar 'No entregar' y avisar por WhatsApp al conductor.",
+        "operationId": "retenerCliente",
+        "parameters": [
+          {
+            "name": "cliente_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Cliente Id"
+            }
+          },
+          {
+            "name": "td_session",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Td Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetenerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetenerResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ingest/falabella-xlsx": {
       "post": {
         "tags": [
@@ -7762,6 +7830,23 @@
             ],
             "title": "Notas Operativas"
           },
+          "retener": {
+            "type": "boolean",
+            "title": "Retener",
+            "default": false
+          },
+          "retener_motivo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retener Motivo"
+          },
           "direccion_default": {
             "anyOf": [
               {
@@ -7988,6 +8073,23 @@
               }
             ],
             "title": "Notas Operativas"
+          },
+          "retener": {
+            "type": "boolean",
+            "title": "Retener",
+            "default": false
+          },
+          "retener_motivo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retener Motivo"
           },
           "direccion_default": {
             "anyOf": [
@@ -8251,6 +8353,29 @@
               }
             ],
             "title": "Notas Operativas"
+          },
+          "retener": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retener"
+          },
+          "retener_motivo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retener Motivo"
           },
           "direccion_default": {
             "anyOf": [
@@ -11968,6 +12093,63 @@
           "success_pct"
         ],
         "title": "RegionRow"
+      },
+      "RetenerRequest": {
+        "properties": {
+          "retener": {
+            "type": "boolean",
+            "title": "Retener",
+            "default": true
+          },
+          "motivo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Motivo"
+          },
+          "avisar_whatsapp": {
+            "type": "boolean",
+            "title": "Avisar Whatsapp",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "RetenerRequest",
+        "description": "Body for POST /api/v1/clientes/{id}/retener — flag/unflag 'No entregar'."
+      },
+      "RetenerResult": {
+        "properties": {
+          "cliente_id": {
+            "type": "integer",
+            "title": "Cliente Id"
+          },
+          "retener": {
+            "type": "boolean",
+            "title": "Retener"
+          },
+          "visitas_afectadas": {
+            "type": "integer",
+            "title": "Visitas Afectadas"
+          },
+          "avisos_enviados": {
+            "type": "integer",
+            "title": "Avisos Enviados"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cliente_id",
+          "retener",
+          "visitas_afectadas",
+          "avisos_enviados"
+        ],
+        "title": "RetenerResult"
       },
       "RowResult": {
         "properties": {

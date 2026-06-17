@@ -42,11 +42,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import current_user
+from app.core.twilio_templates import alerta_motivo_sid
+from app.core.whatsapp import send_whatsapp
 from app.db.models.cliente import Cliente
 from app.db.models.dia_operativo import DiaOperativo
+from app.db.models.driver import Driver
 from app.db.models.empresa import Empresa
 from app.db.models.ruta import Ruta
 from app.db.models.user import User
+from app.db.models.vehicle import Vehicle
 from app.db.models.visita import Visita
 from app.db.session import get_db
 from app.schemas.cliente import (
@@ -61,6 +65,8 @@ from app.schemas.cliente import (
     ClienteVisitaProgramadaItem,
     ClienteVisitasFuturasResponse,
     EmpresaServidaOut,
+    RetenerRequest,
+    RetenerResult,
 )
 
 router = APIRouter(prefix="/api/v1/clientes", tags=["clientes"])
@@ -767,3 +773,84 @@ async def delete_cliente(
     await db.delete(c)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── "No entregar" / retener ──────────────────────────────────────────────────
+
+_RETENER_ESTADOS = ("pendiente", "en_camino")
+
+
+async def _alert_drivers_no_entregar(db: AsyncSession, cliente: Cliente) -> tuple[int, int]:
+    """For each pending visita of `cliente` in an EN_CURSO día, WhatsApp the
+    assigned driver a CRITICA 'NO ENTREGAR' alert (reusing the approved
+    ALERTA_MOTIVO template). Returns (visitas_afectadas, avisos_enviados)."""
+    rows = (await db.execute(
+        select(Visita.visita_id, Vehicle.plate, Driver.nombre, Driver.phone_e164, Driver.opted_in_at)
+        .select_from(Visita)
+        .join(DiaOperativo, Visita.dia_id == DiaOperativo.dia_id)
+        .join(Ruta, Visita.ruta_id == Ruta.ruta_id, isouter=True)
+        .join(Vehicle, Ruta.vehicle_id == Vehicle.vehicle_id, isouter=True)
+        .join(Driver, Ruta.driver_id == Driver.driver_id, isouter=True)
+        .where(
+            Visita.cliente_id == cliente.cliente_id,
+            Visita.estado.in_(_RETENER_ESTADOS),
+            DiaOperativo.estado == "EN_CURSO",
+        )
+    )).all()
+
+    sid = alerta_motivo_sid()
+    motivo = (cliente.retener_motivo or "Cliente retenido").strip()[:200]
+    sent = 0
+    for _vid, plate, conductor, phone, opted_in in rows:
+        if not phone or opted_in is None:
+            continue  # driver not activated on WhatsApp
+        ok = await send_whatsapp(
+            to=phone,
+            content_sid=sid,
+            content_variables={
+                "1": "CRITICA",
+                "2": "NO ENTREGAR",
+                "3": (plate or "-")[:20],
+                "4": (conductor or "-")[:60],
+                "5": (cliente.nombre or "-")[:60],
+                "6": motivo or "-",
+            },
+        )
+        if ok:
+            sent += 1
+    return len(rows), sent
+
+
+@router.post(
+    "/{cliente_id}/retener",
+    operation_id="retenerCliente",
+    response_model=RetenerResult,
+    summary="Marcar/desmarcar 'No entregar' y avisar por WhatsApp al conductor.",
+)
+async def retener_cliente(
+    cliente_id: int,
+    body: RetenerRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> RetenerResult:
+    _require_can_write(user)
+    cliente = await _get_or_404(db, cliente_id)
+    if not await _user_can_see_cliente(db, user, cliente_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Out of scope")
+
+    cliente.retener = body.retener
+    cliente.retener_motivo = (body.motivo or None) if body.retener else None
+    cliente.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    visitas_afectadas = avisos = 0
+    if body.retener and body.avisar_whatsapp:
+        visitas_afectadas, avisos = await _alert_drivers_no_entregar(db, cliente)
+        logger.info(
+            f"[retener] cliente {cliente_id} retenido — visitas={visitas_afectadas} avisos={avisos}"
+        )
+
+    return RetenerResult(
+        cliente_id=cliente_id, retener=cliente.retener,
+        visitas_afectadas=visitas_afectadas, avisos_enviados=avisos,
+    )
