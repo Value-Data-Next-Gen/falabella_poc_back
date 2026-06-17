@@ -4703,6 +4703,74 @@
         }
       }
     },
+    "/api/v1/operacion/visitas/{visita_id}/notify-driver": {
+      "post": {
+        "tags": [
+          "operacion"
+        ],
+        "summary": "Notify Driver Visita",
+        "operationId": "notifyDriverVisita",
+        "parameters": [
+          {
+            "name": "visita_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Visita Id"
+            }
+          },
+          {
+            "name": "td_session",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Td Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotifyDriverRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotifyDriverResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sim/clock": {
       "get": {
         "tags": [
@@ -12002,6 +12070,81 @@
         },
         "type": "object",
         "title": "MotivoUpdate"
+      },
+      "NotifyDriverRequest": {
+        "properties": {
+          "motivo": {
+            "type": "string",
+            "maxLength": 60,
+            "title": "Motivo",
+            "default": "ATRASO EN ENTREGA"
+          },
+          "detalle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detalle"
+          }
+        },
+        "type": "object",
+        "title": "NotifyDriverRequest"
+      },
+      "NotifyDriverResult": {
+        "properties": {
+          "sent": {
+            "type": "boolean",
+            "title": "Sent"
+          },
+          "driver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Id"
+          },
+          "driver_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Nombre"
+          },
+          "motivo": {
+            "type": "string",
+            "title": "Motivo"
+          },
+          "info": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Info"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sent",
+          "motivo"
+        ],
+        "title": "NotifyDriverResult"
       },
       "OnTime": {
         "properties": {

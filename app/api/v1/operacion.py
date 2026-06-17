@@ -24,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import log_visita_evento
 from app.core.security import current_user
 from app.core.security.scope import apply_scope, can_access_empresa
+from app.core.twilio_templates import alerta_motivo_sid
+from app.core.whatsapp import send_whatsapp
 from app.db.models.alert import Alert
 from app.db.models.cliente import Cliente
 from app.db.models.dia_operativo import DiaOperativo
@@ -1104,3 +1106,67 @@ async def list_driver_positions(dia_id: int, user: User = Depends(current_user),
         )
         for pos in positions
     ]
+
+
+# ----------------------------------------------------------------------------
+# Notify the assigned driver about a late / unfulfilled delivery (operator-
+# triggered, targeted). The automatic path is the eta_breach cron; this lets an
+# operator ping the specific driver of a visita on demand.
+# ----------------------------------------------------------------------------
+
+class NotifyDriverRequest(BaseModel):
+    motivo: str = Field(default="ATRASO EN ENTREGA", max_length=60)
+    detalle: str | None = Field(default=None, max_length=200)
+
+
+class NotifyDriverResult(BaseModel):
+    sent: bool
+    driver_id: str | None = None
+    driver_nombre: str | None = None
+    motivo: str
+    info: str | None = None  # why it wasn't sent, when sent is False
+
+
+@router.post("/visitas/{visita_id}/notify-driver", operation_id="notifyDriverVisita",
+             response_model=NotifyDriverResult)
+async def notify_driver_visita(
+    visita_id: int,
+    body: NotifyDriverRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> NotifyDriverResult:
+    visita = (await db.execute(select(Visita).where(Visita.visita_id == visita_id))).scalar_one_or_none()
+    if visita is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Visita no encontrada")
+    if not can_access_empresa(user, visita.empresa_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Sin acceso a esta empresa")
+
+    row = None
+    if visita.ruta_id is not None:
+        row = (await db.execute(
+            select(Driver.driver_id, Driver.nombre, Driver.phone_e164, Driver.opted_in_at, Vehicle.plate)
+            .select_from(Ruta)
+            .join(Driver, Ruta.driver_id == Driver.driver_id, isouter=True)
+            .join(Vehicle, Ruta.vehicle_id == Vehicle.vehicle_id, isouter=True)
+            .where(Ruta.ruta_id == visita.ruta_id)
+        )).first()
+    if row is None or row[0] is None:
+        return NotifyDriverResult(sent=False, motivo=body.motivo, info="Visita sin conductor asignado")
+
+    did, nombre, phone, opted_in, plate = row
+    if not phone or opted_in is None:
+        return NotifyDriverResult(sent=False, driver_id=did, driver_nombre=nombre, motivo=body.motivo,
+                                  info="Conductor sin WhatsApp activo")
+
+    detalle = (body.detalle or
+               f"Folio {visita.folio_cliente or '-'}, {visita.cliente_nombre}. Confirma el estado de la entrega.")
+    ok = await send_whatsapp(
+        to=phone, content_sid=alerta_motivo_sid(),
+        content_variables={
+            "1": "ALTA", "2": body.motivo[:60], "3": (plate or "-")[:20],
+            "4": (nombre or "-")[:60], "5": (visita.cliente_nombre or "-")[:60], "6": detalle[:200],
+        },
+    )
+    logger.info(f"[notify-driver] visita {visita_id} driver {did} sent={ok}")
+    return NotifyDriverResult(sent=bool(ok), driver_id=did, driver_nombre=nombre, motivo=body.motivo,
+                              info=None if ok else "Falló el envío por WhatsApp")
