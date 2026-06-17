@@ -197,11 +197,16 @@ async def get_command_center(  # noqa: PLR0915 -- one cohesive aggregation; spli
         )).all())
 
     ranked = sorted(alerts, key=lambda a: (_SEV_RANK.get(a.severity, -1), a.created_at or datetime.min.replace(tzinfo=UTC)), reverse=True)[:50]
+    real_now = datetime.now(UTC)
     exceptions = []
     for a in ranked:
         v = vmap.get(a.visita_id) if a.visita_id else None
         created = a.created_at
-        edad = int((sim_now - created).total_seconds() // 60) if created else None
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)  # SQLite returns naive; MSSQL aware
+        # Age = REAL elapsed since the alert was created (created_at is wall-clock);
+        # don't subtract the simulated clock or you get nonsense values.
+        edad = max(0, int((real_now - created).total_seconds() // 60)) if created else None
         exceptions.append(ExceptionItem(
             alert_id=a.alert_id, tipo=a.tipo, severity=a.severity, descripcion=a.descripcion,
             empresa_id=a.empresa_id, empresa_nombre=empresas.get(a.empresa_id),

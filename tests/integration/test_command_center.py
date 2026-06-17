@@ -57,8 +57,10 @@ async def seeded() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
             Visita(dia_id=dia.dia_id, empresa_id=1, ruta_id=1, orden=3, cliente_nombre="c", direccion="d", estado="pendiente", es_vip=1),
             Visita(dia_id=dia.dia_id, empresa_id=1, ruta_id=1, orden=4, cliente_id=1, cliente_nombre="Bloqueado", direccion="d", estado="pendiente"),
         ])
+        # alert age is REAL elapsed (created_at is wall-clock), independent of the sim clock
         s.add(Alert(tipo="eta_breach", severity="critica", empresa_id=1, dia_id=dia.dia_id,
-                    descripcion="atraso grave", estado="abierta", created_at=now - timedelta(minutes=10)))
+                    descripcion="atraso grave", estado="abierta",
+                    created_at=datetime.now(UTC) - timedelta(minutes=10)))
         await s.commit()
     yield sm
     await engine.dispose()
