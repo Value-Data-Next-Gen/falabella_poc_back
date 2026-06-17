@@ -6626,6 +6626,124 @@
         }
       }
     },
+    "/api/v1/alerts/{alert_id}/ack": {
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Ack Alert",
+        "description": "Claim an alert ('Yo me encargo') so other operators see it's owned.\nPassing it again by another user re-assigns ownership.",
+        "operationId": "ackAlert",
+        "parameters": [
+          {
+            "name": "alert_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Alert Id"
+            }
+          },
+          {
+            "name": "td_session",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Td Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/alerts/{alert_id}/release": {
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Release Alert",
+        "description": "Release a claimed alert (un-assign ownership).",
+        "operationId": "releaseAlert",
+        "parameters": [
+          {
+            "name": "alert_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Alert Id"
+            }
+          },
+          {
+            "name": "td_session",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Td Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/mapa/visitas": {
       "get": {
         "tags": [
@@ -6972,6 +7090,55 @@
           }
         }
       }
+    },
+    "/api/v1/operacion/command-center": {
+      "get": {
+        "tags": [
+          "operacion"
+        ],
+        "summary": "Get Command Center",
+        "operationId": "getCommandCenter",
+        "parameters": [
+          {
+            "name": "td_session",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Td Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandCenter"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7219,6 +7386,29 @@
               }
             ],
             "title": "Resolved By User Id"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "acked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked At"
           },
           "dedupe_key": {
             "anyOf": [
@@ -8840,6 +9030,47 @@
         "type": "object",
         "title": "ClockUpdate"
       },
+      "CommandCenter": {
+        "properties": {
+          "sim_now": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sim Now"
+          },
+          "counters": {
+            "$ref": "#/components/schemas/Counters"
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/RouteHealth"
+            },
+            "type": "array",
+            "title": "Routes"
+          },
+          "exceptions": {
+            "items": {
+              "$ref": "#/components/schemas/ExceptionItem"
+            },
+            "type": "array",
+            "title": "Exceptions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sim_now",
+          "counters",
+          "routes",
+          "exceptions"
+        ],
+        "title": "CommandCenter"
+      },
       "Comparison": {
         "properties": {
           "prev_dia_id": {
@@ -8981,6 +9212,44 @@
           "expired"
         ],
         "title": "ComplianceReport"
+      },
+      "Counters": {
+        "properties": {
+          "rutas_activas": {
+            "type": "integer",
+            "title": "Rutas Activas"
+          },
+          "visitas_pendientes": {
+            "type": "integer",
+            "title": "Visitas Pendientes"
+          },
+          "atrasadas": {
+            "type": "integer",
+            "title": "Atrasadas"
+          },
+          "vip_pendientes": {
+            "type": "integer",
+            "title": "Vip Pendientes"
+          },
+          "bloqueados": {
+            "type": "integer",
+            "title": "Bloqueados"
+          },
+          "alertas_abiertas": {
+            "type": "integer",
+            "title": "Alertas Abiertas"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rutas_activas",
+          "visitas_pendientes",
+          "atrasadas",
+          "vip_pendientes",
+          "bloqueados",
+          "alertas_abiertas"
+        ],
+        "title": "Counters"
       },
       "DiaCreate": {
         "properties": {
@@ -10674,6 +10943,153 @@
         ],
         "title": "EntityDocumentOut"
       },
+      "ExceptionItem": {
+        "properties": {
+          "alert_id": {
+            "type": "integer",
+            "title": "Alert Id"
+          },
+          "tipo": {
+            "type": "string",
+            "title": "Tipo"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "descripcion": {
+            "type": "string",
+            "title": "Descripcion"
+          },
+          "empresa_id": {
+            "type": "integer",
+            "title": "Empresa Id"
+          },
+          "empresa_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Nombre"
+          },
+          "dia_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dia Id"
+          },
+          "visita_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visita Id"
+          },
+          "cliente_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cliente Nombre"
+          },
+          "folio_cliente": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folio Cliente"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "edad_min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edad Min"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "owner_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Nombre"
+          }
+        },
+        "type": "object",
+        "required": [
+          "alert_id",
+          "tipo",
+          "severity",
+          "descripcion",
+          "empresa_id",
+          "empresa_nombre",
+          "dia_id",
+          "visita_id",
+          "cliente_nombre",
+          "folio_cliente",
+          "created_at",
+          "edad_min",
+          "estado",
+          "owner_user_id",
+          "owner_nombre"
+        ],
+        "title": "ExceptionItem"
+      },
       "FalabellaJSONBody": {
         "properties": {
           "rows": {
@@ -12155,6 +12571,107 @@
           "avisos_enviados"
         ],
         "title": "RetenerResult"
+      },
+      "RouteHealth": {
+        "properties": {
+          "ruta_id": {
+            "type": "integer",
+            "title": "Ruta Id"
+          },
+          "dia_id": {
+            "type": "integer",
+            "title": "Dia Id"
+          },
+          "empresa_id": {
+            "type": "integer",
+            "title": "Empresa Id"
+          },
+          "empresa_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empresa Nombre"
+          },
+          "driver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Id"
+          },
+          "driver_nombre": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver Nombre"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "entregadas": {
+            "type": "integer",
+            "title": "Entregadas"
+          },
+          "no_entregadas": {
+            "type": "integer",
+            "title": "No Entregadas"
+          },
+          "pendientes": {
+            "type": "integer",
+            "title": "Pendientes"
+          },
+          "atrasadas": {
+            "type": "integer",
+            "title": "Atrasadas"
+          },
+          "success_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Pct"
+          },
+          "estado": {
+            "type": "string",
+            "title": "Estado"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ruta_id",
+          "dia_id",
+          "empresa_id",
+          "empresa_nombre",
+          "driver_id",
+          "driver_nombre",
+          "total",
+          "entregadas",
+          "no_entregadas",
+          "pendientes",
+          "atrasadas",
+          "success_pct",
+          "estado"
+        ],
+        "title": "RouteHealth"
       },
       "RowResult": {
         "properties": {

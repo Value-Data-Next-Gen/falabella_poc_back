@@ -30,6 +30,7 @@ from app.api.v1 import (
     capacitaciones,
     chat,
     clientes,
+    command_center,
     documents,
     drivers,
     empresa_contactos,
@@ -214,3 +215,4 @@ app.include_router(admin_geocoding.router)
 app.include_router(alerts.router)
 app.include_router(mapa.router)
 app.include_router(onboarding.router)
+app.include_router(command_center.router)

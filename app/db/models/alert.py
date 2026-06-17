@@ -131,6 +131,11 @@ class Alert(Base):
         nullable=True,
     )
 
+    # Ownership for the Centro de Control: an operator "claims" an alert so
+    # several operators don't work the same one. No DB FK (kept light).
+    owner_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover

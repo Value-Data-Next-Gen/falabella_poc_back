@@ -32,6 +32,8 @@ class AlertOut(BaseModel):
     notified_recipients_count: int
     resolved_at: datetime | None
     resolved_by_user_id: int | None
+    owner_user_id: int | None = None
+    acked_at: datetime | None = None
     dedupe_key: str | None
 
     model_config = ConfigDict(from_attributes=True)

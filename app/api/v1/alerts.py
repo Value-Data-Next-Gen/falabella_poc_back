@@ -222,3 +222,37 @@ async def dispatch_existing_alert(
         await db.commit()
         await db.refresh(alert)
     return await dispatch_alert(db, alert)
+
+
+@router.post("/{alert_id}/ack", operation_id="ackAlert", response_model=AlertOut)
+async def ack_alert(
+    alert_id: int,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AlertOut:
+    """Claim an alert ('Yo me encargo') so other operators see it's owned.
+    Passing it again by another user re-assigns ownership."""
+    from datetime import UTC, datetime
+    alert = await _load_alert_for_user(db, alert_id, user)
+    if alert.estado in ("resuelta", "descartada"):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Alerta ya {alert.estado!r}")
+    alert.owner_user_id = user.user_id
+    alert.acked_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(alert)
+    return AlertOut.model_validate(alert)
+
+
+@router.post("/{alert_id}/release", operation_id="releaseAlert", response_model=AlertOut)
+async def release_alert(
+    alert_id: int,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AlertOut:
+    """Release a claimed alert (un-assign ownership)."""
+    alert = await _load_alert_for_user(db, alert_id, user)
+    alert.owner_user_id = None
+    alert.acked_at = None
+    await db.commit()
+    await db.refresh(alert)
+    return AlertOut.model_validate(alert)
