@@ -15,6 +15,7 @@ from app.db.models.driver import Driver
 from app.db.models.empresa import Empresa
 from app.db.models.empresa_contacto import EmpresaContacto
 from app.db.models.motivo import Motivo
+from app.db.models.ruta import Ruta
 from app.db.models.user import User
 from app.db.models.vehicle import Vehicle
 from app.db.models.visita import Visita
@@ -72,6 +73,38 @@ TOOL_DEFINITIONS = [
                     "entidad_id": {"type": "string", "description": "ID de la entidad (ej: DRV-01001, 1, etc)"},
                 },
                 "required": ["tipo_entidad", "entidad_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "listar_recorridos_conductor",
+            "description": "Lista las rutas (recorridos) recientes asignadas a un conductor: dia, ruta_id, n_visitas, exito%, estado del dia. Identifica al conductor por driver_id (DRV-xxxx) o por nombre.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "driver_id": {"type": "string", "description": "ID del conductor (ej: DRV-01001). Alternativa a conductor_nombre."},
+                    "conductor_nombre": {"type": "string", "description": "Nombre o parte del nombre del conductor (busqueda fuzzy). Alternativa a driver_id."},
+                    "limite": {"type": "integer", "default": 5, "description": "Numero maximo de rutas a devolver (mas recientes primero)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "listar_visitas_conductor",
+            "description": "Lista las visitas (paradas) de un conductor en un dia: folio, cliente, comuna, orden, ETA, estado, motivo. Identifica al conductor por driver_id o nombre; si no se da fecha usa el dia mas reciente.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "driver_id": {"type": "string"},
+                    "conductor_nombre": {"type": "string"},
+                    "fecha": {"type": "string", "description": "Fecha ISO YYYY-MM-DD. Si se omite, usa el dia operativo mas reciente del conductor."},
+                    "estado": {"type": "string", "enum": ["pendiente", "en_camino", "entregado", "no_entregado", "cancelado"]},
+                    "limite": {"type": "integer", "default": 30},
+                },
             },
         },
     },
@@ -299,6 +332,8 @@ _OVERSIGHT_TOOLS = _DRIVER_TOOLS | {
     "listar_alertas_abiertas",
     "contar_entidades",
     "listar_conductores",
+    "listar_recorridos_conductor",
+    "listar_visitas_conductor",
     "resumen_empresa",
     "verificar_compliance_documentos",
     "obtener_reporte",
@@ -414,6 +449,10 @@ async def execute_tool(  # noqa: PLR0911 -- one branch per tool reads better tha
         return await _contar_entidades(db, actor=actor, **args)
     elif name == "listar_conductores":
         return await _listar_conductores(db, actor=actor, **args)
+    elif name == "listar_recorridos_conductor":
+        return await _listar_recorridos_conductor(db, actor=actor, **args)
+    elif name == "listar_visitas_conductor":
+        return await _listar_visitas_conductor(db, actor=actor, **args)
     elif name == "verificar_compliance_documentos":
         return await _verificar_compliance(db, actor=actor, **args)
     elif name == "listar_motivos":
@@ -979,3 +1018,189 @@ async def _obtener_reporte(
             f"empresa {requested} solicitada. Este reporte es de TU empresa."
         )
     return json.dumps(out, default=str)
+
+
+# ---------------------------------------------------------------------------
+# CR-022b: per-driver recorridos / visitas tools.
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_driver(
+    db: AsyncSession,
+    driver_id: str | None,
+    conductor_nombre: str | None,
+    actor: Actor,
+) -> tuple[Driver | None, str | None]:
+    """Resolve a Driver from id-or-name, then floor by actor scope.
+
+    Returns (driver, error). Error covers: missing args, not-found, ambiguous,
+    cross-tenant lookup.
+    """
+    if not driver_id and not conductor_nombre:
+        return None, "Indica driver_id (ej: DRV-01001) o conductor_nombre."
+
+    stmt = select(Driver).where(Driver.activo == True)  # noqa: E712
+    if driver_id:
+        stmt = stmt.where(Driver.driver_id == driver_id.strip())
+    else:
+        # case-insensitive contains; multiple hits → ask user to disambiguate.
+        stmt = stmt.where(func.lower(Driver.nombre).like(f"%{conductor_nombre.strip().lower()}%"))
+
+    # Scope-floor: managers/contactos can only resolve drivers in their empresas.
+    if not _actor_is_falabella_admin_or_ops(actor):
+        if isinstance(actor, Driver | EmpresaContacto):
+            stmt = stmt.where(Driver.empresa_id == actor.empresa_id)
+        elif isinstance(actor, User):
+            ids = getattr(actor, "_empresa_ids", []) or []
+            if ids:
+                stmt = stmt.where(Driver.empresa_id.in_(ids))
+            else:
+                return None, "Sin empresas asignadas a tu usuario."
+
+    rows = (await db.execute(stmt.limit(5))).scalars().all()
+    if not rows:
+        return None, f"No encontre un conductor que coincida con '{driver_id or conductor_nombre}' dentro de tu alcance."
+    if len(rows) > 1:
+        opts = [{"driver_id": d.driver_id, "nombre": d.nombre, "empresa_id": d.empresa_id} for d in rows]
+        return None, json.dumps({"error": "Hay varios conductores que coinciden, especifica driver_id.", "candidatos": opts})
+    drv = rows[0]
+    if not _actor_can_access(actor, drv.empresa_id):
+        return None, "Ese conductor pertenece a otra empresa, fuera de tu alcance."
+    return drv, None
+
+
+async def _listar_recorridos_conductor(
+    db: AsyncSession,
+    driver_id: str | None = None,
+    conductor_nombre: str | None = None,
+    limite: int = 5,
+    actor: Actor = None,
+) -> str:
+    drv, err = await _resolve_driver(db, driver_id, conductor_nombre, actor)
+    if err:
+        # err may already be a json blob (ambiguous case) — pass-through.
+        return err if err.startswith("{") else json.dumps({"error": err})
+
+    n = max(1, min(int(limite or 5), 30))
+    # Recent rutas of this driver, joined to día for fecha/estado.
+    rows = (await db.execute(
+        select(Ruta, DiaOperativo)
+        .join(DiaOperativo, DiaOperativo.dia_id == Ruta.dia_id)
+        .where(Ruta.driver_id == drv.driver_id)
+        .order_by(DiaOperativo.fecha.desc(), Ruta.ruta_id.desc())
+        .limit(n)
+    )).all()
+    if not rows:
+        return json.dumps({
+            "conductor": {"driver_id": drv.driver_id, "nombre": drv.nombre},
+            "info": "Sin recorridos asignados.",
+            "recorridos": [],
+        })
+
+    out_recorridos: list[dict] = []
+    for ruta, dia in rows:
+        counts = (await db.execute(
+            select(Visita.estado, func.count())
+            .where(Visita.ruta_id == ruta.ruta_id)
+            .group_by(Visita.estado)
+        )).all()
+        cmap = {e: int(c) for e, c in counts}
+        total = sum(cmap.values())
+        entregadas = cmap.get("entregado", 0)
+        no_entregadas = cmap.get("no_entregado", 0)
+        cerradas = entregadas + no_entregadas
+        success_pct = round(entregadas / cerradas * 100, 1) if cerradas else None
+        out_recorridos.append({
+            "ruta_id": ruta.ruta_id,
+            "dia_id": dia.dia_id,
+            "fecha": str(dia.fecha),
+            "estado_dia": dia.estado,
+            "folio": ruta.folio,
+            "vehicle_id": ruta.vehicle_id,
+            "visitas_total": total,
+            "entregadas": entregadas,
+            "no_entregadas": no_entregadas,
+            "pendientes": cmap.get("pendiente", 0) + cmap.get("en_camino", 0),
+            "success_pct": success_pct,
+        })
+
+    return json.dumps({
+        "conductor": {"driver_id": drv.driver_id, "nombre": drv.nombre, "empresa_id": drv.empresa_id},
+        "recorridos": out_recorridos,
+        "total": len(out_recorridos),
+    }, default=str)
+
+
+async def _listar_visitas_conductor(
+    db: AsyncSession,
+    driver_id: str | None = None,
+    conductor_nombre: str | None = None,
+    fecha: str | None = None,
+    estado: str | None = None,
+    limite: int = 30,
+    actor: Actor = None,
+) -> str:
+    from datetime import date as _date
+
+    drv, err = await _resolve_driver(db, driver_id, conductor_nombre, actor)
+    if err:
+        return err if err.startswith("{") else json.dumps({"error": err})
+
+    # Resolve día: explicit fecha → most recent matching; else most recent día with rutas.
+    if fecha:
+        try:
+            fdate = _date.fromisoformat(fecha)
+        except ValueError:
+            return json.dumps({"error": f"Fecha invalida: '{fecha}'. Usa YYYY-MM-DD."})
+        dia_row = (await db.execute(
+            select(DiaOperativo, Ruta)
+            .join(Ruta, Ruta.dia_id == DiaOperativo.dia_id)
+            .where(Ruta.driver_id == drv.driver_id, DiaOperativo.fecha == fdate)
+            .order_by(Ruta.ruta_id.desc())
+            .limit(1)
+        )).first()
+    else:
+        dia_row = (await db.execute(
+            select(DiaOperativo, Ruta)
+            .join(Ruta, Ruta.dia_id == DiaOperativo.dia_id)
+            .where(Ruta.driver_id == drv.driver_id)
+            .order_by(DiaOperativo.fecha.desc(), Ruta.ruta_id.desc())
+            .limit(1)
+        )).first()
+
+    if not dia_row:
+        msg = "Sin visitas en esa fecha." if fecha else "Sin recorridos asignados."
+        return json.dumps({
+            "conductor": {"driver_id": drv.driver_id, "nombre": drv.nombre},
+            "info": msg, "visitas": [],
+        })
+
+    dia, ruta = dia_row
+    vstmt = select(Visita).where(Visita.ruta_id == ruta.ruta_id).order_by(Visita.orden.asc())
+    if estado:
+        vstmt = vstmt.where(Visita.estado == estado)
+    vstmt = vstmt.limit(max(1, min(int(limite or 30), 200)))
+    visitas = (await db.execute(vstmt)).scalars().all()
+
+    return json.dumps({
+        "conductor": {"driver_id": drv.driver_id, "nombre": drv.nombre, "empresa_id": drv.empresa_id},
+        "dia_id": dia.dia_id, "fecha": str(dia.fecha), "estado_dia": dia.estado,
+        "ruta_id": ruta.ruta_id, "ruta_folio": ruta.folio,
+        "visitas": [
+            {
+                "visita_id": v.visita_id,
+                "orden": v.orden,
+                "folio": v.folio_cliente,
+                "cliente": v.cliente_nombre,
+                "comuna": v.comuna,
+                "direccion": v.direccion,
+                "estado": v.estado,
+                "eta": v.eta_estimada.isoformat() if v.eta_estimada else None,
+                "completada_at": v.completada_at.isoformat() if v.completada_at else None,
+                "motivo": v.motivo,
+                "es_vip": bool(v.es_vip),
+            }
+            for v in visitas
+        ],
+        "total": len(visitas),
+    }, default=str)
