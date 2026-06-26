@@ -101,7 +101,7 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "driver_id": {"type": "string"},
                     "conductor_nombre": {"type": "string"},
-                    "fecha": {"type": "string", "description": "Fecha ISO YYYY-MM-DD. Si se omite, usa el dia operativo mas reciente del conductor."},
+                    "fecha": {"type": "string", "description": "YYYY-MM-DD o las palabras 'hoy'/'ayer' (relativas al reloj operativo del sistema, NO al calendario real). Omitir = usar el dia operativo mas reciente del conductor."},
                     "estado": {"type": "string", "enum": ["pendiente", "en_camino", "entregado", "no_entregado", "cancelado"]},
                     "limite": {"type": "integer", "default": 30},
                 },
@@ -1148,10 +1148,19 @@ async def _listar_visitas_conductor(
 
     # Resolve día: explicit fecha → most recent matching; else most recent día with rutas.
     if fecha:
-        try:
-            fdate = _date.fromisoformat(fecha)
-        except ValueError:
-            return json.dumps({"error": f"Fecha invalida: '{fecha}'. Usa YYYY-MM-DD."})
+        f = fecha.strip().lower()
+        if f in ("hoy", "today", "ayer", "yesterday"):
+            # Resolve relative to the simulation clock, not the real wall clock.
+            from app.db.models.sim_clock import SimClock
+            sim_now = await db.scalar(select(SimClock.sim_now).where(SimClock.id == 1))
+            base = sim_now.date() if sim_now else _date.today()
+            from datetime import timedelta as _td
+            fdate = base - _td(days=1) if f in ("ayer", "yesterday") else base
+        else:
+            try:
+                fdate = _date.fromisoformat(fecha)
+            except ValueError:
+                return json.dumps({"error": f"Fecha invalida: '{fecha}'. Usa YYYY-MM-DD o 'hoy'/'ayer'."})
         dia_row = (await db.execute(
             select(DiaOperativo, Ruta)
             .join(Ruta, Ruta.dia_id == DiaOperativo.dia_id)
